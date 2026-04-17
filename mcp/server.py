@@ -394,6 +394,118 @@ async def fetch_page(
     return f"# Content from {url}\n\n{truncated}"
 
 
+_CODE_HOSTS = {
+    "github.com": "github",
+    "www.github.com": "github",
+    "gitlab.com": "gitlab",
+    "www.gitlab.com": "gitlab",
+    "codeberg.org": "codeberg",
+    "www.codeberg.org": "codeberg",
+}
+
+
+def _to_raw_url(url: str) -> str | None:
+    """Convert a code hosting file URL to its raw content URL."""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    platform = _CODE_HOSTS.get(host)
+    if not platform:
+        for domain, plat in _CODE_HOSTS.items():
+            if host.endswith(f".{domain}") or host == domain:
+                platform = plat
+                break
+    if not platform:
+        return None
+
+    parts = [p for p in parsed.path.strip("/").split("/") if p]
+    if len(parts) < 3:
+        return None
+
+    owner, repo = parts[0], parts[1]
+
+    if platform == "github":
+        if parts[2] == "blob" and len(parts) >= 4:
+            ref = parts[3]
+            path = "/".join(parts[4:])
+            return f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}"
+        if parts[2] == "raw" and len(parts) >= 4:
+            ref = parts[3]
+            path = "/".join(parts[4:])
+            return f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}"
+
+    elif platform == "gitlab":
+        try:
+            raw_idx = parts.index("raw")
+            ref = parts[raw_idx + 1]
+            path = "/".join(parts[raw_idx + 2:])
+            return f"https://{parsed.hostname}/{owner}/{repo}/-/raw/{ref}/{path}"
+        except (ValueError, IndexError):
+            pass
+        try:
+            blob_idx = parts.index("blob")
+            ref = parts[blob_idx + 1]
+            path = "/".join(parts[blob_idx + 2:])
+            return f"https://{parsed.hostname}/{owner}/{repo}/-/raw/{ref}/{path}"
+        except (ValueError, IndexError):
+            pass
+
+    elif platform == "codeberg":
+        if parts[2] == "src" and len(parts) >= 5 and parts[3] in ("branch", "tag", "commit"):
+            ref = parts[4]
+            path = "/".join(parts[5:])
+            return f"https://codeberg.org/{owner}/{repo}/raw/{parts[3]}/{ref}/{path}"
+        if parts[2] == "raw" and len(parts) >= 5:
+            return url
+
+    return None
+
+
+def _lang_from_path(path: str) -> str:
+    ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    return {
+        "py": "python", "js": "javascript", "ts": "typescript", "tsx": "typescript",
+        "jsx": "javascript", "rs": "rust", "go": "go", "rb": "ruby", "java": "java",
+        "c": "c", "cpp": "cpp", "h": "c", "hpp": "cpp", "cs": "csharp",
+        "sh": "bash", "bash": "bash", "zsh": "bash", "fish": "fish",
+        "nix": "nix", "yaml": "yaml", "yml": "yaml", "toml": "toml",
+        "json": "json", "md": "markdown", "sql": "sql", "html": "html",
+        "css": "css", "scss": "scss", "lua": "lua", "zig": "zig",
+        "swift": "swift", "kt": "kotlin", "ex": "elixir", "exs": "elixir",
+    }.get(ext, ext)
+
+
+@mcp.tool
+async def fetch_code(url: str) -> str:
+    """Fetch source code from GitHub, GitLab, or Codeberg file URLs.
+
+    Converts file URLs to raw content endpoints for clean code extraction
+    without HTML page chrome. Much faster and cleaner than fetch_page for code.
+
+    Args:
+        url: URL to a file on GitHub, GitLab, or Codeberg.
+    """
+    raw_url = _to_raw_url(url)
+    if not raw_url:
+        return f"Unsupported URL format or host: {url}\nSupported: GitHub, GitLab, Codeberg file URLs."
+
+    try:
+        async with httpx.AsyncClient(timeout=SCRAPE_HTTP_TIMEOUT, follow_redirects=True) as client:
+            resp = await client.get(raw_url)
+            resp.raise_for_status()
+            content = resp.text
+    except httpx.HTTPError as e:
+        log.warning("fetch_code error url=%s raw=%s err=%s", url, raw_url, e)
+        return f"Failed to fetch: {url}\nError: {e}"
+
+    path = urlparse(url).path
+    filename = path.rsplit("/", 1)[-1] if "/" in path else path
+    lang = _lang_from_path(filename)
+
+    truncated = content[:MAX_CONTENT_CHARS]
+    log.info("fetch_code url=%s raw=%s lang=%s chars=%d", url, raw_url, lang, len(truncated))
+    return f"# {filename}\n\n```{lang}\n{truncated}\n```"
+
+
 @mcp.tool
 async def site_search(
     query: str,
