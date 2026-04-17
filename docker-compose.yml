@@ -1,0 +1,45 @@
+services:
+  web-search-mcp:
+    build: ./mcp
+    container_name: web-search-mcp
+    restart: unless-stopped
+    ports:
+      - "${MCP_HOST_PORT:-8002}:8000"
+    environment:
+      - SEARXNG_URL=http://searxng:8080
+      - CRAWL4AI_URL=http://crawl4ai:11235
+      - RERANKER_URL=http://jina-reranker:8000
+      - MAX_SCRAPE=${MAX_SCRAPE:-5}
+      - SCRAPE_TIMEOUT=${SCRAPE_TIMEOUT:-30}
+      - MAX_CONTENT_CHARS=${MAX_CONTENT_CHARS:-4000}
+    depends_on:
+      - searxng
+      - crawl4ai
+      - jina-reranker
+
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    container_name: web-search-mcp-searxng
+    restart: unless-stopped
+    volumes:
+      - ./searxng/config:/etc/searxng
+      - searxng-data:/var/cache/searxng
+
+  crawl4ai:
+    image: unclecode/crawl4ai:latest
+    container_name: web-search-mcp-crawl4ai
+    restart: unless-stopped
+    shm_size: 1g
+
+  jina-reranker:
+    build: ./jina-reranker
+    container_name: web-search-mcp-jina-reranker
+    restart: unless-stopped
+    environment:
+      - JINA_MODEL=${JINA_MODEL:-jinaai/jina-reranker-v2-base-multilingual}
+    volumes:
+      - jina-model-cache:/models/cache
+
+volumes:
+  searxng-data:
+  jina-model-cache:
