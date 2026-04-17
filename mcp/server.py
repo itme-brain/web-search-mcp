@@ -135,7 +135,7 @@ async def _search(query: str, num_results: int = 10, time_range: str | None = No
     async with httpx.AsyncClient(timeout=SEARCH_TIMEOUT) as client:
         resp = await client.get(f"{SEARXNG_URL}/search", params=params)
         resp.raise_for_status()
-        return resp.json().get("results", [])
+        return resp.json().get("results", [])[:num_results]
 
 
 def _extract_markdown(result: dict) -> str | None:
