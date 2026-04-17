@@ -88,7 +88,7 @@ async def _scrape_impl(url: str) -> str | None:
     async with httpx.AsyncClient(timeout=SCRAPE_HTTP_TIMEOUT) as client:
         resp = await client.post(
             f"{CRAWL4AI_URL}/crawl",
-            json={"urls": url, "priority": 8},
+            json={"urls": [url], "priority": 8},
         )
         resp.raise_for_status()
         data = resp.json()
@@ -107,6 +107,9 @@ async def _scrape_impl(url: str) -> str | None:
                 if status == "failed":
                     return None
 
+        results = data.get("results")
+        if results and isinstance(results, list):
+            return results[0].get("markdown") or results[0].get("cleaned_html")
         result = data.get("result", data)
         return result.get("markdown")
 
