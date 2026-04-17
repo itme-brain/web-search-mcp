@@ -1,3 +1,9 @@
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 10s
+  timeout: 5s
+  retries: 6
+  start_period: 30s
+
 services:
   web-search-mcp:
     build: ./mcp
@@ -11,11 +17,21 @@ services:
       - RERANKER_URL=http://jina-reranker:8000
       - MAX_SCRAPE=${MAX_SCRAPE:-5}
       - SCRAPE_TIMEOUT=${SCRAPE_TIMEOUT:-30}
+      - SCRAPE_HTTP_TIMEOUT=${SCRAPE_HTTP_TIMEOUT:-15}
+      - SEARCH_TIMEOUT=${SEARCH_TIMEOUT:-10}
+      - RERANK_TIMEOUT=${RERANK_TIMEOUT:-10}
       - MAX_CONTENT_CHARS=${MAX_CONTENT_CHARS:-4000}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3).read()"]
     depends_on:
-      - searxng
-      - crawl4ai
-      - jina-reranker
+      searxng:
+        condition: service_healthy
+      crawl4ai:
+        condition: service_healthy
+      jina-reranker:
+        condition: service_healthy
 
   searxng:
     image: ${SEARXNG_IMAGE:-docker.io/searxng/searxng:2026.4.16-ae0b0e56a}
@@ -24,12 +40,18 @@ services:
     volumes:
       - ./searxng/config:/etc/searxng
       - searxng-data:/var/cache/searxng
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz', timeout=3).read()"]
 
   crawl4ai:
     image: ${CRAWL4AI_IMAGE:-unclecode/crawl4ai:0.8.6}
     container_name: web-search-mcp-crawl4ai
     restart: unless-stopped
     shm_size: 1g
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:11235/health', timeout=3).read()"]
 
   jina-reranker:
     build: ./jina-reranker
@@ -39,6 +61,11 @@ services:
       - JINA_MODEL=${JINA_MODEL:-jinaai/jina-reranker-v2-base-multilingual}
     volumes:
       - jina-model-cache:/models/cache
+    healthcheck:
+      <<: *healthcheck-defaults
+      # First boot downloads the reranker model (hundreds of MB). Give it longer before marking unhealthy.
+      start_period: 300s
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3).read()"]
 
 volumes:
   searxng-data:
