@@ -19,7 +19,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("web-search-mcp")
 
-mcp = FastMCP("Web Search")
+mcp = FastMCP("Web Search", version="0.0.1")
 
 SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://searxng:8080")
 CRAWL4AI_URL = os.environ.get("CRAWL4AI_URL", "http://crawl4ai:11235")
