@@ -5,6 +5,7 @@ import logging
 import os
 import re
 from collections import defaultdict
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import httpx
 from fastmcp import Context, FastMCP
@@ -33,12 +34,64 @@ CHUNK_MIN_CHARS = int(os.environ.get("CHUNK_MIN_CHARS", "50"))
 CHUNK_MAX_CHARS = int(os.environ.get("CHUNK_MAX_CHARS", "500"))
 MAX_CHUNKS_PER_PAGE = int(os.environ.get("MAX_CHUNKS_PER_PAGE", "10"))
 TOP_CHUNKS_PER_PAGE = int(os.environ.get("TOP_CHUNKS_PER_PAGE", "3"))
+DEDUP_SIMILARITY = float(os.environ.get("DEDUP_SIMILARITY", "0.85"))
 
 STATE_SCRAPE_CACHE = "scrape_cache"
 STATE_QUERY_CACHE = "query_cache"
 STATE_SEEN_URLS = "seen_urls"
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+_TRACKING_PARAMS = frozenset({
+    "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+    "ref", "fbclid", "gclid", "dclid", "msclkid", "mc_cid", "mc_eid",
+})
+_WORD_SPLIT = re.compile(r"\W+")
+
+
+def _normalize_url(url: str) -> str:
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    if host.startswith("www."):
+        host = host[4:]
+    params = {k: v for k, v in parse_qs(parsed.query).items() if k not in _TRACKING_PARAMS}
+    return urlunparse((parsed.scheme, host, parsed.path.rstrip("/"), "", urlencode(params, doseq=True), ""))
+
+
+def _dedup_results(results: list[dict]) -> list[dict]:
+    seen: set[str] = set()
+    deduped: list[dict] = []
+    for r in results:
+        norm = _normalize_url(r.get("url", ""))
+        if norm not in seen:
+            seen.add(norm)
+            deduped.append(r)
+    return deduped
+
+
+def _word_set(text: str) -> set[str]:
+    return set(_WORD_SPLIT.split(text.lower()))
+
+
+def _dedup_chunks(chunks: list[str], entry_map: list[int]) -> tuple[list[str], list[int]]:
+    kept_chunks: list[str] = []
+    kept_entries: list[int] = []
+    seen_words: list[set[str]] = []
+    for chunk, eidx in zip(chunks, entry_map):
+        words = _word_set(chunk)
+        if not words:
+            continue
+        is_dup = False
+        for prev in seen_words:
+            intersection = len(words & prev)
+            union = len(words | prev)
+            if union and intersection / union >= DEDUP_SIMILARITY:
+                is_dup = True
+                break
+        if not is_dup:
+            kept_chunks.append(chunk)
+            kept_entries.append(eidx)
+            seen_words.append(words)
+    return kept_chunks, kept_entries
 
 
 def _query_cache_key(query: str, num_results: int, scrape_top: int, time_range: str | None) -> str:
@@ -225,6 +278,7 @@ async def web_search(
     results = await _search(query, num_results=num_results, time_range=time_range)
     if not results:
         return f"No results found for: {query}"
+    results = _dedup_results(results)
 
     # --- scrape (cache-aware) ---
     to_scrape = min(scrape_top, len(results))
@@ -261,6 +315,9 @@ async def web_search(
         for chunk in chunks:
             all_chunks.append(chunk)
             chunk_to_entry.append(i)
+
+    # --- deduplicate near-identical chunks across pages ---
+    all_chunks, chunk_to_entry = _dedup_chunks(all_chunks, chunk_to_entry)
 
     # --- rerank at the chunk level ---
     scored = _rerank_scored(query, all_chunks)
@@ -313,10 +370,9 @@ async def web_search(
         await ctx.set_state(STATE_QUERY_CACHE, query_cache)
         await ctx.set_state(STATE_SEEN_URLS, list(seen_urls))
 
-    total_chunks = len(all_chunks)
     log.info(
         "query=%r chunks=%d pages=%d scrape_cache=%d query_cache=%d seen=%d",
-        query, total_chunks, len(entries), len(scrape_cache), len(query_cache), len(seen_urls),
+        query, len(all_chunks), len(entries), len(scrape_cache), len(query_cache), len(seen_urls),
     )
 
     return output
