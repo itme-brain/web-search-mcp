@@ -1,0 +1,100 @@
+{
+  description = "Fully-FOSS web-search MCP server: SearXNG + Crawl4AI + Jina reranker bundled as one docker-compose stack";
+
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    flake-utils.url = "github:numtide/flake-utils";
+  };
+
+  outputs = { self, nixpkgs, flake-utils }:
+    flake-utils.lib.eachDefaultSystem (system:
+      let
+        pkgs = nixpkgs.legacyPackages.${system};
+
+        # Tools needed at runtime by the deploy script. Docker daemon must be
+        # supplied by the host (Nix does not install a daemon on non-NixOS).
+        runtimeTools = [
+          pkgs.docker-client
+          pkgs.docker-compose
+          pkgs.just
+          pkgs.curl
+          pkgs.jq
+          pkgs.coreutils
+        ];
+
+        deploy = pkgs.writeShellApplication {
+          name = "web-search-mcp-deploy";
+          runtimeInputs = runtimeTools;
+          text = ''
+            set -euo pipefail
+
+            if [[ ! -f docker-compose.yml ]]; then
+              echo "error: run this from the web-search-mcp repo root (no docker-compose.yml in $PWD)" >&2
+              exit 1
+            fi
+
+            if ! docker info >/dev/null 2>&1; then
+              echo "error: cannot talk to the Docker daemon." >&2
+              echo "  On non-NixOS, install Docker on the host (https://docs.docker.com/engine/install/)." >&2
+              echo "  Ensure your user is in the 'docker' group, or re-run with sudo." >&2
+              exit 1
+            fi
+
+            if [[ ! -f .env ]]; then
+              echo "info: no .env found — copying env.sample" >&2
+              cp env.sample .env
+            fi
+
+            echo ">> building + starting stack"
+            docker compose up -d --build
+
+            echo ">> waiting for MCP to accept connections"
+            # shellcheck disable=SC1091
+            source .env
+            port="''${MCP_HOST_PORT:-8002}"
+            for _ in {1..60}; do
+              if curl -sf "http://localhost:$port/mcp" >/dev/null 2>&1; then
+                echo ">> MCP reachable on http://localhost:$port"
+                exit 0
+              fi
+              sleep 1
+            done
+            echo "warn: MCP did not respond within 60s. Check 'just logs'." >&2
+            exit 1
+          '';
+        };
+
+        teardown = pkgs.writeShellApplication {
+          name = "web-search-mcp-teardown";
+          runtimeInputs = runtimeTools;
+          text = ''
+            set -euo pipefail
+            if [[ ! -f docker-compose.yml ]]; then
+              echo "error: run this from the web-search-mcp repo root" >&2
+              exit 1
+            fi
+            docker compose down "$@"
+          '';
+        };
+      in
+      {
+        packages = {
+          inherit deploy teardown;
+          default = deploy;
+        };
+
+        apps = {
+          deploy = flake-utils.lib.mkApp { drv = deploy; };
+          teardown = flake-utils.lib.mkApp { drv = teardown; };
+          default = flake-utils.lib.mkApp { drv = deploy; };
+        };
+
+        devShells.default = pkgs.mkShell {
+          name = "web-search-mcp-dev";
+          buildInputs = runtimeTools;
+          shellHook = ''
+            echo "web-search-mcp devshell — try: just, just up, just logs"
+          '';
+        };
+      });
+}
