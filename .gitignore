@@ -11,3 +11,6 @@ venv/
 # Nix
 result
 result-*
+
+# Generated at deploy time from settings.yml.template.
+searxng/config/settings.yml

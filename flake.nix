@@ -20,6 +20,8 @@
           pkgs.curl
           pkgs.jq
           pkgs.coreutils
+          pkgs.openssl
+          pkgs.gnused
         ];
 
         deploy = pkgs.writeShellApplication {
@@ -43,6 +45,13 @@
             if [[ ! -f .env ]]; then
               echo "info: no .env found — copying env.sample" >&2
               cp env.sample .env
+            fi
+
+            if [[ ! -f searxng/config/settings.yml ]]; then
+              echo "info: rendering searxng/config/settings.yml with a random secret_key" >&2
+              sed "s|ultrasecretkey|$(openssl rand -hex 32)|" \
+                searxng/config/settings.yml.template \
+                > searxng/config/settings.yml
             fi
 
             echo ">> building + starting stack"

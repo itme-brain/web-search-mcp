@@ -7,8 +7,19 @@ compose := "docker compose"
 default:
     @just --list
 
+# Generate .env from env.sample and searxng settings.yml from the template (idempotent).
+setup:
+    @if [ ! -f .env ]; then \
+        echo ">> copying env.sample to .env"; \
+        cp env.sample .env; \
+    fi
+    @if [ ! -f searxng/config/settings.yml ]; then \
+        echo ">> rendering searxng/config/settings.yml with a random secret_key"; \
+        sed "s|ultrasecretkey|$(openssl rand -hex 32)|" searxng/config/settings.yml.template > searxng/config/settings.yml; \
+    fi
+
 # Build and start the full stack detached.
-up:
+up: setup
     {{ compose }} up -d --build
 
 # Stop and remove containers, keep volumes.
@@ -27,12 +38,12 @@ logs:
 logs-one service:
     {{ compose }} logs -f {{ service }}
 
-# Show container status.
+# Show container status + health for each service.
 ps:
     {{ compose }} ps
 
 # Rebuild images from scratch and recreate containers.
-rebuild:
+rebuild: setup
     {{ compose }} build --no-cache
     {{ compose }} up -d --force-recreate
 
@@ -40,12 +51,6 @@ rebuild:
 restart:
     {{ compose }} restart
 
-# Hit the MCP healthcheck via the configured host port.
+# Check that the MCP's /health endpoint is reachable on the configured host port.
 health:
-    curl -sf "http://localhost:${MCP_HOST_PORT:-8002}/mcp" >/dev/null && echo "MCP reachable on port ${MCP_HOST_PORT:-8002}" || (echo "MCP not reachable" >&2; exit 1)
-
-# One-shot smoke test — requires the stack to be running.
-smoke query="hello world":
-    curl -sf -X POST "http://localhost:${MCP_HOST_PORT:-8002}/mcp/tools/web_search" \
-        -H 'Content-Type: application/json' \
-        -d '{"query": "{{ query }}", "num_results": 3, "scrape_top": 2}' | head -c 2000
+    @curl -fsS "http://localhost:${MCP_HOST_PORT:-8002}/health" && echo

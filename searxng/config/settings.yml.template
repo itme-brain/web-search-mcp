@@ -12,7 +12,7 @@ use_default_settings:
       - arxiv
 
 general:
-  instance_name: "Rigby SearxNG"
+  instance_name: "Web Search MCP"
 
 search:
   safe_search: 0
@@ -22,7 +22,8 @@ search:
     - json
 
 server:
-  secret_key: "rigby-searxng-local-secret"
+  # Placeholder. `just setup` / `nix run .#deploy` substitutes a random hex key on first boot.
+  secret_key: "ultrasecretkey"
   limiter: false
   image_proxy: true
 
