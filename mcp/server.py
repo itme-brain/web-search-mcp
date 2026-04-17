@@ -141,7 +141,7 @@ async def _search(query: str, num_results: int = 10, time_range: str | None = No
 def _extract_markdown(result: dict) -> str | None:
     md = result.get("markdown")
     if isinstance(md, dict):
-        return md.get("raw_markdown") or md.get("fit_markdown")
+        return md.get("fit_markdown") or md.get("raw_markdown")
     if isinstance(md, str):
         return md
     return result.get("cleaned_html")
