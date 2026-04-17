@@ -222,14 +222,19 @@ async def health(_: Request) -> JSONResponse:
 
 @mcp.prompt()
 def web_search_agent(topic: str) -> str:
-    """Use web search to research a topic and provide an informed answer."""
-    return f"""You have access to a web_search tool that searches the internet, scrapes pages, and returns relevant content ranked by relevance.
+    """Use web search tools to research a topic and provide an informed answer."""
+    return f"""You have access to web search tools:
+- web_search: Search the web, scrape top results, and return content ranked by relevance
+- fetch_page: Fetch a single URL and return its full content as markdown
+- site_search: Search within a specific website or domain
 
-Use web_search to find current, accurate information about: {topic}
+Use these tools to find current, accurate information about: {topic}
 
 Guidelines:
 - Use specific, targeted search queries
 - Use time_range='day' or 'week' for recent events
+- Use fetch_page to read full articles found in search results
+- Use site_search to search within specific documentation or domains
 - Synthesize information from multiple results
 - Always cite sources with URLs
 - If results are insufficient, refine your query and search again"""
@@ -376,6 +381,64 @@ async def web_search(
     )
 
     return output
+
+
+@mcp.tool
+async def fetch_page(
+    url: str,
+    ctx: Context | None = None,
+) -> str:
+    """Fetch a single web page and return its content as markdown.
+
+    Scrapes the URL via Crawl4AI, splits into chunks, and returns the full text.
+    Uses the session scrape cache — previously fetched pages are returned instantly.
+
+    Args:
+        url: The URL to fetch.
+    """
+    scrape_cache: dict[str, str | None] = {}
+    if ctx:
+        scrape_cache = await ctx.get_state(STATE_SCRAPE_CACHE) or {}
+
+    content = await _scrape_cached(url, scrape_cache)
+
+    if ctx:
+        await ctx.set_state(STATE_SCRAPE_CACHE, scrape_cache)
+
+    if not content:
+        return f"Failed to fetch: {url}"
+
+    truncated = content[:MAX_CONTENT_CHARS]
+    log.info("fetch_page url=%s chars=%d cached=%d", url, len(truncated), len(scrape_cache))
+    return f"# Content from {url}\n\n{truncated}"
+
+
+@mcp.tool
+async def site_search(
+    query: str,
+    site: str,
+    num_results: int = 10,
+    scrape_top: int = MAX_SCRAPE,
+    ctx: Context | None = None,
+) -> str:
+    """Search within a specific website or domain.
+
+    Prepends 'site:<domain>' to the query and runs the full search pipeline.
+    Useful for searching documentation sites, GitHub repos, or any specific domain.
+
+    Args:
+        query: The search query.
+        site: Domain to search within (e.g. 'github.com', 'docs.python.org').
+        num_results: Number of search results to fetch (default 10).
+        scrape_top: Number of top results to scrape for full content (default 5).
+    """
+    scoped_query = f"site:{site} {query}"
+    return await web_search(
+        query=scoped_query,
+        num_results=num_results,
+        scrape_top=scrape_top,
+        ctx=ctx,
+    )
 
 
 if __name__ == "__main__":
