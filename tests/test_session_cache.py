@@ -7,7 +7,7 @@ from tests.conftest import SCRAPE_CONTENT, URLS_A, URLS_B, make_search_results, 
 
 PATCH_SEARCH = "web_search_server._search"
 PATCH_SCRAPE = "web_search_server._scrape"
-PATCH_RERANK = "web_search_server._rerank"
+PATCH_RERANK = "web_search_server._rerank_scored"
 
 URLS_C = [
     "https://example.com/c1",
@@ -17,15 +17,15 @@ URLS_C = [
 
 SCRAPE_CONTENT_EXTENDED = {
     **SCRAPE_CONTENT,
-    "https://example.com/c1": "# Page C1\nContent of page C1",
-    "https://example.com/c2": "# Page C2\nContent of page C2",
-    "https://example.com/c3": "# Page C3\nContent of page C3",
-    "https://example.com/new1": "# Page New1\nContent of new1",
+    "https://example.com/c1": "# Page C1\n\nThis is the full content of page C1 with enough text to pass the minimum chunk size threshold for reranking.",
+    "https://example.com/c2": "# Page C2\n\nThis is the full content of page C2 with enough text to pass the minimum chunk size threshold for reranking.",
+    "https://example.com/c3": "# Page C3\n\nThis is the full content of page C3 with enough text to pass the minimum chunk size threshold for reranking.",
+    "https://example.com/new1": "# Page New1\n\nThis is the full content of page New1 with enough text to pass the minimum chunk size threshold for reranking.",
 }
 
 
-def _identity_rerank(_query: str, documents: list[str]) -> list[int]:
-    return list(range(len(documents)))
+def _identity_rerank(_query: str, documents: list[str]) -> list[tuple[int, float]]:
+    return [(i, 0.0) for i in range(len(documents))]
 
 
 def _make_scrape_mock(content_map: dict[str, str | None] | None = None):

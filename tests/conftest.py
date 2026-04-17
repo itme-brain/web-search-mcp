@@ -34,11 +34,11 @@ URLS_B = [
 ]
 
 SCRAPE_CONTENT = {
-    "https://example.com/a1": "# Page A1\nContent of page A1",
-    "https://example.com/a2": "# Page A2\nContent of page A2",
-    "https://example.com/a3": "# Page A3\nContent of page A3",
-    "https://example.com/b1": "# Page B1\nContent of page B1",
-    "https://example.com/b2": "# Page B2\nContent of page B2",
+    "https://example.com/a1": "# Page A1\n\nThis is the full content of page A1 with enough text to pass the minimum chunk size threshold for reranking.",
+    "https://example.com/a2": "# Page A2\n\nThis is the full content of page A2 with enough text to pass the minimum chunk size threshold for reranking.",
+    "https://example.com/a3": "# Page A3\n\nThis is the full content of page A3 with enough text to pass the minimum chunk size threshold for reranking.",
+    "https://example.com/b1": "# Page B1\n\nThis is the full content of page B1 with enough text to pass the minimum chunk size threshold for reranking.",
+    "https://example.com/b2": "# Page B2\n\nThis is the full content of page B2 with enough text to pass the minimum chunk size threshold for reranking.",
 }
 
 

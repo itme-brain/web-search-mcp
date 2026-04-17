@@ -3,6 +3,8 @@ import hashlib
 import json
 import logging
 import os
+import re
+from collections import defaultdict
 
 import httpx
 from fastmcp import Context, FastMCP
@@ -24,17 +26,46 @@ MAX_SCRAPE = int(os.environ.get("MAX_SCRAPE", "5"))
 SCRAPE_TIMEOUT = int(os.environ.get("SCRAPE_TIMEOUT", "30"))
 SCRAPE_HTTP_TIMEOUT = int(os.environ.get("SCRAPE_HTTP_TIMEOUT", "15"))
 SEARCH_TIMEOUT = int(os.environ.get("SEARCH_TIMEOUT", "10"))
-RERANK_TIMEOUT = int(os.environ.get("RERANK_TIMEOUT", "10"))
-MAX_CONTENT_CHARS = int(os.environ.get("MAX_CONTENT_CHARS", "4000"))
+RERANK_TIMEOUT = int(os.environ.get("RERANK_TIMEOUT", "30"))
+MAX_CONTENT_CHARS = int(os.environ.get("MAX_CONTENT_CHARS", "8000"))
+CHUNK_MIN_CHARS = int(os.environ.get("CHUNK_MIN_CHARS", "50"))
+CHUNK_MAX_CHARS = int(os.environ.get("CHUNK_MAX_CHARS", "500"))
+MAX_CHUNKS_PER_PAGE = int(os.environ.get("MAX_CHUNKS_PER_PAGE", "10"))
+TOP_CHUNKS_PER_PAGE = int(os.environ.get("TOP_CHUNKS_PER_PAGE", "3"))
 
 STATE_SCRAPE_CACHE = "scrape_cache"
 STATE_QUERY_CACHE = "query_cache"
 STATE_SEEN_URLS = "seen_urls"
 
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+
 
 def _query_cache_key(query: str, num_results: int, scrape_top: int, time_range: str | None) -> str:
     raw = json.dumps([query.lower().strip(), num_results, scrape_top, time_range], sort_keys=True)
     return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _chunk_text(text: str) -> list[str]:
+    """Split text into paragraph-sized chunks suitable for reranking."""
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    chunks: list[str] = []
+    for para in paragraphs:
+        if len(para) <= CHUNK_MAX_CHARS:
+            if len(para) >= CHUNK_MIN_CHARS:
+                chunks.append(para)
+            continue
+        sentences = _SENTENCE_SPLIT.split(para)
+        current = ""
+        for sent in sentences:
+            if current and len(current) + len(sent) + 1 > CHUNK_MAX_CHARS:
+                if len(current) >= CHUNK_MIN_CHARS:
+                    chunks.append(current)
+                current = sent
+            else:
+                current = f"{current} {sent}".strip() if current else sent
+        if current and len(current) >= CHUNK_MIN_CHARS:
+            chunks.append(current)
+    return chunks[:MAX_CHUNKS_PER_PAGE]
 
 
 async def _search(query: str, num_results: int = 10, time_range: str | None = None) -> list[dict]:
@@ -103,8 +134,10 @@ async def _scrape_cached(url: str, cache: dict[str, str | None]) -> str | None:
     return content
 
 
-async def _rerank(query: str, documents: list[str]) -> list[int]:
-    """Rerank documents using Jina Reranker. Returns indices sorted by relevance; falls back to original order on failure."""
+async def _rerank_scored(query: str, documents: list[str]) -> list[tuple[int, float]]:
+    """Rerank documents. Returns (index, score) pairs sorted by descending relevance."""
+    if not documents:
+        return []
     try:
         async with httpx.AsyncClient(timeout=RERANK_TIMEOUT) as client:
             resp = await client.post(
@@ -118,12 +151,15 @@ async def _rerank(query: str, documents: list[str]) -> list[int]:
             resp.raise_for_status()
             data = resp.json()
             results = data.get("results", [])
-            return [r["index"] for r in sorted(results, key=lambda x: x["relevance_score"], reverse=True)]
+            return [
+                (r["index"], float(r["relevance_score"]))
+                for r in sorted(results, key=lambda x: x["relevance_score"], reverse=True)
+            ]
     except httpx.HTTPError as e:
-        log.warning("rerank http error err=%s; falling back to original order", e)
+        log.warning("rerank http error err=%r; falling back to original order", str(e))
     except (ValueError, KeyError) as e:
         log.warning("rerank payload error err=%s; falling back to original order", e)
-    return list(range(len(documents)))
+    return [(i, 0.0) for i in range(len(documents))]
 
 
 @mcp.custom_route("/health", methods=["GET"])
@@ -156,9 +192,10 @@ async def web_search(
 ) -> str:
     """Search the web, scrape top results, and return content ranked by relevance.
 
-    Pipeline: SearXNG search -> Crawl4AI scrape -> Jina Reranker -> formatted output.
-    Results are cached within the session — repeated or overlapping queries reuse
-    previously scraped content instead of re-fetching.
+    Pipeline: SearXNG search -> Crawl4AI scrape -> chunk -> Jina Reranker -> formatted output.
+    Scraped pages are split into paragraphs and reranked at the chunk level, so only
+    the most query-relevant excerpts from each page are returned.
+    Results are cached within the session.
 
     Args:
         query: The search query.
@@ -191,14 +228,15 @@ async def web_search(
     scrape_tasks = [_scrape_cached(r["url"], scrape_cache) for r in results[:to_scrape]]
     scraped = await asyncio.gather(*scrape_tasks)
 
-    entries = []
+    # --- build entries ---
+    entries: list[dict] = []
     for i, result in enumerate(results[:to_scrape]):
-        content = scraped[i][:MAX_CONTENT_CHARS] if scraped[i] else result.get("content", "")
+        raw = scraped[i][:MAX_CONTENT_CHARS] if scraped[i] else None
         entries.append({
             "title": result.get("title", "Untitled"),
             "url": result.get("url", ""),
-            "content": content,
-            "scraped": scraped[i] is not None,
+            "content": raw or result.get("content", ""),
+            "scraped": raw is not None,
         })
 
     for result in results[to_scrape:]:
@@ -209,19 +247,55 @@ async def web_search(
             "scraped": False,
         })
 
-    # --- rerank ---
-    documents = [e["content"] for e in entries]
-    ranked_indices = await _rerank(query, documents)
+    # --- chunk scraped pages, keep snippets as single chunks ---
+    all_chunks: list[str] = []
+    chunk_to_entry: list[int] = []
+    for i, entry in enumerate(entries):
+        if entry["scraped"] and entry["content"]:
+            chunks = _chunk_text(entry["content"])
+        else:
+            chunks = [entry["content"]] if entry["content"] else []
+        for chunk in chunks:
+            all_chunks.append(chunk)
+            chunk_to_entry.append(i)
+
+    # --- rerank at the chunk level ---
+    scored = await _rerank_scored(query, all_chunks)
+
+    # --- group scores by entry, select top-K chunks per page ---
+    entry_chunks: dict[int, list[tuple[str, float]]] = defaultdict(list)
+    for chunk_idx, score in scored:
+        eidx = chunk_to_entry[chunk_idx]
+        entry_chunks[eidx].append((all_chunks[chunk_idx], score))
+
+    for eidx in entry_chunks:
+        entry_chunks[eidx].sort(key=lambda x: x[1], reverse=True)
+        entry_chunks[eidx] = entry_chunks[eidx][:TOP_CHUNKS_PER_PAGE]
+
+    # --- rank pages by best chunk score ---
+    entry_best: dict[int, float] = {
+        eidx: chunks[0][1] for eidx, chunks in entry_chunks.items() if chunks
+    }
+    ranked_entry_idxs = sorted(entry_best, key=entry_best.get, reverse=True)
+    for i in range(len(entries)):
+        if i not in entry_best:
+            ranked_entry_idxs.append(i)
 
     # --- format with novelty annotations ---
-    sections = []
+    sections: list[str] = []
     new_urls: list[str] = []
-    for rank, idx in enumerate(ranked_indices, 1):
-        entry = entries[idx]
+    for rank, eidx in enumerate(ranked_entry_idxs, 1):
+        entry = entries[eidx]
         url = entry["url"]
         seen_tag = " *(previously seen)*" if url in seen_urls else ""
-        section = f"## {rank}. [{entry['title']}]({url}){seen_tag}\n"
-        section += f"\n{entry['content']}\n"
+
+        top = entry_chunks.get(eidx, [])
+        if top:
+            body = "\n\n".join(chunk for chunk, _ in top)
+        else:
+            body = entry["content"]
+
+        section = f"## {rank}. [{entry['title']}]({url}){seen_tag}\n\n{body}\n"
         sections.append(section)
         new_urls.append(url)
 
@@ -236,8 +310,11 @@ async def web_search(
         await ctx.set_state(STATE_QUERY_CACHE, query_cache)
         await ctx.set_state(STATE_SEEN_URLS, list(seen_urls))
 
-    cache_stats = f"{len(scrape_cache)} URLs cached, {len(query_cache)} queries cached, {len(seen_urls)} URLs seen"
-    log.info("query=%r %s", query, cache_stats)
+    total_chunks = len(all_chunks)
+    log.info(
+        "query=%r chunks=%d pages=%d scrape_cache=%d query_cache=%d seen=%d",
+        query, total_chunks, len(entries), len(scrape_cache), len(query_cache), len(seen_urls),
+    )
 
     return output
 
