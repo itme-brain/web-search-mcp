@@ -147,11 +147,32 @@ def _extract_markdown(result: dict) -> str | None:
     return result.get("cleaned_html")
 
 
+_CRAWL_CONFIG = {
+    "type": "CrawlerRunConfig",
+    "params": {
+        "excluded_tags": ["nav", "footer", "header", "aside"],
+        "markdown_generator": {
+            "type": "DefaultMarkdownGenerator",
+            "params": {
+                "content_filter": {
+                    "type": "PruningContentFilter",
+                    "params": {
+                        "threshold": 0.48,
+                        "threshold_type": "fixed",
+                        "min_word_threshold": 0,
+                    },
+                },
+            },
+        },
+    },
+}
+
+
 async def _scrape_impl(url: str) -> str | None:
     async with httpx.AsyncClient(timeout=SCRAPE_HTTP_TIMEOUT) as client:
         resp = await client.post(
             f"{CRAWL4AI_URL}/crawl",
-            json={"urls": [url], "priority": 8},
+            json={"urls": [url], "priority": 8, "crawler_config": _CRAWL_CONFIG},
         )
         resp.raise_for_status()
         data = resp.json()
