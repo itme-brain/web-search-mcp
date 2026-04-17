@@ -84,6 +84,15 @@ async def _search(query: str, num_results: int = 10, time_range: str | None = No
         return resp.json().get("results", [])
 
 
+def _extract_markdown(result: dict) -> str | None:
+    md = result.get("markdown")
+    if isinstance(md, dict):
+        return md.get("raw_markdown") or md.get("fit_markdown")
+    if isinstance(md, str):
+        return md
+    return result.get("cleaned_html")
+
+
 async def _scrape_impl(url: str) -> str | None:
     async with httpx.AsyncClient(timeout=SCRAPE_HTTP_TIMEOUT) as client:
         resp = await client.post(
@@ -103,15 +112,15 @@ async def _scrape_impl(url: str) -> str | None:
                 status = status_data.get("status")
                 if status == "completed":
                     result = status_data.get("result", {})
-                    return result.get("markdown") or result.get("cleaned_html")
+                    return _extract_markdown(result)
                 if status == "failed":
                     return None
 
         results = data.get("results")
         if results and isinstance(results, list):
-            return results[0].get("markdown") or results[0].get("cleaned_html")
+            return _extract_markdown(results[0])
         result = data.get("result", data)
-        return result.get("markdown")
+        return _extract_markdown(result)
 
 
 async def _scrape(url: str) -> str | None:
