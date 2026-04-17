@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastmcp import Client
@@ -42,7 +42,7 @@ def _make_scrape_mock(content_map: dict[str, str | None] | None = None):
 def patched_backends():
     search_mock = AsyncMock(return_value=make_search_results(URLS_A))
     scrape_mock = _make_scrape_mock()
-    rerank_mock = AsyncMock(side_effect=_identity_rerank)
+    rerank_mock = MagicMock(side_effect=_identity_rerank)
 
     with (
         patch(PATCH_SEARCH, search_mock),
@@ -105,7 +105,7 @@ async def test_query_cache_miss_on_different_query_triggers_fresh_pipeline():
 
     search_mock = AsyncMock(side_effect=_search_side_effect)
     scrape_mock = _make_scrape_mock()
-    rerank_mock = AsyncMock(side_effect=_identity_rerank)
+    rerank_mock = MagicMock(side_effect=_identity_rerank)
 
     with (
         patch(PATCH_SEARCH, search_mock),
@@ -139,7 +139,7 @@ async def test_scrape_cache_reuse_skips_already_scraped_urls():
 
     search_mock = AsyncMock(side_effect=_search_side_effect)
     scrape_mock = _make_scrape_mock()
-    rerank_mock = AsyncMock(side_effect=_identity_rerank)
+    rerank_mock = MagicMock(side_effect=_identity_rerank)
 
     with (
         patch(PATCH_SEARCH, search_mock),
@@ -173,7 +173,7 @@ async def test_previously_seen_urls_annotated_in_subsequent_results():
 
     search_mock = AsyncMock(side_effect=_search_side_effect)
     scrape_mock = _make_scrape_mock()
-    rerank_mock = AsyncMock(side_effect=_identity_rerank)
+    rerank_mock = MagicMock(side_effect=_identity_rerank)
 
     with (
         patch(PATCH_SEARCH, search_mock),
@@ -206,7 +206,7 @@ async def test_none_scrape_result_cached_so_broken_url_not_retried():
 
     search_mock = AsyncMock(return_value=make_search_results(URLS_A))
     scrape_mock = _make_scrape_mock(content_with_failure)
-    rerank_mock = AsyncMock(side_effect=_identity_rerank)
+    rerank_mock = MagicMock(side_effect=_identity_rerank)
 
     with (
         patch(PATCH_SEARCH, search_mock),
@@ -234,7 +234,7 @@ async def test_none_scrape_result_cached_so_broken_url_not_retried():
 async def test_tool_works_without_session_context():
     search_mock = AsyncMock(return_value=make_search_results(URLS_A[:2]))
     scrape_mock = _make_scrape_mock()
-    rerank_mock = AsyncMock(side_effect=_identity_rerank)
+    rerank_mock = MagicMock(side_effect=_identity_rerank)
 
     with (
         patch(PATCH_SEARCH, search_mock),

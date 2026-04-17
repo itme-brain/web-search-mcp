@@ -8,6 +8,7 @@ from collections import defaultdict
 
 import httpx
 from fastmcp import Context, FastMCP
+from flashrank import Ranker, RerankRequest
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -21,12 +22,12 @@ mcp = FastMCP("Web Search")
 
 SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://searxng:8080")
 CRAWL4AI_URL = os.environ.get("CRAWL4AI_URL", "http://crawl4ai:11235")
-RERANKER_URL = os.environ.get("RERANKER_URL", "http://jina-reranker:8000")
+RERANK_MODEL = os.environ.get("RERANK_MODEL", "ms-marco-MiniLM-L-12-v2")
+RERANK_MAX_LENGTH = int(os.environ.get("RERANK_MAX_LENGTH", "512"))
 MAX_SCRAPE = int(os.environ.get("MAX_SCRAPE", "5"))
 SCRAPE_TIMEOUT = int(os.environ.get("SCRAPE_TIMEOUT", "30"))
 SCRAPE_HTTP_TIMEOUT = int(os.environ.get("SCRAPE_HTTP_TIMEOUT", "15"))
 SEARCH_TIMEOUT = int(os.environ.get("SEARCH_TIMEOUT", "10"))
-RERANK_TIMEOUT = int(os.environ.get("RERANK_TIMEOUT", "30"))
 MAX_CONTENT_CHARS = int(os.environ.get("MAX_CONTENT_CHARS", "8000"))
 CHUNK_MIN_CHARS = int(os.environ.get("CHUNK_MIN_CHARS", "50"))
 CHUNK_MAX_CHARS = int(os.environ.get("CHUNK_MAX_CHARS", "500"))
@@ -146,32 +147,19 @@ async def _scrape_cached(url: str, cache: dict[str, str | None]) -> str | None:
     return content
 
 
-async def _rerank_scored(query: str, documents: list[str]) -> list[tuple[int, float]]:
-    """Rerank documents. Returns (index, score) pairs sorted by descending relevance."""
+log.info("loading reranker model=%s max_length=%d", RERANK_MODEL, RERANK_MAX_LENGTH)
+_ranker = Ranker(model_name=RERANK_MODEL, max_length=RERANK_MAX_LENGTH)
+log.info("reranker ready")
+
+
+def _rerank_scored(query: str, documents: list[str]) -> list[tuple[int, float]]:
+    """Rerank documents via FlashRank. Returns (index, score) pairs sorted by descending relevance."""
     if not documents:
         return []
-    try:
-        async with httpx.AsyncClient(timeout=RERANK_TIMEOUT) as client:
-            resp = await client.post(
-                f"{RERANKER_URL}/v1/rerank",
-                json={
-                    "query": query,
-                    "documents": documents,
-                    "top_n": len(documents),
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            results = data.get("results", [])
-            return [
-                (r["index"], float(r["relevance_score"]))
-                for r in sorted(results, key=lambda x: x["relevance_score"], reverse=True)
-            ]
-    except httpx.HTTPError as e:
-        log.warning("rerank http error err=%r; falling back to original order", str(e))
-    except (ValueError, KeyError) as e:
-        log.warning("rerank payload error err=%s; falling back to original order", e)
-    return [(i, 0.0) for i in range(len(documents))]
+    passages = [{"id": i, "text": doc, "meta": {}} for i, doc in enumerate(documents)]
+    request = RerankRequest(query=query, passages=passages)
+    results = _ranker.rerank(request)
+    return [(r["id"], float(r["score"])) for r in results]
 
 
 @mcp.custom_route("/health", methods=["GET"])
@@ -204,7 +192,7 @@ async def web_search(
 ) -> str:
     """Search the web, scrape top results, and return content ranked by relevance.
 
-    Pipeline: SearXNG search -> Crawl4AI scrape -> chunk -> Jina Reranker -> formatted output.
+    Pipeline: SearXNG search -> Crawl4AI scrape -> chunk -> FlashRank reranker -> formatted output.
     Scraped pages are split into paragraphs and reranked at the chunk level, so only
     the most query-relevant excerpts from each page are returned.
     Results are cached within the session.
@@ -272,7 +260,7 @@ async def web_search(
             chunk_to_entry.append(i)
 
     # --- rerank at the chunk level ---
-    scored = await _rerank_scored(query, all_chunks)
+    scored = _rerank_scored(query, all_chunks)
 
     # --- group scores by entry, select top-K chunks per page ---
     entry_chunks: dict[int, list[tuple[str, float]]] = defaultdict(list)

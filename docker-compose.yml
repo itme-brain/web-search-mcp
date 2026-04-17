@@ -14,13 +14,13 @@ services:
     environment:
       - SEARXNG_URL=http://searxng:8080
       - CRAWL4AI_URL=http://crawl4ai:11235
-      - RERANKER_URL=http://jina-reranker:8000
+      - RERANK_MODEL=${RERANK_MODEL:-ms-marco-MiniLM-L-12-v2}
+      - RERANK_MAX_LENGTH=${RERANK_MAX_LENGTH:-512}
       - MAX_SCRAPE=${MAX_SCRAPE:-5}
       - SCRAPE_TIMEOUT=${SCRAPE_TIMEOUT:-30}
       - SCRAPE_HTTP_TIMEOUT=${SCRAPE_HTTP_TIMEOUT:-15}
       - SEARCH_TIMEOUT=${SEARCH_TIMEOUT:-10}
-      - RERANK_TIMEOUT=${RERANK_TIMEOUT:-10}
-      - MAX_CONTENT_CHARS=${MAX_CONTENT_CHARS:-4000}
+      - MAX_CONTENT_CHARS=${MAX_CONTENT_CHARS:-8000}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     healthcheck:
       <<: *healthcheck-defaults
@@ -29,8 +29,6 @@ services:
       searxng:
         condition: service_healthy
       crawl4ai:
-        condition: service_healthy
-      jina-reranker:
         condition: service_healthy
 
   searxng:
@@ -53,20 +51,5 @@ services:
       <<: *healthcheck-defaults
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:11235/health', timeout=3).read()"]
 
-  jina-reranker:
-    build: ./jina-reranker
-    container_name: web-search-mcp-jina-reranker
-    restart: unless-stopped
-    environment:
-      - JINA_MODEL=${JINA_MODEL:-jinaai/jina-reranker-v2-base-multilingual}
-    volumes:
-      - jina-model-cache:/models/cache
-    healthcheck:
-      <<: *healthcheck-defaults
-      # First boot downloads the reranker model (hundreds of MB). Give it longer before marking unhealthy.
-      start_period: 300s
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3).read()"]
-
 volumes:
   searxng-data:
-  jina-model-cache:
