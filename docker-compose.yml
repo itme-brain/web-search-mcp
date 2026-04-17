@@ -33,7 +33,7 @@ services:
 
   searxng:
     image: ${SEARXNG_IMAGE:-docker.io/searxng/searxng:2026.4.16-ae0b0e56a}
-    container_name: web-search-mcp-searxng
+    container_name: searxng
     restart: unless-stopped
     volumes:
       - ./searxng/config:/etc/searxng
@@ -44,7 +44,7 @@ services:
 
   crawl4ai:
     image: ${CRAWL4AI_IMAGE:-unclecode/crawl4ai:0.8.6}
-    container_name: web-search-mcp-crawl4ai
+    container_name: crawl4ai
     restart: unless-stopped
     shm_size: 1g
     healthcheck:
