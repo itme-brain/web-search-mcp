@@ -258,10 +258,10 @@ async def web_search(
     Results are cached within the session.
 
     Args:
-        query: The search query.
+        query: The search query. Do not include dates or years in the query — use time_range instead.
         num_results: Number of search results to fetch (default 10).
         scrape_top: Number of top results to scrape for full content (default 5).
-        time_range: Optional time filter: 'day', 'week', 'month', or 'year'. Omit for no filter.
+        time_range: Time filter for recency: 'day', 'week', 'month', or 'year'. Use this instead of adding dates to the query. Omit or pass null for no filter.
     """
     if time_range in (None, "null", "none", "None", ""):
         time_range = None
