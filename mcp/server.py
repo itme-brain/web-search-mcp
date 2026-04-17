@@ -397,6 +397,7 @@ async def fetch_page(
 _CODE_HOSTS = {
     "github.com": "github",
     "www.github.com": "github",
+    "gist.github.com": "gist",
     "gitlab.com": "gitlab",
     "www.gitlab.com": "gitlab",
     "codeberg.org": "codeberg",
@@ -418,6 +419,14 @@ def _to_raw_url(url: str) -> str | None:
         return None
 
     parts = [p for p in parsed.path.strip("/").split("/") if p]
+
+    if platform == "gist":
+        if len(parts) >= 2:
+            return f"https://gist.githubusercontent.com/{parts[0]}/{parts[1]}/raw/"
+        if len(parts) == 1:
+            return f"https://gist.githubusercontent.com/{parts[0]}/raw/"
+        return None
+
     if len(parts) < 3:
         return None
 

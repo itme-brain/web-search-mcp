@@ -34,6 +34,10 @@ class TestToRawUrl:
         url = "https://codeberg.org/owner/repo/src/tag/v1.0/file.go"
         assert _to_raw_url(url) == "https://codeberg.org/owner/repo/raw/tag/v1.0/file.go"
 
+    def test_github_gist(self):
+        url = "https://gist.github.com/user/abc123def456"
+        assert _to_raw_url(url) == "https://gist.githubusercontent.com/user/abc123def456/raw/"
+
     def test_unsupported_host_returns_none(self):
         assert _to_raw_url("https://example.com/file.py") is None
 
