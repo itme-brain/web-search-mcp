@@ -220,25 +220,6 @@ async def health(_: Request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
-@mcp.prompt()
-def web_search_agent(topic: str) -> str:
-    """Use web search tools to research a topic and provide an informed answer."""
-    return f"""You have access to web search tools:
-- web_search: Search the web, scrape top results, and return content ranked by relevance
-- fetch_page: Fetch a single URL and return its full content as markdown
-- site_search: Search within a specific website or domain
-
-Use these tools to find current, accurate information about: {topic}
-
-Guidelines:
-- Use specific, targeted search queries
-- Use time_range='day' or 'week' for recent events
-- Use fetch_page to read full articles found in search results
-- Use site_search to search within specific documentation or domains
-- Synthesize information from multiple results
-- Always cite sources with URLs
-- If results are insufficient, refine your query and search again"""
-
 
 @mcp.tool
 async def web_search(
