@@ -201,8 +201,11 @@ async def web_search(
         query: The search query.
         num_results: Number of search results to fetch (default 10).
         scrape_top: Number of top results to scrape for full content (default 5).
-        time_range: Optional time filter: 'day', 'week', 'month', or 'year'.
+        time_range: Optional time filter: 'day', 'week', 'month', or 'year'. Omit for no filter.
     """
+    if time_range in (None, "null", "none", "None", ""):
+        time_range = None
+
     # --- session state ---
     scrape_cache: dict[str, str | None] = {}
     query_cache: dict[str, str] = {}
