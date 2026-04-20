@@ -1157,7 +1157,7 @@ def _format_search_results(response: dict) -> str:
 
 
 def _format_extract_results(response: dict) -> str:
-    """Format extract_urls response as markdown."""
+    """Format extract response as markdown."""
     parts = []
     if response.get("query"):
         parts.append(f"query: {response['query']}")
@@ -1191,7 +1191,7 @@ def _format_extract_results(response: dict) -> str:
 
 
 def _format_map_results(response: dict) -> str:
-    """Format map_site response as markdown."""
+    """Format map response as markdown."""
     parts = [f"url: {response['url']}"]
     meta = response.get("meta", {})
     parts.append(f"urls_found: {meta.get('urls_returned', len(response.get('results', [])))}")
@@ -1212,7 +1212,7 @@ def _format_map_results(response: dict) -> str:
 
 
 def _format_crawl_results(response: dict) -> str:
-    """Format crawl_site response as markdown."""
+    """Format crawl response as markdown."""
     parts = [f"url: {response['url']}"]
     if response.get("query"):
         parts.append(f"query: {response['query']}")
