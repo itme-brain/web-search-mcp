@@ -100,7 +100,7 @@ async def test_pdf_suffix_detected_without_network():
 
 
 @pytest.mark.asyncio
-async def test_extract_url_returns_single_result_shape():
+async def test_extract_urls_single_url_returns_markdown():
     fake_ctx = FakeContext()
     extract_mock = AsyncMock(return_value={
         "status": "ok",
@@ -114,8 +114,8 @@ async def test_extract_url_returns_single_result_shape():
     })
 
     with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
-        payload = await server_module.extract_url.fn(
-            "https://example.com/file.docx",
+        payload = await server_module.extract_urls.fn(
+            ["https://example.com/file.docx"],
             query="example query",
             ctx=fake_ctx,
         )

@@ -15,7 +15,7 @@ def _identity_rerank(_query: str, documents: list[str]) -> list[tuple[int, float
 
 
 @pytest.mark.asyncio
-async def test_extract_url_returns_structured_result_from_tool():
+async def test_extract_urls_returns_structured_result_from_tool():
     extract_mock = AsyncMock(return_value={
         "query": "example query",
         "results": [
@@ -44,8 +44,8 @@ async def test_extract_url_returns_structured_result_from_tool():
     with patch(PATCH_EXTRACT_URLS_IMPL, extract_mock):
         async with Client(server_app) as client:
             result = await client.call_tool(
-                "extract_url",
-                {"url": "https://example.com/a1", "query": "example query"},
+                "extract_urls",
+                {"urls": ["https://example.com/a1"], "query": "example query"},
             )
             payload = result.data
 

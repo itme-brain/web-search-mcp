@@ -1284,14 +1284,11 @@ def _format_search_results(response: dict) -> str:
 
 
 def _format_extract_results(response: dict) -> str:
-    """Format extract_url/extract_urls response as markdown."""
+    """Format extract_urls response as markdown."""
     parts = []
     if response.get("query"):
         parts.append(f"query: {response['query']}")
-    # handle both single-result (extract_url) and multi-result (extract_urls)
     results = response.get("results", [])
-    if "result" in response:
-        results = [response["result"]]
     meta = response.get("meta", {})
     succeeded = meta.get("urls_succeeded", sum(1 for r in results if r.get("status") == "ok"))
     failed = meta.get("urls_failed", sum(1 for r in results if r.get("status") != "ok"))
@@ -1504,35 +1501,6 @@ def _maybe_build_crawl_config(
 
 
 @mcp.tool
-async def extract_url(
-    url: str,
-    query: str | None = None,
-    js_code: list[str] | None = None,
-    wait_for: str | None = None,
-    page_timeout: int | None = None,
-    screenshot: bool = False,
-    remove_overlays: bool = True,
-    scroll_full_page: bool = False,
-    ctx: Context | None = None,
-) -> str:
-    """Extract content from a single URL. PDFs are fully extracted with per-page chunking. When a query is provided, PDF pages are reranked by relevance so the most useful pages appear first."""
-    crawl_config = _maybe_build_crawl_config(
-        js_code, wait_for, page_timeout, screenshot, remove_overlays, scroll_full_page,
-    )
-    response = await _extract_urls_impl(urls=[url], query=query, crawl_config=crawl_config, ctx=ctx)
-    result = response["results"][0]
-    response_dict = {
-        "query": response["query"],
-        "result": result,
-        "meta": {
-            **response["meta"],
-            "url": result["url"],
-        },
-    }
-    return _format_extract_results(response_dict)
-
-
-@mcp.tool
 async def extract_urls(
     urls: list[str],
     query: str | None = None,
@@ -1544,7 +1512,7 @@ async def extract_urls(
     scroll_full_page: bool = False,
     ctx: Context | None = None,
 ) -> str:
-    """Extract content from multiple URLs. PDFs are fully extracted with per-page chunking. When a query is provided, PDF pages are reranked by relevance."""
+    """Extract content from one or more URLs. Pass a list even for a single URL. PDFs are fully extracted with per-page chunking. When a query is provided, PDF pages are reranked by relevance."""
     crawl_config = _maybe_build_crawl_config(
         js_code, wait_for, page_timeout, screenshot, remove_overlays, scroll_full_page,
     )
