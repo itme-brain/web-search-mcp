@@ -456,17 +456,11 @@ def _extract_crawl_links(result: dict, base_url: str) -> list[dict]:
     return links
 
 
-def _build_crawl_config(
-    js_code: list[str] | None = None,
-    wait_for: str | None = None,
-    page_timeout: int | None = None,
-    screenshot: bool = False,
-    remove_overlays: bool = True,
-    scroll_full_page: bool = False,
-) -> dict:
-    """Build a CrawlerRunConfig payload for Crawl4AI's /crawl endpoint."""
-    params: dict = {
+_DEFAULT_CRAWL_CONFIG = {
+    "type": "CrawlerRunConfig",
+    "params": {
         "excluded_tags": ["nav", "footer", "header", "aside"],
+        "remove_overlay_elements": True,
         "markdown_generator": {
             "type": "DefaultMarkdownGenerator",
             "params": {
@@ -480,32 +474,16 @@ def _build_crawl_config(
                 },
             },
         },
-    }
-    if js_code:
-        params["js_code"] = js_code
-    if wait_for:
-        params["wait_for"] = wait_for
-    if page_timeout is not None:
-        params["page_timeout"] = page_timeout
-    if screenshot:
-        params["screenshot"] = True
-    if remove_overlays:
-        params["remove_overlay_elements"] = True
-    if scroll_full_page:
-        params["scan_full_page"] = True
-    return {"type": "CrawlerRunConfig", "params": params}
+    },
+}
 
 
-_DEFAULT_CRAWL_CONFIG = _build_crawl_config()
-
-
-async def _scrape_impl(url: str, crawl_config: dict | None = None) -> dict:
-    """Scrape a URL via Crawl4AI. Returns {content, title, screenshot}."""
-    config = crawl_config or _DEFAULT_CRAWL_CONFIG
+async def _scrape_impl(url: str) -> dict:
+    """Scrape a URL via Crawl4AI. Returns {content, title}."""
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
         resp = await client.post(
             f"{CRAWL4AI_URL}/crawl",
-            json={"urls": [url], "priority": 8, "crawler_config": config},
+            json={"urls": [url], "priority": 8, "crawler_config": _DEFAULT_CRAWL_CONFIG},
         )
         resp.raise_for_status()
         data = resp.json()
@@ -523,27 +501,25 @@ async def _scrape_impl(url: str, crawl_config: dict | None = None) -> dict:
                     return {
                         "content": _extract_markdown(result),
                         "title": _extract_crawl_title(result),
-                        "screenshot": result.get("screenshot"),
                     }
                 if status == "failed":
-                    return {"content": None, "title": None, "screenshot": None}
+                    return {"content": None, "title": None}
 
         result = _extract_crawl_result(data)
         return {
             "content": _extract_markdown(result),
             "title": _extract_crawl_title(result),
-            "screenshot": result.get("screenshot"),
         }
 
 
-async def _scrape(url: str, crawl_config: dict | None = None) -> dict:
+async def _scrape(url: str) -> dict:
     """Scrape a URL via Crawl4AI, bounded by REQUEST_TIMEOUT seconds end-to-end.
 
-    Returns {content, title, screenshot}. On failure content is None.
+    Returns {content, title}. On failure content is None.
     """
-    empty = {"content": None, "title": None, "screenshot": None}
+    empty = {"content": None, "title": None}
     try:
-        return await asyncio.wait_for(_scrape_impl(url, crawl_config), timeout=REQUEST_TIMEOUT)
+        return await asyncio.wait_for(_scrape_impl(url), timeout=REQUEST_TIMEOUT)
     except asyncio.TimeoutError:
         log.warning("scrape timed out url=%s budget=%ss", url, REQUEST_TIMEOUT)
     except httpx.HTTPError as e:
@@ -553,17 +529,12 @@ async def _scrape(url: str, crawl_config: dict | None = None) -> dict:
     return empty
 
 
-async def _scrape_cached(
-    url: str, cache: dict[str, str | None], crawl_config: dict | None = None,
-) -> str | None:
-    """Scrape with per-session cache. Returns cached content on hit, scrapes on miss.
-
-    Bypasses cache when a custom crawl_config is provided (browser actions are intentionally fresh).
-    """
-    if crawl_config is None and url in cache:
+async def _scrape_cached(url: str, cache: dict[str, str | None]) -> str | None:
+    """Scrape with per-session cache. Returns cached content on hit, scrapes on miss."""
+    if url in cache:
         log.debug("scrape cache hit url=%s", url)
         return cache[url]
-    result = await _scrape(url, crawl_config)
+    result = await _scrape(url)
     content = result["content"]
     cache[url] = content
     return content
@@ -698,8 +669,8 @@ async def _extract_pdf_document(url: str, query: str | None = None) -> dict:
     }
 
 
-async def _extract_web_document(url: str, crawl_config: dict | None = None) -> dict:
-    result = await _scrape(url, crawl_config)
+async def _extract_web_document(url: str) -> dict:
+    result = await _scrape(url)
     content = result["content"]
     if not content:
         return {
@@ -711,7 +682,7 @@ async def _extract_web_document(url: str, crawl_config: dict | None = None) -> d
             "content": "",
             "error": "extraction failed",
         }
-    doc = {
+    return {
         "status": "ok",
         "url": url,
         "content_type": "text/html",
@@ -719,9 +690,6 @@ async def _extract_web_document(url: str, crawl_config: dict | None = None) -> d
         "title": result.get("title"),
         "content": content[:_MAX_CONTENT_CHARS],
     }
-    if result.get("screenshot"):
-        doc["screenshot"] = result["screenshot"]
-    return doc
 
 
 async def _extract_docx_document(url: str) -> dict:
@@ -820,9 +788,8 @@ async def _extract_url_document(
     url: str,
     query: str | None,
     cache: dict[str, dict],
-    crawl_config: dict | None = None,
 ) -> dict:
-    if crawl_config is None and url in cache:
+    if url in cache:
         cached = cache[url]
         content, top_chunks = _rank_document_content(query, cached.get("content", ""))
         return {
@@ -843,7 +810,7 @@ async def _extract_url_document(
         elif file_type in {"text", "markdown", "json", "xml", "csv"}:
             extracted = await _extract_text_document(url, file_type)
         else:
-            extracted = await _extract_web_document(url, crawl_config)
+            extracted = await _extract_web_document(url)
     except Exception as exc:
         extracted = {
             "status": "error",
@@ -1311,7 +1278,6 @@ async def search(
 async def _extract_urls_impl(
     urls: list[str],
     query: str | None = None,
-    crawl_config: dict | None = None,
     ctx: Context | None = None,
 ) -> dict:
     """Extract a batch of URLs with per-URL status reporting.
@@ -1329,7 +1295,7 @@ async def _extract_urls_impl(
         extract_cache = await _ctx_get_state(ctx, STATE_EXTRACT_CACHE) or {}
 
     documents = await asyncio.gather(*[
-        _extract_url_document(url, normalized_query, extract_cache, crawl_config)
+        _extract_url_document(url, normalized_query, extract_cache)
         for url in urls
     ])
 
@@ -1355,8 +1321,6 @@ async def _extract_urls_impl(
             "cached": document.get("cached", False),
             "error": document.get("error"),
         }
-        if document.get("screenshot"):
-            entry["screenshot"] = document["screenshot"]
         if document.get("total_pages") is not None:
             entry["total_pages"] = document["total_pages"]
             entry["pages_returned"] = document.get("pages_returned", 0)
@@ -1381,37 +1345,10 @@ async def _extract_urls_impl(
     return response
 
 
-def _maybe_build_crawl_config(
-    js_code: list[str] | None,
-    wait_for: str | None,
-    page_timeout: int | None,
-    screenshot: bool,
-    remove_overlays: bool,
-    scroll_full_page: bool,
-) -> dict | None:
-    """Build a custom crawl config only if any browser param is non-default."""
-    if any([js_code, wait_for, page_timeout is not None, screenshot, not remove_overlays, scroll_full_page]):
-        return _build_crawl_config(
-            js_code=js_code,
-            wait_for=wait_for,
-            page_timeout=page_timeout,
-            screenshot=screenshot,
-            remove_overlays=remove_overlays,
-            scroll_full_page=scroll_full_page,
-        )
-    return None
-
-
 @mcp.tool
 async def extract(
     urls: list[str],
     query: str | None = None,
-    js_code: list[str] | None = None,
-    wait_for: str | None = None,
-    page_timeout: int | None = None,
-    screenshot: bool = False,
-    remove_overlays: bool = True,
-    scroll_full_page: bool = False,
     ctx: Context | None = None,
 ) -> str:
     """Fetch full content for URLs you already have.
@@ -1422,13 +1359,8 @@ async def extract(
     Pass `urls` as a list even for a single URL (e.g. `["https://..."]`). Handles
     HTML, PDF, DOCX, and plain-text files natively; PDFs are fully extracted
     with per-page chunking. When `query` is provided, PDF pages are reranked so
-    the most relevant pages appear first. Browser parameters (`js_code`,
-    `wait_for`, `screenshot`, etc.) are only needed for JS-heavy pages — leave
-    them unset for normal content."""
-    crawl_config = _maybe_build_crawl_config(
-        js_code, wait_for, page_timeout, screenshot, remove_overlays, scroll_full_page,
-    )
-    response = await _extract_urls_impl(urls=urls, query=query, crawl_config=crawl_config, ctx=ctx)
+    the most relevant pages appear first."""
+    response = await _extract_urls_impl(urls=urls, query=query, ctx=ctx)
     return _format_extract_results(response)
 
 

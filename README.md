@@ -132,14 +132,13 @@ Web search → scrape top results → rerank → return ranked markdown.
 - `include_domains` / `exclude_domains` hard-filter by bare domain.
 - Fetches a second page from SearXNG automatically if page 1 is short of `num_results` after dedup/filter. Always scrapes `min(num_results, MAX_SCRAPE)` top results.
 
-### `extract(urls, query=None, ...browser_opts)`
+### `extract(urls, query=None)`
 
 Fetch full content for the URLs you pass in. Always takes a list — `["https://..."]` for a single URL.
 
 - HTML, PDF, DOCX, and plain-text files are all handled natively.
 - PDFs are fully extracted with per-page chunking. Pass `query` to rerank pages by relevance; the response reports `total_pages` and `pages_returned`.
 - Partial success: one failed URL does not fail the whole call. Results include per-URL `status`, `content_type`, `file_type`, `title`, `content`, and `error`.
-- Browser parameters (`js_code`, `wait_for`, `page_timeout`, `screenshot`, `remove_overlays`, `scroll_full_page`) are only needed for JS-heavy pages — leave them unset otherwise.
 
 ### `map(url, max_urls=25, max_depth=1, include_patterns=None, exclude_patterns=None, same_domain_only=True)`
 
