@@ -13,6 +13,7 @@ from collections import defaultdict, deque
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 
 import httpx
+import trafilatura
 from fastmcp import Context, FastMCP
 from flashrank import Ranker, RerankRequest
 from docx import Document as DocxDocument
@@ -55,6 +56,10 @@ STATE_EXTRACT_CACHE = "extract_cache"
 
 VALID_TIME_RANGES = frozenset({"day", "week", "month", "year"})
 VALID_MODES = frozenset({"balanced", "deep"})
+VALID_CATEGORIES = frozenset({
+    "general", "news", "images", "videos", "music",
+    "files", "science", "social media", "it",
+})
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 _TRACKING_PARAMS = frozenset({
@@ -233,6 +238,26 @@ def _normalize_mode(mode: str | None) -> str:
     return normalized
 
 
+def _normalize_categories(categories: list[str] | None) -> list[str] | None:
+    if not categories:
+        return None
+    normalized: list[str] = []
+    for cat in categories:
+        value = cat.strip().lower()
+        if value not in VALID_CATEGORIES:
+            raise ValueError(f"invalid category: {cat!r}. Expected one of {sorted(VALID_CATEGORIES)}")
+        normalized.append(value)
+    return sorted(set(normalized)) or None
+
+
+def _normalize_safesearch(safesearch: int | None) -> int | None:
+    if safesearch is None:
+        return None
+    if safesearch not in {0, 1, 2}:
+        raise ValueError(f"invalid safesearch: {safesearch!r}. Expected 0, 1, or 2")
+    return safesearch
+
+
 def _match_domain(domain: str, patterns: list[str]) -> bool:
     return any(domain == pattern or domain.endswith(f".{pattern}") for pattern in patterns)
 
@@ -303,15 +328,31 @@ def _chunk_text(text: str) -> list[str]:
     return chunks[:MAX_CHUNKS_PER_PAGE]
 
 
-async def _search(query: str, num_results: int = 10, time_range: str | None = None) -> list[dict]:
+async def _search(
+    query: str,
+    num_results: int = 10,
+    time_range: str | None = None,
+    categories: list[str] | None = None,
+    language: str | None = None,
+    safesearch: int | None = None,
+    pageno: int = 1,
+) -> list[dict]:
     """Query SearXNG and return raw results."""
-    params = {
+    params: dict = {
         "q": query,
         "format": "json",
         "number_of_results": num_results,
     }
     if time_range:
         params["time_range"] = time_range.strip('"')
+    if categories:
+        params["categories"] = ",".join(categories)
+    if language:
+        params["language"] = language.strip()
+    if safesearch is not None:
+        params["safesearch"] = safesearch
+    if pageno > 1:
+        params["pageno"] = pageno
 
     async with httpx.AsyncClient(timeout=SEARCH_TIMEOUT) as client:
         resp = await client.get(f"{SEARXNG_URL}/search", params=params)
@@ -338,6 +379,17 @@ async def _probe_dependency(url: str) -> dict[str, str]:
 
 
 def _extract_markdown(result: dict) -> str | None:
+    html = result.get("html")
+    if html:
+        try:
+            extracted = trafilatura.extract(
+                html, output_format="txt", include_links=True, include_tables=True,
+            )
+            if extracted and len(extracted.strip()) >= CHUNK_MIN_CHARS:
+                return extracted
+        except Exception:
+            pass
+
     md = result.get("markdown")
     if isinstance(md, dict):
         return md.get("fit_markdown") or md.get("raw_markdown")
@@ -430,9 +482,16 @@ def _extract_crawl_links(result: dict, base_url: str) -> list[dict]:
     return links
 
 
-_CRAWL_CONFIG = {
-    "type": "CrawlerRunConfig",
-    "params": {
+def _build_crawl_config(
+    js_code: list[str] | None = None,
+    wait_for: str | None = None,
+    page_timeout: int | None = None,
+    screenshot: bool = False,
+    remove_overlays: bool = True,
+    scroll_full_page: bool = False,
+) -> dict:
+    """Build a CrawlerRunConfig payload for Crawl4AI's /crawl endpoint."""
+    params: dict = {
         "excluded_tags": ["nav", "footer", "header", "aside"],
         "markdown_generator": {
             "type": "DefaultMarkdownGenerator",
@@ -447,15 +506,32 @@ _CRAWL_CONFIG = {
                 },
             },
         },
-    },
-}
+    }
+    if js_code:
+        params["js_code"] = js_code
+    if wait_for:
+        params["wait_for"] = wait_for
+    if page_timeout is not None:
+        params["page_timeout"] = page_timeout
+    if screenshot:
+        params["screenshot"] = True
+    if remove_overlays:
+        params["remove_overlay_elements"] = True
+    if scroll_full_page:
+        params["scan_full_page"] = True
+    return {"type": "CrawlerRunConfig", "params": params}
 
 
-async def _scrape_impl(url: str) -> str | None:
+_DEFAULT_CRAWL_CONFIG = _build_crawl_config()
+
+
+async def _scrape_impl(url: str, crawl_config: dict | None = None) -> dict:
+    """Scrape a URL via Crawl4AI. Returns {content, title, screenshot}."""
+    config = crawl_config or _DEFAULT_CRAWL_CONFIG
     async with httpx.AsyncClient(timeout=SCRAPE_HTTP_TIMEOUT) as client:
         resp = await client.post(
             f"{CRAWL4AI_URL}/crawl",
-            json={"urls": [url], "priority": 8, "crawler_config": _CRAWL_CONFIG},
+            json={"urls": [url], "priority": 8, "crawler_config": config},
         )
         resp.raise_for_status()
         data = resp.json()
@@ -470,33 +546,51 @@ async def _scrape_impl(url: str) -> str | None:
                 status = status_data.get("status")
                 if status == "completed":
                     result = status_data.get("result", {})
-                    return _extract_markdown(result)
+                    return {
+                        "content": _extract_markdown(result),
+                        "title": _extract_crawl_title(result),
+                        "screenshot": result.get("screenshot"),
+                    }
                 if status == "failed":
-                    return None
+                    return {"content": None, "title": None, "screenshot": None}
 
         result = _extract_crawl_result(data)
-        return _extract_markdown(result)
+        return {
+            "content": _extract_markdown(result),
+            "title": _extract_crawl_title(result),
+            "screenshot": result.get("screenshot"),
+        }
 
 
-async def _scrape(url: str) -> str | None:
-    """Scrape a URL via Crawl4AI, bounded by SCRAPE_TIMEOUT seconds end-to-end."""
+async def _scrape(url: str, crawl_config: dict | None = None) -> dict:
+    """Scrape a URL via Crawl4AI, bounded by SCRAPE_TIMEOUT seconds end-to-end.
+
+    Returns {content, title, screenshot}. On failure content is None.
+    """
+    empty = {"content": None, "title": None, "screenshot": None}
     try:
-        return await asyncio.wait_for(_scrape_impl(url), timeout=SCRAPE_TIMEOUT)
+        return await asyncio.wait_for(_scrape_impl(url, crawl_config), timeout=SCRAPE_TIMEOUT)
     except asyncio.TimeoutError:
         log.warning("scrape timed out url=%s budget=%ss", url, SCRAPE_TIMEOUT)
     except httpx.HTTPError as e:
         log.warning("scrape http error url=%s err=%s", url, e)
     except (ValueError, KeyError) as e:
         log.warning("scrape payload error url=%s err=%s", url, e)
-    return None
+    return empty
 
 
-async def _scrape_cached(url: str, cache: dict[str, str | None]) -> str | None:
-    """Scrape with per-session cache. Returns cached content on hit, scrapes on miss."""
-    if url in cache:
+async def _scrape_cached(
+    url: str, cache: dict[str, str | None], crawl_config: dict | None = None,
+) -> str | None:
+    """Scrape with per-session cache. Returns cached content on hit, scrapes on miss.
+
+    Bypasses cache when a custom crawl_config is provided (browser actions are intentionally fresh).
+    """
+    if crawl_config is None and url in cache:
         log.debug("scrape cache hit url=%s", url)
         return cache[url]
-    content = await _scrape(url)
+    result = await _scrape(url, crawl_config)
+    content = result["content"]
     cache[url] = content
     return content
 
@@ -573,8 +667,9 @@ async def _extract_pdf_document(url: str) -> dict:
         }
 
 
-async def _extract_web_document(url: str) -> dict:
-    content = await _scrape(url)
+async def _extract_web_document(url: str, crawl_config: dict | None = None) -> dict:
+    result = await _scrape(url, crawl_config)
+    content = result["content"]
     if not content:
         return {
             "status": "error",
@@ -585,14 +680,17 @@ async def _extract_web_document(url: str) -> dict:
             "content": "",
             "error": "extraction failed",
         }
-    return {
+    doc = {
         "status": "ok",
         "url": url,
         "content_type": "text/html",
         "file_type": "html",
-        "title": None,
+        "title": result.get("title"),
         "content": content[:MAX_CONTENT_CHARS],
     }
+    if result.get("screenshot"):
+        doc["screenshot"] = result["screenshot"]
+    return doc
 
 
 async def _extract_docx_document(url: str) -> dict:
@@ -631,7 +729,7 @@ async def _discover_page_links(url: str) -> dict:
     async with httpx.AsyncClient(timeout=SCRAPE_HTTP_TIMEOUT) as client:
         resp = await client.post(
             f"{CRAWL4AI_URL}/crawl",
-            json={"urls": [url], "priority": 6, "crawler_config": _CRAWL_CONFIG},
+            json={"urls": [url], "priority": 6, "crawler_config": _DEFAULT_CRAWL_CONFIG},
         )
         resp.raise_for_status()
         data = resp.json()
@@ -691,8 +789,9 @@ async def _extract_url_document(
     url: str,
     query: str | None,
     cache: dict[str, dict],
+    crawl_config: dict | None = None,
 ) -> dict:
-    if url in cache:
+    if crawl_config is None and url in cache:
         cached = cache[url]
         content, top_chunks = _rank_document_content(query, cached.get("content", ""))
         return {
@@ -713,7 +812,7 @@ async def _extract_url_document(
         elif file_type in {"text", "markdown", "json", "xml", "csv"}:
             extracted = await _extract_text_document(url, file_type)
         else:
-            extracted = await _extract_web_document(url)
+            extracted = await _extract_web_document(url, crawl_config)
     except Exception as exc:
         extracted = {
             "status": "error",
@@ -789,6 +888,9 @@ async def _web_search_impl(
     mode: str = "balanced",
     include_domains: list[str] | None = None,
     exclude_domains: list[str] | None = None,
+    categories: list[str] | None = None,
+    language: str | None = None,
+    safesearch: int | None = None,
     ctx: Context | None = None,
 ) -> dict:
     """Search the web, scrape top results, and return structured JSON ranked by relevance.
@@ -811,6 +913,9 @@ async def _web_search_impl(
     mode = _normalize_mode(mode)
     include_domains = _normalize_domains(include_domains, field_name="include_domains")
     exclude_domains = _normalize_domains(exclude_domains, field_name="exclude_domains")
+    categories = _normalize_categories(categories)
+    language = language.strip() if language else None
+    safesearch = _normalize_safesearch(safesearch)
     candidate_count, scrape_top = _mode_settings(mode, num_results, scrape_top)
     started = time.monotonic()
     warnings: list[str] = []
@@ -837,6 +942,9 @@ async def _web_search_impl(
                 mode,
                 include_domains,
                 exclude_domains,
+                categories,
+                language,
+                safesearch,
             ],
             sort_keys=True,
         ).encode()
@@ -848,11 +956,34 @@ async def _web_search_impl(
     # --- search ---
     search_started = time.monotonic()
     try:
-        results = await _search(query, num_results=candidate_count, time_range=time_range)
+        results = await _search(
+            query,
+            num_results=candidate_count,
+            time_range=time_range,
+            categories=categories,
+            language=language,
+            safesearch=safesearch,
+        )
     except Exception as exc:
         degraded = True
         warnings.append(f"search failed: {exc}")
         results = []
+
+    if results and mode == "deep":
+        try:
+            page2 = await _search(
+                query,
+                num_results=candidate_count,
+                time_range=time_range,
+                categories=categories,
+                language=language,
+                safesearch=safesearch,
+                pageno=2,
+            )
+            results.extend(page2)
+        except Exception as exc:
+            warnings.append(f"page 2 search failed: {exc}")
+
     timings_ms["search"] = int((time.monotonic() - search_started) * 1000)
     if results:
         results = _filter_results_by_domain(results, include_domains, exclude_domains)
@@ -863,6 +994,9 @@ async def _web_search_impl(
             "mode": mode,
             "include_domains": include_domains,
             "exclude_domains": exclude_domains,
+            "categories": categories,
+            "language": language,
+            "safesearch": safesearch,
             "results": [],
             "meta": {
                 "num_results_requested": num_results,
@@ -1002,6 +1136,9 @@ async def _web_search_impl(
         "mode": mode,
         "include_domains": include_domains,
         "exclude_domains": exclude_domains,
+        "categories": categories,
+        "language": language,
+        "safesearch": safesearch,
         "results": structured_results,
         "meta": {
             "num_results_requested": num_results,
@@ -1044,6 +1181,9 @@ async def web_search(
     mode: str = "balanced",
     include_domains: list[str] | None = None,
     exclude_domains: list[str] | None = None,
+    categories: list[str] | None = None,
+    language: str | None = None,
+    safesearch: int | None = None,
     ctx: Context | None = None,
 ) -> dict:
     return await _web_search_impl(
@@ -1054,13 +1194,81 @@ async def web_search(
         mode=mode,
         include_domains=include_domains,
         exclude_domains=exclude_domains,
+        categories=categories,
+        language=language,
+        safesearch=safesearch,
         ctx=ctx,
     )
+
+
+@mcp.tool
+async def image_search(
+    query: str,
+    num_results: int = 10,
+    language: str | None = None,
+    safesearch: int | None = None,
+    time_range: str | None = None,
+    ctx: Context | None = None,
+) -> dict:
+    """Search for images via SearXNG. Returns image URLs, thumbnails, and source metadata."""
+    query = _validate_query(query)
+    num_results = _validate_positive_int("num_results", num_results, maximum=MAX_NUM_RESULTS)
+    time_range = _normalize_time_range(time_range)
+    language = language.strip() if language else None
+    safesearch = _normalize_safesearch(safesearch)
+    started = time.monotonic()
+
+    try:
+        raw = await _search(
+            query,
+            num_results=num_results,
+            time_range=time_range,
+            categories=["images"],
+            language=language,
+            safesearch=safesearch,
+        )
+    except Exception as exc:
+        return {
+            "query": query,
+            "results": [],
+            "meta": {
+                "num_results_requested": num_results,
+                "num_results_returned": 0,
+                "search_backend": "searxng",
+                "error": str(exc),
+                "timings_ms": {"total": int((time.monotonic() - started) * 1000)},
+            },
+        }
+
+    results: list[dict] = []
+    for rank, item in enumerate(raw, 1):
+        results.append({
+            "rank": rank,
+            "title": item.get("title", ""),
+            "image_url": item.get("img_src", ""),
+            "thumbnail_url": item.get("thumbnail_src", ""),
+            "source_url": item.get("url", ""),
+            "source_domain": _domain_from_url(item.get("url", "")),
+            "dimensions": item.get("resolution"),
+            "format": item.get("img_format"),
+        })
+
+    return {
+        "query": query,
+        "results": results,
+        "meta": {
+            "num_results_requested": num_results,
+            "num_results_returned": len(results),
+            "search_backend": "searxng",
+            "timings_ms": {"total": int((time.monotonic() - started) * 1000)},
+        },
+    }
 
 
 async def _extract_urls_impl(
     urls: list[str],
     query: str | None = None,
+    crawl_config: dict | None = None,
     ctx: Context | None = None,
 ) -> dict:
     """Extract a batch of URLs with per-URL status reporting.
@@ -1077,7 +1285,7 @@ async def _extract_urls_impl(
         extract_cache = await _ctx_get_state(ctx, STATE_EXTRACT_CACHE) or {}
 
     documents = await asyncio.gather(*[
-        _extract_url_document(url, normalized_query, extract_cache)
+        _extract_url_document(url, normalized_query, extract_cache, crawl_config)
         for url in urls
     ])
 
@@ -1090,7 +1298,7 @@ async def _extract_urls_impl(
         else:
             urls_failed += 1
         url = document["url"]
-        results.append({
+        entry = {
             "url": url,
             "normalized_url": _normalize_url(url),
             "domain": _domain_from_url(url),
@@ -1102,7 +1310,10 @@ async def _extract_urls_impl(
             "top_chunks": document.get("top_chunks", []),
             "cached": document.get("cached", False),
             "error": document.get("error"),
-        })
+        }
+        if document.get("screenshot"):
+            entry["screenshot"] = document["screenshot"]
+        results.append(entry)
 
     if ctx:
         await _ctx_set_state(ctx, STATE_EXTRACT_CACHE, extract_cache)
@@ -1123,14 +1334,44 @@ async def _extract_urls_impl(
     return response
 
 
+def _maybe_build_crawl_config(
+    js_code: list[str] | None,
+    wait_for: str | None,
+    page_timeout: int | None,
+    screenshot: bool,
+    remove_overlays: bool,
+    scroll_full_page: bool,
+) -> dict | None:
+    """Build a custom crawl config only if any browser param is non-default."""
+    if any([js_code, wait_for, page_timeout is not None, screenshot, not remove_overlays, scroll_full_page]):
+        return _build_crawl_config(
+            js_code=js_code,
+            wait_for=wait_for,
+            page_timeout=page_timeout,
+            screenshot=screenshot,
+            remove_overlays=remove_overlays,
+            scroll_full_page=scroll_full_page,
+        )
+    return None
+
+
 @mcp.tool
 async def extract_url(
     url: str,
     query: str | None = None,
+    js_code: list[str] | None = None,
+    wait_for: str | None = None,
+    page_timeout: int | None = None,
+    screenshot: bool = False,
+    remove_overlays: bool = True,
+    scroll_full_page: bool = False,
     ctx: Context | None = None,
 ) -> dict:
     """Extract a single URL with the same structured schema as extract_urls."""
-    response = await _extract_urls_impl(urls=[url], query=query, ctx=ctx)
+    crawl_config = _maybe_build_crawl_config(
+        js_code, wait_for, page_timeout, screenshot, remove_overlays, scroll_full_page,
+    )
+    response = await _extract_urls_impl(urls=[url], query=query, crawl_config=crawl_config, ctx=ctx)
     result = response["results"][0]
     return {
         "query": response["query"],
@@ -1146,9 +1387,18 @@ async def extract_url(
 async def extract_urls(
     urls: list[str],
     query: str | None = None,
+    js_code: list[str] | None = None,
+    wait_for: str | None = None,
+    page_timeout: int | None = None,
+    screenshot: bool = False,
+    remove_overlays: bool = True,
+    scroll_full_page: bool = False,
     ctx: Context | None = None,
 ) -> dict:
-    return await _extract_urls_impl(urls=urls, query=query, ctx=ctx)
+    crawl_config = _maybe_build_crawl_config(
+        js_code, wait_for, page_timeout, screenshot, remove_overlays, scroll_full_page,
+    )
+    return await _extract_urls_impl(urls=urls, query=query, crawl_config=crawl_config, ctx=ctx)
 
 
 async def _map_site_impl(
@@ -1391,6 +1641,9 @@ async def _site_search_impl(
     mode: str = "balanced",
     include_domains: list[str] | None = None,
     exclude_domains: list[str] | None = None,
+    categories: list[str] | None = None,
+    language: str | None = None,
+    safesearch: int | None = None,
     ctx: Context | None = None,
 ) -> dict:
     """Search within a specific website or domain.
@@ -1415,6 +1668,9 @@ async def _site_search_impl(
         mode=mode,
         include_domains=include_domains,
         exclude_domains=exclude_domains,
+        categories=categories,
+        language=language,
+        safesearch=safesearch,
         ctx=ctx,
     )
 
@@ -1428,6 +1684,9 @@ async def site_search(
     mode: str = "balanced",
     include_domains: list[str] | None = None,
     exclude_domains: list[str] | None = None,
+    categories: list[str] | None = None,
+    language: str | None = None,
+    safesearch: int | None = None,
     ctx: Context | None = None,
 ) -> dict:
     return await _site_search_impl(
@@ -1438,8 +1697,186 @@ async def site_search(
         mode=mode,
         include_domains=include_domains,
         exclude_domains=exclude_domains,
+        categories=categories,
+        language=language,
+        safesearch=safesearch,
         ctx=ctx,
     )
+
+
+_STOPWORDS = frozenset({
+    "a", "about", "above", "after", "again", "against", "all", "am", "an",
+    "and", "any", "are", "aren't", "as", "at", "be", "because", "been",
+    "before", "being", "below", "between", "both", "but", "by", "can",
+    "can't", "could", "couldn't", "did", "didn't", "do", "does", "doesn't",
+    "doing", "don't", "down", "during", "each", "few", "for", "from",
+    "further", "get", "got", "had", "hadn't", "has", "hasn't", "have",
+    "haven't", "having", "he", "her", "here", "hers", "herself", "him",
+    "himself", "his", "how", "i", "if", "in", "into", "is", "isn't", "it",
+    "its", "itself", "just", "let", "like", "ll", "me", "might", "more",
+    "most", "must", "mustn't", "my", "myself", "no", "nor", "not", "now",
+    "of", "off", "on", "once", "only", "or", "other", "our", "ours",
+    "ourselves", "out", "over", "own", "re", "s", "same", "she", "should",
+    "shouldn't", "so", "some", "such", "t", "than", "that", "the", "their",
+    "theirs", "them", "themselves", "then", "there", "these", "they", "this",
+    "those", "through", "to", "too", "under", "until", "up", "us", "ve",
+    "very", "was", "wasn't", "we", "were", "weren't", "what", "when",
+    "where", "which", "while", "who", "whom", "why", "will", "with",
+    "won't", "would", "wouldn't", "you", "your", "yours", "yourself",
+    "yourselves", "also", "new", "one", "two", "use", "using", "used",
+    "may", "well", "even", "much", "many", "make", "made", "still",
+})
+
+
+def _extract_keywords(content: str, max_keywords: int = 10) -> list[str]:
+    """Extract top keywords from content using term frequency, excluding stopwords."""
+    words = _WORD_SPLIT.split(content.lower())
+    freq: dict[str, int] = {}
+    for word in words:
+        if len(word) < 3 or word in _STOPWORDS or word.isdigit():
+            continue
+        freq[word] = freq.get(word, 0) + 1
+    ranked = sorted(freq, key=freq.get, reverse=True)
+    return ranked[:max_keywords]
+
+
+async def _find_similar_impl(
+    url: str,
+    num_results: int = 10,
+    ctx: Context | None = None,
+) -> dict:
+    """Find pages similar to the given URL by extracting keywords and searching."""
+    started = time.monotonic()
+    warnings: list[str] = []
+    timings_ms: dict[str, int] = {}
+
+    scrape_cache: dict[str, str | None] = {}
+    if ctx:
+        scrape_cache = await _ctx_get_state(ctx, STATE_SCRAPE_CACHE) or {}
+
+    # scrape the source page
+    scrape_started = time.monotonic()
+    result = await _scrape(url)
+    content = result["content"]
+    title = result.get("title")
+    timings_ms["scrape"] = int((time.monotonic() - scrape_started) * 1000)
+
+    if not content:
+        return {
+            "source_url": url,
+            "source_title": None,
+            "results": [],
+            "meta": {
+                "queries_generated": 0,
+                "total_candidates": 0,
+                "error": "failed to scrape source URL",
+                "timings_ms": {**timings_ms, "total": int((time.monotonic() - started) * 1000)},
+            },
+        }
+
+    # cache the scraped content
+    scrape_cache[url] = content
+    if ctx:
+        await _ctx_set_state(ctx, STATE_SCRAPE_CACHE, scrape_cache)
+
+    # generate search queries from content
+    keywords = _extract_keywords(content)
+    queries: list[str] = []
+    if title:
+        queries.append(title)
+    if keywords[:5]:
+        queries.append(" ".join(keywords[:5]))
+    if keywords[5:10]:
+        queries.append(" ".join(keywords[5:10]))
+    if not queries:
+        queries.append(content[:200])
+
+    # search concurrently
+    search_started = time.monotonic()
+    search_tasks = [_search(q, num_results=num_results) for q in queries]
+    search_results = await asyncio.gather(*search_tasks, return_exceptions=True)
+    timings_ms["search"] = int((time.monotonic() - search_started) * 1000)
+
+    # merge and dedup
+    all_candidates: list[dict] = []
+    source_normalized = _normalize_url(url)
+    for i, sr in enumerate(search_results):
+        if isinstance(sr, Exception):
+            warnings.append(f"query {i+1} failed: {sr}")
+            continue
+        for r in sr:
+            if _normalize_url(r.get("url", "")) != source_normalized:
+                all_candidates.append(r)
+    all_candidates = _dedup_results(all_candidates)
+    total_candidates = len(all_candidates)
+
+    if not all_candidates:
+        return {
+            "source_url": url,
+            "source_title": title,
+            "results": [],
+            "meta": {
+                "queries_generated": len(queries),
+                "total_candidates": 0,
+                "warnings": warnings,
+                "timings_ms": {**timings_ms, "total": int((time.monotonic() - started) * 1000)},
+            },
+        }
+
+    # rerank against source content summary
+    rerank_started = time.monotonic()
+    summary = content[:1000]
+    candidate_snippets = [
+        f"{r.get('title', '')} {r.get('content', '')}"[:500] for r in all_candidates
+    ]
+    try:
+        scored = _rerank_scored(summary, candidate_snippets)
+    except Exception as exc:
+        warnings.append(f"rerank failed: {exc}")
+        scored = [(i, 0.0) for i in range(len(all_candidates))]
+    timings_ms["rerank"] = int((time.monotonic() - rerank_started) * 1000)
+
+    # format results
+    results: list[dict] = []
+    for rank, (idx, score) in enumerate(scored[:num_results], 1):
+        r = all_candidates[idx]
+        results.append({
+            "rank": rank,
+            "title": r.get("title", ""),
+            "url": r.get("url", ""),
+            "domain": _domain_from_url(r.get("url", "")),
+            "snippet": r.get("content", ""),
+            "score": score,
+        })
+
+    timings_ms["total"] = int((time.monotonic() - started) * 1000)
+    return {
+        "source_url": url,
+        "source_title": title,
+        "results": results,
+        "meta": {
+            "queries_generated": len(queries),
+            "total_candidates": total_candidates,
+            "warnings": warnings,
+            "timings_ms": timings_ms,
+        },
+    }
+
+
+@mcp.tool
+async def find_similar(
+    url: str,
+    num_results: int = 10,
+    ctx: Context | None = None,
+) -> dict:
+    """Find web pages similar to the given URL.
+
+    Scrapes the source page, extracts keywords, searches for related content,
+    and reranks candidates by similarity to the source.
+    """
+    url = _validate_urls([url], maximum=1)[0]
+    num_results = _validate_positive_int("num_results", num_results, maximum=MAX_NUM_RESULTS)
+    return await _find_similar_impl(url=url, num_results=num_results, ctx=ctx)
 
 
 if __name__ == "__main__":

@@ -29,8 +29,9 @@ def _identity_rerank(_query: str, documents: list[str]) -> list[tuple[int, float
 def _make_scrape_mock(content_map: dict[str, str | None] | None = None):
     mapping = content_map or SCRAPE_CONTENT_EXTENDED
 
-    async def _fake_scrape(url: str) -> str | None:
-        return mapping.get(url)
+    async def _fake_scrape(url: str, crawl_config=None) -> dict:
+        content = mapping.get(url)
+        return {"content": content, "title": None, "screenshot": None}
 
     mock = AsyncMock(side_effect=_fake_scrape)
     return mock

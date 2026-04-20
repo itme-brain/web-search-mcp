@@ -30,6 +30,12 @@ _flashrank.Ranker = _FakeRanker
 _flashrank.RerankRequest = _FakeRerankRequest
 sys.modules["flashrank"] = _flashrank
 
+# Stub trafilatura if not installed (tests mock it per-test)
+if "trafilatura" not in sys.modules:
+    _trafilatura = types.ModuleType("trafilatura")
+    _trafilatura.extract = lambda *args, **kwargs: None
+    sys.modules["trafilatura"] = _trafilatura
+
 _spec = importlib.util.spec_from_file_location("web_search_server", _SERVER_PATH)
 _mod = importlib.util.module_from_spec(_spec)
 sys.modules["web_search_server"] = _mod

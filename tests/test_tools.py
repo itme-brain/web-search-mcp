@@ -62,7 +62,7 @@ async def test_site_search_prepends_site_prefix():
 
     with (
         patch(PATCH_SEARCH, search_mock),
-        patch("web_search_server._scrape", AsyncMock(return_value="# Page\n\ncontent")),
+        patch("web_search_server._scrape", AsyncMock(return_value={"content": "# Page\n\ncontent", "title": None, "screenshot": None})),
         patch(PATCH_RERANK, rerank_mock),
     ):
         async with Client(server_app) as client:
@@ -110,7 +110,7 @@ async def test_web_search_returns_structured_json():
 
     with (
         patch(PATCH_SEARCH, search_mock),
-        patch("web_search_server._scrape", AsyncMock(return_value="# Page\n\ncontent")),
+        patch("web_search_server._scrape", AsyncMock(return_value={"content": "# Page\n\ncontent", "title": None, "screenshot": None})),
         patch(PATCH_RERANK, rerank_mock),
     ):
         payload = await server_module._web_search_impl("test query", num_results=2, scrape_top=2, ctx=None)

@@ -44,6 +44,7 @@
           httpx
           python-docx
           pypdf
+          trafilatura
           pytest
           pytest-asyncio
         ]);
