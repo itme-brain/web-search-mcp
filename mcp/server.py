@@ -509,6 +509,32 @@ async def _crawl_post(client: httpx.AsyncClient, url: str, priority: int) -> dic
     return resp.json()
 
 
+# Max polls per task. REQUEST_TIMEOUT is the outer wait_for bound; this guard
+# catches a pathological case where the status endpoint returns "running"
+# indefinitely without the outer timeout firing (e.g. clock issues, broken
+# sleep). A few extra iterations over the timeout is fine — wait_for fires first.
+_MAX_TASK_POLLS = 60
+
+
+async def _poll_crawl_task(client: httpx.AsyncClient, task_id: str) -> dict | None:
+    """Poll /task/{id} until completed or failed. Bounded by _MAX_TASK_POLLS.
+
+    Returns the task's result dict on success, None on failure or timeout.
+    """
+    for _ in range(_MAX_TASK_POLLS):
+        await asyncio.sleep(1)
+        status_resp = await client.get(f"{CRAWL4AI_URL}/task/{task_id}")
+        status_resp.raise_for_status()
+        status_data = status_resp.json()
+        status = status_data.get("status")
+        if status == "completed":
+            return status_data.get("result", {})
+        if status == "failed":
+            return None
+    log.warning("crawl task %s exceeded %d polls", task_id, _MAX_TASK_POLLS)
+    return None
+
+
 async def _scrape_impl(url: str) -> dict:
     """Scrape a URL via Crawl4AI. Returns {content, title}."""
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
@@ -516,20 +542,13 @@ async def _scrape_impl(url: str) -> dict:
 
         task_id = data.get("task_id")
         if task_id:
-            while True:
-                await asyncio.sleep(1)
-                status_resp = await client.get(f"{CRAWL4AI_URL}/task/{task_id}")
-                status_resp.raise_for_status()
-                status_data = status_resp.json()
-                status = status_data.get("status")
-                if status == "completed":
-                    result = status_data.get("result", {})
-                    return {
-                        "content": _extract_markdown(result),
-                        "title": _extract_crawl_title(result),
-                    }
-                if status == "failed":
-                    return {"content": None, "title": None}
+            result = await _poll_crawl_task(client, task_id)
+            if result is None:
+                return {"content": None, "title": None}
+            return {
+                "content": _extract_markdown(result),
+                "title": _extract_crawl_title(result),
+            }
 
         result = _extract_crawl_result(data)
         return {
@@ -756,28 +775,22 @@ async def _discover_page_links(url: str) -> dict:
 
         task_id = data.get("task_id")
         if task_id:
-            while True:
-                await asyncio.sleep(1)
-                status_resp = await client.get(f"{CRAWL4AI_URL}/task/{task_id}")
-                status_resp.raise_for_status()
-                status_data = status_resp.json()
-                status = status_data.get("status")
-                if status == "completed":
-                    result = _extract_crawl_result(status_data.get("result", {}))
-                    return {
-                        "status": "ok",
-                        "url": url,
-                        "title": _extract_crawl_title(result),
-                        "links": _extract_crawl_links(result, url),
-                    }
-                if status == "failed":
-                    return {
-                        "status": "error",
-                        "url": url,
-                        "title": None,
-                        "links": [],
-                        "error": "link discovery failed",
-                    }
+            polled = await _poll_crawl_task(client, task_id)
+            if polled is None:
+                return {
+                    "status": "error",
+                    "url": url,
+                    "title": None,
+                    "links": [],
+                    "error": "link discovery failed",
+                }
+            result = _extract_crawl_result(polled)
+            return {
+                "status": "ok",
+                "url": url,
+                "title": _extract_crawl_title(result),
+                "links": _extract_crawl_links(result, url),
+            }
 
         result = _extract_crawl_result(data)
         return {

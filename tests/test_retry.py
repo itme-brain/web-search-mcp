@@ -75,6 +75,33 @@ async def test_crawl_post_retries_on_5xx_then_succeeds():
 
 
 @pytest.mark.asyncio
+async def test_poll_crawl_task_stops_after_max_iterations():
+    """Broken status endpoint returning 'running' forever must not hang."""
+    stuck_resp = MagicMock()
+    stuck_resp.raise_for_status = MagicMock()
+    stuck_resp.json = MagicMock(return_value={"status": "running"})
+
+    mock_client = MagicMock()
+    mock_client.get = AsyncMock(return_value=stuck_resp)
+
+    # Swap asyncio.sleep for a no-op so the test doesn't wait real seconds.
+    import web_search_server as server
+    original_sleep = server.asyncio.sleep
+
+    async def _fake_sleep(_secs):
+        return None
+
+    server.asyncio.sleep = _fake_sleep
+    try:
+        result = await server._poll_crawl_task(mock_client, "task-123")
+    finally:
+        server.asyncio.sleep = original_sleep
+
+    assert result is None
+    assert mock_client.get.call_count == server._MAX_TASK_POLLS
+
+
+@pytest.mark.asyncio
 async def test_crawl_post_does_not_retry_on_4xx():
     """4xx errors are caller bugs, not transient — fail fast."""
     req = httpx.Request("POST", "http://crawl4ai:11235/crawl")
