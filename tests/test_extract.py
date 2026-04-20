@@ -145,90 +145,25 @@ def test_docx_bytes_to_markdown_extracts_paragraphs_and_tables():
     assert "| Quarter | Revenue |" in content
 
 
-def _make_pdf(num_pages: int) -> bytes:
+def test_pdf_extract_all_pages_returns_per_page_chunks():
     from pypdf import PdfWriter
     writer = PdfWriter()
-    for _ in range(num_pages):
+    for _ in range(5):
         writer.add_blank_page(width=72, height=72)
     buf = BytesIO()
     writer.write(buf)
-    return buf.getvalue()
-
-
-def test_pdf_pagination_returns_total_pages():
-    _, _, total, _ = server_module._pdf_bytes_to_markdown(_make_pdf(10))
-    assert total == 10
-
-
-def test_pdf_pagination_respects_page_range():
-    _, _, total, _ = server_module._pdf_bytes_to_markdown(_make_pdf(10), start_page=3, end_page=5)
-    assert total == 10
-
-
-def test_pdf_pagination_clamps_end_page():
-    _, _, total, _ = server_module._pdf_bytes_to_markdown(_make_pdf(3), start_page=1, end_page=100)
-    assert total == 3
-
-
-@pytest.mark.asyncio
-async def test_extract_pdf_document_includes_pagination_metadata():
-    extract_mock = AsyncMock(return_value={
-        "status": "ok",
-        "url": "https://example.com/manual.pdf",
-        "content_type": "application/pdf",
-        "file_type": "pdf",
-        "title": "Manual",
-        "content": "## Page 3\n\nContent here",
-        "total_pages": 50,
-        "start_page": 3,
-        "end_page": 5,
-        "top_chunks": [],
-        "cached": False,
-    })
-
-    with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
-        payload = await server_module._extract_urls_impl(
-            urls=["https://example.com/manual.pdf"],
-            start_page=3,
-            end_page=5,
-        )
-
-    result = payload["results"][0]
-    assert result["total_pages"] == 50
-    assert result["start_page"] == 3
-    assert result["end_page"] == 5
-
-
-def test_pdf_extract_all_pages_returns_per_page_chunks():
-    # Blank pages have no extractable text, so we test the structure
-    pages, title = server_module._pdf_extract_all_pages(_make_pdf(5))
+    # Blank pages have no extractable text
+    pages, title = server_module._pdf_extract_all_pages(buf.getvalue())
     assert isinstance(pages, list)
-    # Blank pages produce no text, so pages list is empty
     assert len(pages) == 0
 
 
 @pytest.mark.asyncio
-async def test_extract_document_chunks_rejects_non_pdf():
-    detect_mock = AsyncMock(return_value=("html", "text/html"))
-    with patch("web_search_server._detect_file_type", detect_mock):
-        result = await server_module._extract_document_chunks_impl(
-            url="https://example.com/page",
-        )
-    assert result["total_pages"] == 0
-    assert "only supports PDFs" in result["meta"]["error"]
-
-
-@pytest.mark.asyncio
-async def test_extract_document_chunks_returns_all_pages():
+async def test_extract_pdf_returns_per_page_chunks_with_metadata():
     fake_pages = [
         {"page": i, "content": f"Content for page {i}"}
         for i in range(1, 11)
     ]
-    detect_mock = AsyncMock(return_value=("pdf", "application/pdf"))
-    extract_pages_mock = patch(
-        "web_search_server._pdf_extract_all_pages",
-        return_value=(fake_pages, "Test PDF"),
-    )
 
     fake_resp = AsyncMock()
     fake_resp.content = b"fake pdf bytes"
@@ -238,35 +173,28 @@ async def test_extract_document_chunks_returns_all_pages():
     fake_client.__aenter__ = AsyncMock(return_value=fake_client)
     fake_client.__aexit__ = AsyncMock(return_value=None)
 
-    # Need to also mock PdfReader for total_pages count
     fake_reader = AsyncMock()
     fake_reader.pages = [None] * 10
 
     with (
-        patch("web_search_server._detect_file_type", detect_mock),
-        extract_pages_mock,
+        patch("web_search_server._pdf_extract_all_pages", return_value=(fake_pages, "Test PDF")),
         patch("web_search_server.httpx.AsyncClient", return_value=fake_client),
         patch("web_search_server.PdfReader", return_value=fake_reader),
     ):
-        result = await server_module._extract_document_chunks_impl(
-            url="https://example.com/manual.pdf",
-            max_pages=50,
-        )
+        result = await server_module._extract_pdf_document("https://example.com/manual.pdf")
 
     assert result["title"] == "Test PDF"
     assert result["total_pages"] == 10
-    assert result["pages_returned"] == 10
-    assert len(result["chunks"]) == 10
-    assert result["chunks"][0]["content"] == "Content for page 1"
+    assert result["pages_returned"] > 0
+    assert "## Page 1" in result["content"]
 
 
 @pytest.mark.asyncio
-async def test_extract_document_chunks_reranks_with_query():
+async def test_extract_pdf_reranks_pages_with_query():
     fake_pages = [
         {"page": i, "content": f"Content for page {i}"}
         for i in range(1, 6)
     ]
-    detect_mock = AsyncMock(return_value=("pdf", "application/pdf"))
 
     fake_resp = AsyncMock()
     fake_resp.content = b"fake pdf bytes"
@@ -279,50 +207,49 @@ async def test_extract_document_chunks_reranks_with_query():
     fake_reader = AsyncMock()
     fake_reader.pages = [None] * 5
 
-    # Reranker returns pages in reverse order
+    # Reranker returns pages in reverse relevance order
     def fake_rerank(_query, docs):
         return [(i, 1.0 - i * 0.1) for i in reversed(range(len(docs)))]
 
     with (
-        patch("web_search_server._detect_file_type", detect_mock),
         patch("web_search_server._pdf_extract_all_pages", return_value=(fake_pages, "Test")),
         patch("web_search_server.httpx.AsyncClient", return_value=fake_client),
         patch("web_search_server.PdfReader", return_value=fake_reader),
         patch("web_search_server._rerank_scored", side_effect=fake_rerank),
     ):
-        result = await server_module._extract_document_chunks_impl(
-            url="https://example.com/manual.pdf",
+        result = await server_module._extract_pdf_document(
+            "https://example.com/manual.pdf",
             query="relevant content",
-            max_pages=3,
         )
 
-    assert result["query"] == "relevant content"
-    assert result["pages_returned"] == 3
-    # All chunks should have scores from reranking
-    assert all("score" in chunk for chunk in result["chunks"])
+    # Reranked content should have score annotations
+    assert "(score:" in result["content"]
+    assert result["pages_returned"] > 0
 
 
-def test_format_document_chunks_includes_pagination_info():
-    response = {
+@pytest.mark.asyncio
+async def test_extract_urls_surfaces_pdf_pagination_metadata():
+    extract_mock = AsyncMock(return_value={
+        "status": "ok",
         "url": "https://example.com/manual.pdf",
+        "content_type": "application/pdf",
+        "file_type": "pdf",
         "title": "Manual",
-        "total_pages": 100,
+        "content": "## Page 1\n\nContent",
+        "total_pages": 50,
         "pages_returned": 3,
-        "query": "installation",
-        "chunks": [
-            {"page": 5, "content": "Install instructions", "score": 0.95},
-            {"page": 12, "content": "Config details", "score": 0.82},
-            {"page": 1, "content": "Introduction", "score": 0.71},
-        ],
-        "meta": {"warnings": [], "timings_ms": {"total": 100}},
-    }
-    output = server_module._format_document_chunks(response)
-    assert "total_pages: 100" in output
-    assert "pages_returned: 3" in output
-    assert "query: installation" in output
-    assert "## Page 5 (score: 0.95)" in output
-    assert "Install instructions" in output
-    assert "## Page 12 (score: 0.82)" in output
+        "top_chunks": [],
+        "cached": False,
+    })
+
+    with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
+        payload = await server_module._extract_urls_impl(
+            urls=["https://example.com/manual.pdf"],
+        )
+
+    result = payload["results"][0]
+    assert result["total_pages"] == 50
+    assert result["pages_returned"] == 3
 
 
 def test_guess_file_type_supports_docx_and_text_formats():

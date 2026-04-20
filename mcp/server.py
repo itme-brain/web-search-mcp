@@ -639,40 +639,6 @@ async def _detect_file_type(url: str) -> tuple[str, str | None]:
     return _guess_file_type(url, content_type), _content_type_without_charset(content_type)
 
 
-def _pdf_bytes_to_markdown(
-    data: bytes,
-    start_page: int | None = None,
-    end_page: int | None = None,
-) -> tuple[str, str | None, int, int]:
-    """Extract PDF pages to markdown.
-
-    Returns (content, title, total_pages, last_page_included).
-    Pages are added incrementally; if the budget is exhausted mid-document
-    the returned last_page_included reflects where extraction actually stopped.
-    """
-    reader = PdfReader(io.BytesIO(data))
-    total_pages = len(reader.pages)
-    title = None
-    if reader.metadata:
-        title = reader.metadata.title
-    first = (start_page or 1) - 1
-    last = min(end_page or total_pages, total_pages)
-    sections: list[str] = []
-    char_budget = _MAX_CONTENT_CHARS
-    last_page_included = first  # 0-indexed; will convert to 1-indexed at return
-    for page_number, page in enumerate(reader.pages[first:last], start=first + 1):
-        text = (page.extract_text() or "").strip()
-        if not text:
-            continue
-        section = f"## Page {page_number}\n\n{text}"
-        if char_budget - len(section) < 0 and sections:
-            break
-        sections.append(section)
-        char_budget -= len(section) + 2  # account for "\n\n" join separator
-        last_page_included = page_number
-    return "\n\n".join(sections), title, total_pages, last_page_included
-
-
 def _docx_bytes_to_markdown(data: bytes) -> tuple[str, str | None]:
     document = DocxDocument(io.BytesIO(data))
     title = document.core_properties.title or None
@@ -695,28 +661,85 @@ def _docx_bytes_to_markdown(data: bytes) -> tuple[str, str | None]:
     return "\n\n".join(sections)[:_MAX_CONTENT_CHARS], title
 
 
-async def _extract_pdf_document(
-    url: str,
-    start_page: int | None = None,
-    end_page: int | None = None,
-) -> dict:
+def _pdf_extract_all_pages(data: bytes) -> tuple[list[dict], str | None]:
+    """Extract every page from a PDF into individual chunks.
+
+    Returns (pages, title) where each page is {page: int, content: str}.
+    """
+    reader = PdfReader(io.BytesIO(data))
+    title = None
+    if reader.metadata:
+        title = reader.metadata.title
+    pages: list[dict] = []
+    for page_number, page in enumerate(reader.pages, start=1):
+        text = (page.extract_text() or "").strip()
+        if text:
+            pages.append({"page": page_number, "content": text})
+    return pages, title
+
+
+async def _extract_pdf_document(url: str, query: str | None = None) -> dict:
+    """Download a PDF, extract all pages, optionally rerank by query.
+
+    Returns per-page chunks in the content field formatted as markdown
+    sections. When a query is provided, pages are reranked so the most
+    relevant pages appear first.
+    """
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, follow_redirects=True) as client:
         resp = await client.get(url)
         resp.raise_for_status()
-        content, title, total_pages, last_page = _pdf_bytes_to_markdown(
-            resp.content, start_page=start_page, end_page=end_page,
-        )
+
+    all_pages, title = _pdf_extract_all_pages(resp.content)
+    total_pages = len(PdfReader(io.BytesIO(resp.content)).pages)
+
+    if not all_pages:
         return {
             "status": "ok",
             "url": url,
             "content_type": "application/pdf",
             "file_type": "pdf",
             "title": title,
-            "content": content,
+            "content": "",
             "total_pages": total_pages,
-            "start_page": start_page or 1,
-            "end_page": last_page,
+            "pages_returned": 0,
         }
+
+    if query:
+        try:
+            page_texts = [p["content"][:500] for p in all_pages]
+            scored = _rerank_scored(query, page_texts)
+            ranked = [
+                {**all_pages[idx], "score": round(score, 4)}
+                for idx, score in scored
+            ]
+        except Exception:
+            ranked = all_pages
+    else:
+        ranked = all_pages
+
+    # Build content within char budget, page by page.
+    sections: list[str] = []
+    char_budget = _MAX_CONTENT_CHARS
+    for chunk in ranked:
+        heading = f"## Page {chunk['page']}"
+        if "score" in chunk:
+            heading += f" (score: {chunk['score']})"
+        section = f"{heading}\n\n{chunk['content']}"
+        if char_budget - len(section) < 0 and sections:
+            break
+        sections.append(section)
+        char_budget -= len(section) + 2
+
+    return {
+        "status": "ok",
+        "url": url,
+        "content_type": "application/pdf",
+        "file_type": "pdf",
+        "title": title,
+        "content": "\n\n".join(sections),
+        "total_pages": total_pages,
+        "pages_returned": len(sections),
+    }
 
 
 async def _extract_web_document(url: str, crawl_config: dict | None = None) -> dict:
@@ -842,11 +865,8 @@ async def _extract_url_document(
     query: str | None,
     cache: dict[str, dict],
     crawl_config: dict | None = None,
-    start_page: int | None = None,
-    end_page: int | None = None,
 ) -> dict:
-    # Skip cache when a page range is specified (caller wants a specific window).
-    if crawl_config is None and start_page is None and end_page is None and url in cache:
+    if crawl_config is None and url in cache:
         cached = cache[url]
         content, top_chunks = _rank_document_content(query, cached.get("content", ""))
         return {
@@ -861,7 +881,7 @@ async def _extract_url_document(
     try:
         file_type, content_type = await _detect_file_type(url)
         if file_type == "pdf":
-            extracted = await _extract_pdf_document(url, start_page=start_page, end_page=end_page)
+            extracted = await _extract_pdf_document(url, query=query)
         elif file_type == "docx":
             extracted = await _extract_docx_document(url)
         elif file_type in {"text", "markdown", "json", "xml", "csv"}:
@@ -1312,7 +1332,7 @@ def _format_extract_results(response: dict) -> str:
         else:
             section = f"## [{title}]({url})"
         if r.get("total_pages") is not None:
-            section += f"\n\n_pages {r['start_page']}-{r['end_page']} of {r['total_pages']}_"
+            section += f"\n\n_{r['pages_returned']} of {r['total_pages']} pages extracted_"
         sections.append(section)
 
     return "\n\n".join(sections)
@@ -1494,14 +1514,13 @@ async def _extract_urls_impl(
     urls: list[str],
     query: str | None = None,
     crawl_config: dict | None = None,
-    start_page: int | None = None,
-    end_page: int | None = None,
     ctx: Context | None = None,
 ) -> dict:
     """Extract a batch of URLs with per-URL status reporting.
 
     Uses Crawl4AI for web pages and pypdf for PDF documents.
-    Returns markdown content only in v1.
+    PDFs are fully extracted with per-page chunking and optional
+    query-based reranking.
     """
     urls = _validate_urls(urls, maximum=_MAX_EXTRACT_URLS)
     normalized_query = query.strip() if query else None
@@ -1512,10 +1531,7 @@ async def _extract_urls_impl(
         extract_cache = await _ctx_get_state(ctx, STATE_EXTRACT_CACHE) or {}
 
     documents = await asyncio.gather(*[
-        _extract_url_document(
-            url, normalized_query, extract_cache, crawl_config,
-            start_page=start_page, end_page=end_page,
-        )
+        _extract_url_document(url, normalized_query, extract_cache, crawl_config)
         for url in urls
     ])
 
@@ -1545,8 +1561,7 @@ async def _extract_urls_impl(
             entry["screenshot"] = document["screenshot"]
         if document.get("total_pages") is not None:
             entry["total_pages"] = document["total_pages"]
-            entry["start_page"] = document.get("start_page", 1)
-            entry["end_page"] = document.get("end_page")
+            entry["pages_returned"] = document.get("pages_returned", 0)
         results.append(entry)
 
     if ctx:
@@ -1593,8 +1608,6 @@ def _maybe_build_crawl_config(
 async def extract_url(
     url: str,
     query: str | None = None,
-    start_page: int | None = None,
-    end_page: int | None = None,
     js_code: list[str] | None = None,
     wait_for: str | None = None,
     page_timeout: int | None = None,
@@ -1603,14 +1616,11 @@ async def extract_url(
     scroll_full_page: bool = False,
     ctx: Context | None = None,
 ) -> str:
-    """Extract content from a single URL. For PDFs, use start_page/end_page to read specific page ranges (1-indexed, inclusive). The response includes total_pages so you can paginate through large documents."""
+    """Extract content from a single URL. PDFs are fully extracted with per-page chunking. When a query is provided, PDF pages are reranked by relevance so the most useful pages appear first."""
     crawl_config = _maybe_build_crawl_config(
         js_code, wait_for, page_timeout, screenshot, remove_overlays, scroll_full_page,
     )
-    response = await _extract_urls_impl(
-        urls=[url], query=query, crawl_config=crawl_config,
-        start_page=start_page, end_page=end_page, ctx=ctx,
-    )
+    response = await _extract_urls_impl(urls=[url], query=query, crawl_config=crawl_config, ctx=ctx)
     result = response["results"][0]
     response_dict = {
         "query": response["query"],
@@ -1627,8 +1637,6 @@ async def extract_url(
 async def extract_urls(
     urls: list[str],
     query: str | None = None,
-    start_page: int | None = None,
-    end_page: int | None = None,
     js_code: list[str] | None = None,
     wait_for: str | None = None,
     page_timeout: int | None = None,
@@ -1637,14 +1645,11 @@ async def extract_urls(
     scroll_full_page: bool = False,
     ctx: Context | None = None,
 ) -> str:
-    """Extract content from multiple URLs. For PDFs, use start_page/end_page to read specific page ranges (1-indexed, inclusive). The page range applies to all PDF URLs in the batch."""
+    """Extract content from multiple URLs. PDFs are fully extracted with per-page chunking. When a query is provided, PDF pages are reranked by relevance."""
     crawl_config = _maybe_build_crawl_config(
         js_code, wait_for, page_timeout, screenshot, remove_overlays, scroll_full_page,
     )
-    response = await _extract_urls_impl(
-        urls=urls, query=query, crawl_config=crawl_config,
-        start_page=start_page, end_page=end_page, ctx=ctx,
-    )
+    response = await _extract_urls_impl(urls=urls, query=query, crawl_config=crawl_config, ctx=ctx)
     return _format_extract_results(response)
 
 
@@ -2127,160 +2132,6 @@ async def find_similar(
     num_results = _validate_positive_int("num_results", num_results, maximum=MAX_RESULTS)
     response = await _find_similar_impl(url=url, num_results=num_results, ctx=ctx)
     return _format_similar_results(response)
-
-
-_MAX_CHUNK_PAGES = 100
-
-
-def _pdf_extract_all_pages(data: bytes) -> tuple[list[dict], str | None]:
-    """Extract every page from a PDF into individual chunks.
-
-    Returns (pages, title) where each page is {page: int, content: str}.
-    """
-    reader = PdfReader(io.BytesIO(data))
-    title = None
-    if reader.metadata:
-        title = reader.metadata.title
-    pages: list[dict] = []
-    for page_number, page in enumerate(reader.pages, start=1):
-        text = (page.extract_text() or "").strip()
-        if text:
-            pages.append({"page": page_number, "content": text})
-    return pages, title
-
-
-async def _extract_document_chunks_impl(
-    url: str,
-    query: str | None = None,
-    max_pages: int = 50,
-) -> dict:
-    """Download a document, extract all pages, optionally rerank by query."""
-    url = _validate_urls([url], maximum=1)[0]
-    max_pages = _validate_positive_int("max_pages", max_pages, maximum=_MAX_CHUNK_PAGES)
-    started = time.monotonic()
-    timings_ms: dict[str, int] = {}
-    warnings: list[dict] = []
-
-    file_type, content_type = await _detect_file_type(url)
-    if file_type != "pdf":
-        return {
-            "url": url,
-            "title": None,
-            "total_pages": 0,
-            "pages_returned": 0,
-            "query": query,
-            "chunks": [],
-            "meta": {
-                "error": f"extract_document_chunks only supports PDFs, got {file_type or 'unknown'}",
-                "warnings": warnings,
-                "timings_ms": {"total": int((time.monotonic() - started) * 1000)},
-            },
-        }
-
-    fetch_started = time.monotonic()
-    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, follow_redirects=True) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-    timings_ms["fetch"] = int((time.monotonic() - fetch_started) * 1000)
-
-    parse_started = time.monotonic()
-    all_pages, title = _pdf_extract_all_pages(resp.content)
-    total_pages = len(PdfReader(io.BytesIO(resp.content)).pages)
-    timings_ms["parse"] = int((time.monotonic() - parse_started) * 1000)
-
-    if not all_pages:
-        return {
-            "url": url,
-            "title": title,
-            "total_pages": total_pages,
-            "pages_returned": 0,
-            "query": query,
-            "chunks": [],
-            "meta": {
-                "error": "no extractable text in PDF",
-                "warnings": warnings,
-                "timings_ms": {**timings_ms, "total": int((time.monotonic() - started) * 1000)},
-            },
-        }
-
-    if query:
-        rerank_started = time.monotonic()
-        try:
-            page_texts = [p["content"][:500] for p in all_pages]
-            scored = _rerank_scored(query, page_texts)
-            ranked_pages = [
-                {**all_pages[idx], "score": round(score, 4)}
-                for idx, score in scored[:max_pages]
-            ]
-        except Exception as exc:
-            warnings.append(_warning("rerank_failed", "flashrank", str(exc)))
-            ranked_pages = all_pages[:max_pages]
-        timings_ms["rerank"] = int((time.monotonic() - rerank_started) * 1000)
-    else:
-        ranked_pages = all_pages[:max_pages]
-
-    timings_ms["total"] = int((time.monotonic() - started) * 1000)
-    return {
-        "url": url,
-        "title": title,
-        "total_pages": total_pages,
-        "pages_returned": len(ranked_pages),
-        "query": query,
-        "chunks": ranked_pages,
-        "meta": {
-            "warnings": warnings,
-            "timings_ms": timings_ms,
-        },
-    }
-
-
-def _format_document_chunks(response: dict) -> str:
-    """Format extract_document_chunks response as markdown."""
-    parts = [f"url: {response['url']}"]
-    if response.get("title"):
-        parts.append(f"title: {response['title']}")
-    parts.append(f"total_pages: {response['total_pages']}")
-    parts.append(f"pages_returned: {response['pages_returned']}")
-    if response.get("query"):
-        parts.append(f"query: {response['query']}")
-    meta = response.get("meta", {})
-    if meta.get("error"):
-        parts.append(f"error: {meta['error']}")
-    warnings = meta.get("warnings", [])
-    if warnings:
-        parts.append("warnings: " + "; ".join(w.get("detail", str(w)) for w in warnings))
-    header = "\n".join(parts)
-
-    sections = [header, "---"]
-    for chunk in response.get("chunks", []):
-        page = chunk["page"]
-        content = chunk["content"]
-        score = chunk.get("score")
-        heading = f"## Page {page}"
-        if score is not None:
-            heading += f" (score: {score})"
-        sections.append(f"{heading}\n\n{content}")
-
-    return "\n\n".join(sections)
-
-
-@mcp.tool
-async def extract_document_chunks(
-    url: str,
-    query: str | None = None,
-    max_pages: int = 50,
-) -> str:
-    """Extract a full PDF document as page-level chunks in a single call.
-
-    Downloads the PDF once, extracts all pages server-side, and returns
-    per-page content. When a query is provided, pages are reranked by
-    relevance so the most useful pages appear first.
-
-    Use this instead of extract_url for large PDFs where serial pagination
-    would be too slow. Currently supports PDF only.
-    """
-    response = await _extract_document_chunks_impl(url=url, query=query, max_pages=max_pages)
-    return _format_document_chunks(response)
 
 
 if __name__ == "__main__":
