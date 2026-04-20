@@ -17,6 +17,7 @@ import pysbd
 import trafilatura
 from cachetools import TTLCache
 from fastmcp import Context, FastMCP
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 from pydantic_settings import BaseSettings
 from url_normalize import url_normalize
 from flashrank import Ranker, RerankRequest
@@ -480,15 +481,38 @@ _DEFAULT_CRAWL_CONFIG = {
 }
 
 
+def _is_retryable_crawl_error(exc: BaseException) -> bool:
+    """Retry only on Crawl4AI transient failures: network issues and 5xx.
+
+    Crawl4AI 0.8.x has documented browser-pool flakiness (memory leaks,
+    'target page context closed' after N requests). A single transient 5xx or
+    reset connection shouldn't kill the scrape.
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code >= 500
+    return isinstance(exc, (httpx.TransportError, httpx.TimeoutException))
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    retry=retry_if_exception(_is_retryable_crawl_error),
+    reraise=True,
+)
+async def _crawl_post(client: httpx.AsyncClient, url: str, priority: int) -> dict:
+    """POST to Crawl4AI's /crawl endpoint with exponential-backoff retry."""
+    resp = await client.post(
+        f"{CRAWL4AI_URL}/crawl",
+        json={"urls": [url], "priority": priority, "crawler_config": _DEFAULT_CRAWL_CONFIG},
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
 async def _scrape_impl(url: str) -> dict:
     """Scrape a URL via Crawl4AI. Returns {content, title}."""
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-        resp = await client.post(
-            f"{CRAWL4AI_URL}/crawl",
-            json={"urls": [url], "priority": 8, "crawler_config": _DEFAULT_CRAWL_CONFIG},
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        data = await _crawl_post(client, url, priority=8)
 
         task_id = data.get("task_id")
         if task_id:
@@ -728,12 +752,7 @@ async def _extract_text_document(url: str, file_type: str) -> dict:
 
 async def _discover_page_links(url: str) -> dict:
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-        resp = await client.post(
-            f"{CRAWL4AI_URL}/crawl",
-            json={"urls": [url], "priority": 6, "crawler_config": _DEFAULT_CRAWL_CONFIG},
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        data = await _crawl_post(client, url, priority=6)
 
         task_id = data.get("task_id")
         if task_id:

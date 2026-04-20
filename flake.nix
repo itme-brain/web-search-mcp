@@ -46,6 +46,7 @@
           pysbd
           python-docx
           pymupdf4llm
+          tenacity
           trafilatura
           url-normalize
           pytest
