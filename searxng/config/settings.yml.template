@@ -11,6 +11,36 @@ use_default_settings:
       - github
       - arxiv
 
+# Engine weights — tune how much each upstream contributes to final ranking.
+#
+# SearXNG merges per-engine entries by `name`, so these override the weight
+# field on the default engine definitions inherited above.
+#
+# Philosophy: lean on engines with stable scraping surfaces and/or public
+# APIs (DDG, Brave, Wikipedia, GitHub, Arxiv). Keep Google in the pool so
+# its occasional successful pages still contribute, but don't rely on it —
+# Google's anti-bot measures will CAPTCHA a scraper under load, and any
+# single upstream going down should not dominate the ranking.
+engines:
+  - name: duckduckgo
+    weight: 1.5
+  - name: brave
+    weight: 1.5
+  - name: wikipedia
+    weight: 1.3
+  - name: github
+    weight: 1.2
+  - name: arxiv
+    weight: 1.2
+  - name: duckduckgo news
+    weight: 1.0
+  - name: brave.news
+    weight: 1.0
+  - name: google
+    weight: 0.5
+  - name: google news
+    weight: 0.5
+
 general:
   instance_name: "Web Search MCP"
 
