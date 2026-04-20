@@ -33,6 +33,8 @@ log = logging.getLogger("web-search-mcp")
 
 mcp = FastMCP("Web Search", version="0.0.1")
 
+__all__ = ["mcp", "search_impl", "extract_impl", "map_impl", "crawl_impl"]
+
 
 class Settings(BaseSettings):
     searxng_url: str = "http://searxng:8080"
