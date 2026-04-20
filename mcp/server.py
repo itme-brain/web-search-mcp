@@ -1283,29 +1283,6 @@ def _format_search_results(response: dict) -> str:
     return "\n\n".join(sections)
 
 
-def _format_image_results(response: dict) -> str:
-    """Format image_search response as markdown."""
-    parts = [f"query: {response['query']}"]
-    meta = response.get("meta", {})
-    parts.append(f"results: {meta.get('num_results_returned', len(response.get('results', [])))}")
-    if meta.get("error"):
-        parts.append(f"error: {meta['error']}")
-    header = "\n".join(parts)
-
-    sections = [header, "---"]
-    for r in response.get("results", []):
-        title = r.get("title", "Untitled")
-        source_url = r.get("source_url", "")
-        image_url = r.get("image_url", "")
-        dims = r.get("dimensions")
-        line = f"## [{title}]({source_url})\n\n![{title}]({image_url})"
-        if dims:
-            line += f"\n{dims}"
-        sections.append(line)
-
-    return "\n\n".join(sections)
-
-
 def _format_extract_results(response: dict) -> str:
     """Format extract_url/extract_urls response as markdown."""
     parts = []
@@ -1447,72 +1424,6 @@ async def web_search(
         ctx=ctx,
     )
     return _format_search_results(response)
-
-
-@mcp.tool
-async def image_search(
-    query: str,
-    num_results: int = 10,
-    language: str | None = None,
-    safesearch: int | None = None,
-    time_range: str | None = None,
-    ctx: Context | None = None,
-) -> str:
-    """Search for images via SearXNG. Returns image URLs, thumbnails, and source metadata."""
-    query = _validate_query(query)
-    num_results = _validate_positive_int("num_results", num_results, maximum=MAX_RESULTS)
-    time_range = _normalize_time_range(time_range)
-    language = language.strip() if language else None
-    safesearch = _normalize_safesearch(safesearch)
-    started = time.monotonic()
-
-    try:
-        raw = await _search(
-            query,
-            num_results=num_results,
-            time_range=time_range,
-            categories=["images"],
-            language=language,
-            safesearch=safesearch,
-        )
-    except Exception as exc:
-        response = {
-            "query": query,
-            "results": [],
-            "meta": {
-                "num_results_requested": num_results,
-                "num_results_returned": 0,
-                "search_backend": "searxng",
-                "error": str(exc),
-                "timings_ms": {"total": int((time.monotonic() - started) * 1000)},
-            },
-        }
-        return _format_image_results(response)
-
-    results: list[dict] = []
-    for rank, item in enumerate(raw, 1):
-        results.append({
-            "rank": rank,
-            "title": item.get("title", ""),
-            "image_url": item.get("img_src", ""),
-            "thumbnail_url": item.get("thumbnail_src", ""),
-            "source_url": item.get("url", ""),
-            "source_domain": _domain_from_url(item.get("url", "")),
-            "dimensions": item.get("resolution"),
-            "format": item.get("img_format"),
-        })
-
-    response = {
-        "query": query,
-        "results": results,
-        "meta": {
-            "num_results_requested": num_results,
-            "num_results_returned": len(results),
-            "search_backend": "searxng",
-            "timings_ms": {"total": int((time.monotonic() - started) * 1000)},
-        },
-    }
-    return _format_image_results(response)
 
 
 async def _extract_urls_impl(

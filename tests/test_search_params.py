@@ -176,39 +176,3 @@ async def test_web_search_tool_passes_categories():
 
     call_kwargs = search_mock.call_args_list[0][1]
     assert call_kwargs.get("categories") == ["news"]
-
-
-# ---------------------------------------------------------------------------
-# image_search tool
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_image_search_returns_image_fields():
-    fake_results = [
-        {
-            "title": "Northern Lights",
-            "url": "https://example.com/source",
-            "img_src": "https://cdn.example.com/image.jpg",
-            "thumbnail_src": "https://cdn.example.com/thumb.jpg",
-            "resolution": "1920x1080",
-            "img_format": "jpeg",
-        },
-    ]
-    search_mock = AsyncMock(return_value=fake_results)
-
-    with patch(PATCH_SEARCH, search_mock):
-        async with Client(server_app) as client:
-            result = await client.call_tool(
-                "image_search",
-                {"query": "aurora borealis", "num_results": 1},
-            )
-            payload = result.data
-
-    assert "Northern Lights" in payload
-    assert "https://cdn.example.com/image.jpg" in payload
-    assert "https://example.com/source" in payload
-    assert "1920x1080" in payload
-
-    call_kwargs = search_mock.call_args[1]
-    assert call_kwargs.get("categories") == ["images"]
