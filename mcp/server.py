@@ -149,15 +149,6 @@ def _dedup_chunks(chunks: list[str], entry_map: list[int]) -> tuple[list[str], l
     return kept_chunks, kept_entries
 
 
-def _query_cache_key(query: str, num_results: int, scrape_top: int, time_range: str | None) -> str:
-    raw = json.dumps([query.lower().strip(), num_results, scrape_top, time_range], sort_keys=True)
-    return hashlib.sha256(raw.encode()).hexdigest()
-
-
-def _response_cache_key(query: str, num_results: int, scrape_top: int, time_range: str | None) -> str:
-    return _query_cache_key(query, num_results, scrape_top, time_range)
-
-
 def _normalize_time_range(time_range: str | None) -> str | None:
     if time_range in (None, "null", "none", "None", ""):
         return None
