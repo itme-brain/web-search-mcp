@@ -43,9 +43,11 @@
           fastmcp
           flashrank
           httpx
+          pydantic-settings
+          pymupdf
+          pymupdf4llm
           pysbd
           python-docx
-          pymupdf4llm
           tenacity
           trafilatura
           url-normalize
