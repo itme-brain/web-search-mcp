@@ -152,12 +152,12 @@ async def test_cache_key_includes_new_params():
 
 
 # ---------------------------------------------------------------------------
-# web_search tool threads categories
+# search tool threads categories
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_web_search_tool_passes_categories():
+async def test_search_tool_passes_categories():
     search_mock = AsyncMock(return_value=make_search_results(URLS_A[:2]))
     rerank_mock = MagicMock(side_effect=_identity_rerank)
     scrape_mock = AsyncMock(return_value={"content": "# Page\n\ncontent", "title": None, "screenshot": None})

@@ -55,31 +55,31 @@ async def test_extract_urls_returns_structured_result_from_tool():
 
 
 @pytest.mark.asyncio
-async def test_web_search_validates_time_range():
+async def test_search_validates_time_range():
     with pytest.raises(ValueError, match="invalid time_range"):
         await server_module._web_search_impl("test query", time_range="decade", ctx=None)
 
 
 @pytest.mark.asyncio
-async def test_web_search_validates_num_results():
+async def test_search_validates_num_results():
     with pytest.raises(ValueError, match="num_results must be <= 10"):
         await server_module._web_search_impl("test query", num_results=50, ctx=None)
 
 
 @pytest.mark.asyncio
-async def test_web_search_validates_mode():
+async def test_search_validates_mode():
     with pytest.raises(ValueError, match="invalid mode"):
         await server_module._web_search_impl("test query", mode="fast", ctx=None)
 
 
 @pytest.mark.asyncio
-async def test_web_search_validates_domain_filters():
+async def test_search_validates_domain_filters():
     with pytest.raises(ValueError, match="bare domains"):
         await server_module._web_search_impl("test query", include_domains=["example.com/path"], ctx=None)
 
 
 @pytest.mark.asyncio
-async def test_web_search_returns_structured_json():
+async def test_search_returns_structured_json():
     search_mock = AsyncMock(return_value=make_search_results(URLS_A[:2]))
     rerank_mock = MagicMock(side_effect=_identity_rerank)
 

@@ -9,13 +9,13 @@ PATCH_EXTRACT_URLS_IMPL = "web_search_server._extract_urls_impl"
 
 
 @pytest.mark.asyncio
-async def test_crawl_site_validates_max_urls():
+async def test_crawl_validates_max_urls():
     with pytest.raises(ValueError, match="max_urls must be <= "):
         await server_module.crawl.fn("https://docs.example.com", max_urls=1000)
 
 
 @pytest.mark.asyncio
-async def test_crawl_site_combines_map_and_extract_results():
+async def test_crawl_combines_map_and_extract_results():
     fake_ctx = FakeContext()
     map_mock = AsyncMock(return_value={
         "url": "https://docs.example.com",
@@ -103,7 +103,7 @@ async def test_crawl_site_combines_map_and_extract_results():
 
 
 @pytest.mark.asyncio
-async def test_crawl_site_preserves_map_order_without_query():
+async def test_crawl_preserves_map_order_without_query():
     map_mock = AsyncMock(return_value={
         "url": "https://docs.example.com",
         "results": [
