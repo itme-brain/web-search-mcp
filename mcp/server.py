@@ -69,11 +69,6 @@ STATE_SEEN_URLS = "seen_urls"
 STATE_EXTRACT_CACHE = "extract_cache"
 
 VALID_TIME_RANGES = frozenset({"day", "week", "month", "year"})
-VALID_MODES = frozenset({"balanced", "deep"})
-VALID_CATEGORIES = frozenset({
-    "general", "news", "images", "videos", "music",
-    "files", "science", "social media", "it",
-})
 
 _SENTENCE_SPLITTER = pysbd.Segmenter(language="en", clean=False)
 _TRACKING_PARAMS = frozenset({
@@ -251,33 +246,6 @@ def _normalize_glob_patterns(patterns: list[str] | None, *, field_name: str) -> 
     return normalized
 
 
-def _normalize_mode(mode: str | None) -> str:
-    normalized = (mode or "balanced").strip().lower()
-    if normalized not in VALID_MODES:
-        raise ValueError(f"invalid mode: {mode!r}. Expected one of {sorted(VALID_MODES)}")
-    return normalized
-
-
-def _normalize_categories(categories: list[str] | None) -> list[str] | None:
-    if not categories:
-        return None
-    normalized: list[str] = []
-    for cat in categories:
-        value = cat.strip().lower()
-        if value not in VALID_CATEGORIES:
-            raise ValueError(f"invalid category: {cat!r}. Expected one of {sorted(VALID_CATEGORIES)}")
-        normalized.append(value)
-    return sorted(set(normalized)) or None
-
-
-def _normalize_safesearch(safesearch: int | None) -> int | None:
-    if safesearch is None:
-        return None
-    if safesearch not in {0, 1, 2}:
-        raise ValueError(f"invalid safesearch: {safesearch!r}. Expected 0, 1, or 2")
-    return safesearch
-
-
 def _match_domain(domain: str, patterns: list[str]) -> bool:
     return any(domain == pattern or domain.endswith(f".{pattern}") for pattern in patterns)
 
@@ -355,9 +323,6 @@ async def _search(
     query: str,
     num_results: int = 10,
     time_range: str | None = None,
-    categories: list[str] | None = None,
-    language: str | None = None,
-    safesearch: int | None = None,
     pageno: int = 1,
 ) -> list[dict]:
     """Query SearXNG and return raw results."""
@@ -368,12 +333,6 @@ async def _search(
     }
     if time_range:
         params["time_range"] = time_range.strip('"')
-    if categories:
-        params["categories"] = ",".join(categories)
-    if language:
-        params["language"] = language.strip()
-    if safesearch is not None:
-        params["safesearch"] = safesearch
     if pageno > 1:
         params["pageno"] = pageno
 
@@ -381,14 +340,6 @@ async def _search(
         resp = await client.get(f"{SEARXNG_URL}/search", params=params)
         resp.raise_for_status()
         return resp.json().get("results", [])[:num_results]
-
-
-def _mode_settings(mode: str, num_results: int, scrape_top: int) -> tuple[int, int]:
-    if mode == "deep":
-        candidate_count = max(num_results * 2, 20)
-        deep_scrape_top = max(scrape_top, min(num_results, MAX_SCRAPE))
-        return candidate_count, min(deep_scrape_top, MAX_SCRAPE)
-    return num_results, scrape_top
 
 
 async def _probe_dependency(url: str) -> dict[str, str]:
@@ -963,14 +914,9 @@ async def ready(_: Request) -> JSONResponse:
 async def _web_search_impl(
     query: str,
     num_results: int = 10,
-    scrape_top: int = MAX_SCRAPE,
     time_range: str | None = None,
-    mode: str = "balanced",
     include_domains: list[str] | None = None,
     exclude_domains: list[str] | None = None,
-    categories: list[str] | None = None,
-    language: str | None = None,
-    safesearch: int | None = None,
     ctx: Context | None = None,
 ) -> dict:
     """Search the web, scrape top results, and return structured JSON ranked by relevance.
@@ -978,25 +924,17 @@ async def _web_search_impl(
     Pipeline: SearXNG search -> Crawl4AI scrape -> chunk -> FlashRank reranker -> formatted output.
     Scraped pages are split into paragraphs and reranked at the chunk level, so only
     the most query-relevant excerpts from each page are returned.
-    Results are cached within the session.
 
-    Args:
-        query: The search query. Do not include dates or years in the query — use time_range instead.
-        num_results: Number of search results to fetch (default 10).
-        scrape_top: Number of top results to scrape for full content (default 5).
-        time_range: Time filter for recency: 'day', 'week', 'month', or 'year'. Use this instead of adding dates to the query. Omit or pass null for no filter.
+    Fetches page 2 from SearXNG only if page 1 after dedup/filter is short of
+    `num_results`. Always scrapes `min(num_results, MAX_SCRAPE)` top candidates.
+    Results are cached within the session.
     """
     query = _validate_query(query)
     num_results = _validate_positive_int("num_results", num_results, maximum=MAX_RESULTS)
-    scrape_top = _validate_positive_int("scrape_top", scrape_top, maximum=MAX_SCRAPE)
     time_range = _normalize_time_range(time_range)
-    mode = _normalize_mode(mode)
     include_domains = _normalize_domains(include_domains, field_name="include_domains")
     exclude_domains = _normalize_domains(exclude_domains, field_name="exclude_domains")
-    categories = _normalize_categories(categories)
-    language = language.strip() if language else None
-    safesearch = _normalize_safesearch(safesearch)
-    candidate_count, scrape_top = _mode_settings(mode, num_results, scrape_top)
+    scrape_budget = min(num_results, MAX_SCRAPE)
     started = time.monotonic()
     warnings: list[dict] = []
     degraded = False
@@ -1017,14 +955,9 @@ async def _web_search_impl(
             [
                 query.lower().strip(),
                 num_results,
-                scrape_top,
                 time_range,
-                mode,
                 include_domains,
                 exclude_domains,
-                categories,
-                language,
-                safesearch,
             ],
             sort_keys=True,
         ).encode()
@@ -1033,56 +966,38 @@ async def _web_search_impl(
         log.info("query cache hit query=%r", query)
         return query_cache[qkey]
 
-    # --- search ---
+    # --- search (page 1, with reactive page-2 fallback on underflow) ---
     search_started = time.monotonic()
     try:
-        results = await _search(
-            query,
-            num_results=candidate_count,
-            time_range=time_range,
-            categories=categories,
-            language=language,
-            safesearch=safesearch,
-        )
+        raw_results = await _search(query, num_results=num_results, time_range=time_range)
     except Exception as exc:
         degraded = True
         warnings.append(_warning("search_failed", "searxng", str(exc)))
-        results = []
+        raw_results = []
 
-    if results and mode == "deep":
+    results = _dedup_results(_filter_results_by_domain(raw_results, include_domains, exclude_domains))
+    if raw_results and len(results) < num_results:
         try:
-            page2 = await _search(
-                query,
-                num_results=candidate_count,
-                time_range=time_range,
-                categories=categories,
-                language=language,
-                safesearch=safesearch,
-                pageno=2,
-            )
-            results.extend(page2)
+            page2 = await _search(query, num_results=num_results, time_range=time_range, pageno=2)
         except Exception as exc:
             warnings.append(_warning("search_failed", "searxng", f"page 2: {exc}"))
+        else:
+            raw_results = raw_results + page2
+            results = _dedup_results(_filter_results_by_domain(raw_results, include_domains, exclude_domains))
+    results = results[:num_results]
 
     timings_ms["search"] = int((time.monotonic() - search_started) * 1000)
-    if results:
-        results = _filter_results_by_domain(results, include_domains, exclude_domains)
     if not results:
         response = {
             "query": query,
             "time_range": time_range,
-            "mode": mode,
             "include_domains": include_domains,
             "exclude_domains": exclude_domains,
-            "categories": categories,
-            "language": language,
-            "safesearch": safesearch,
             "results": [],
             "meta": {
                 "num_results_requested": num_results,
                 "num_results_returned": 0,
-                "scrape_top": min(scrape_top, num_results),
-                "candidate_count": candidate_count,
+                "scrape_top": scrape_budget,
                 "search_backend": "searxng",
                 "reranker": {"name": "flashrank", "model": RERANK_MODEL},
                 "degraded": degraded,
@@ -1097,11 +1012,9 @@ async def _web_search_impl(
         if ctx:
             await _ctx_set_state(ctx, STATE_QUERY_CACHE, query_cache)
         return response
-    results = _dedup_results(results)
-    results = results[:candidate_count]
 
     # --- scrape (cache-aware) ---
-    to_scrape = min(scrape_top, len(results))
+    to_scrape = min(scrape_budget, len(results))
     scrape_started = time.monotonic()
     scrape_tasks = [_scrape_cached(r["url"], scrape_cache) for r in results[:to_scrape]]
     scraped = await asyncio.gather(*scrape_tasks)
@@ -1213,18 +1126,13 @@ async def _web_search_impl(
     response = {
         "query": query,
         "time_range": time_range,
-        "mode": mode,
         "include_domains": include_domains,
         "exclude_domains": exclude_domains,
-        "categories": categories,
-        "language": language,
-        "safesearch": safesearch,
         "results": structured_results,
         "meta": {
             "num_results_requested": num_results,
             "num_results_returned": len(structured_results),
             "scrape_top": to_scrape,
-            "candidate_count": candidate_count,
             "search_backend": "searxng",
             "reranker": {"name": "flashrank", "model": RERANK_MODEL},
             "degraded": degraded,
@@ -1257,10 +1165,8 @@ async def _web_search_impl(
 # ---------------------------------------------------------------------------
 
 def _format_search_results(response: dict) -> str:
-    """Format web_search response as markdown for LLM consumption."""
+    """Format search response as markdown for LLM consumption."""
     parts = [f"query: {response['query']}"]
-    if response.get("mode"):
-        parts.append(f"mode: {response['mode']}")
     if response.get("time_range"):
         parts.append(f"time_range: {response['time_range']}")
     meta = response.get("meta", {})
@@ -1374,14 +1280,9 @@ def _format_crawl_results(response: dict) -> str:
 async def search(
     query: str,
     num_results: int = 10,
-    scrape_top: int = MAX_SCRAPE,
     time_range: str | None = None,
-    mode: str = "balanced",
     include_domains: list[str] | None = None,
     exclude_domains: list[str] | None = None,
-    categories: list[str] | None = None,
-    language: str | None = None,
-    safesearch: int | None = None,
     ctx: Context | None = None,
 ) -> str:
     """Search the web, scrape the top results, and return ranked markdown.
@@ -1399,14 +1300,9 @@ async def search(
     response = await _web_search_impl(
         query=query,
         num_results=num_results,
-        scrape_top=scrape_top,
         time_range=time_range,
-        mode=mode,
         include_domains=include_domains,
         exclude_domains=exclude_domains,
-        categories=categories,
-        language=language,
-        safesearch=safesearch,
         ctx=ctx,
     )
     return _format_search_results(response)

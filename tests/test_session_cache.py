@@ -74,13 +74,13 @@ def patched_backends():
 
 @pytest.mark.asyncio
 async def test_query_cache_hit_returns_same_output_without_calling_backends(patched_backends, fake_ctx):
-    payload1 = await server_module._web_search_impl("test query", num_results=3, scrape_top=3, ctx=fake_ctx)
+    payload1 = await server_module._web_search_impl("test query", num_results=3, ctx=fake_ctx)
 
     patched_backends["search"].reset_mock()
     patched_backends["scrape"].reset_mock()
     patched_backends["rerank"].reset_mock()
 
-    payload2 = await server_module._web_search_impl("test query", num_results=3, scrape_top=3, ctx=fake_ctx)
+    payload2 = await server_module._web_search_impl("test query", num_results=3, ctx=fake_ctx)
 
     assert payload1 == payload2
     patched_backends["search"].assert_not_called()
@@ -90,13 +90,13 @@ async def test_query_cache_hit_returns_same_output_without_calling_backends(patc
 
 @pytest.mark.asyncio
 async def test_query_cache_key_normalizes_whitespace_and_case(patched_backends, fake_ctx):
-    payload1 = await server_module._web_search_impl("Test Query ", num_results=3, scrape_top=3, ctx=fake_ctx)
+    payload1 = await server_module._web_search_impl("Test Query ", num_results=3, ctx=fake_ctx)
 
     patched_backends["search"].reset_mock()
     patched_backends["scrape"].reset_mock()
     patched_backends["rerank"].reset_mock()
 
-    payload2 = await server_module._web_search_impl("  test query", num_results=3, scrape_top=3, ctx=fake_ctx)
+    payload2 = await server_module._web_search_impl("  test query", num_results=3, ctx=fake_ctx)
 
     assert payload1 == payload2
     patched_backends["search"].assert_not_called()
@@ -122,13 +122,13 @@ async def test_query_cache_miss_on_different_query_triggers_fresh_pipeline(fake_
         patch(PATCH_SCRAPE, scrape_mock),
         patch(PATCH_RERANK, rerank_mock),
     ):
-        await server_module._web_search_impl("test query", num_results=3, scrape_top=3, ctx=fake_ctx)
+        await server_module._web_search_impl("test query", num_results=3, ctx=fake_ctx)
 
         search_mock.reset_mock()
         scrape_mock.reset_mock()
         rerank_mock.reset_mock()
 
-        await server_module._web_search_impl("different query", num_results=3, scrape_top=3, ctx=fake_ctx)
+        await server_module._web_search_impl("different query", num_results=3, ctx=fake_ctx)
 
     search_mock.assert_called_once()
     assert scrape_mock.call_count == 3
@@ -155,12 +155,12 @@ async def test_scrape_cache_reuse_skips_already_scraped_urls(fake_ctx):
         patch(PATCH_SCRAPE, scrape_mock),
         patch(PATCH_RERANK, rerank_mock),
     ):
-        await server_module._web_search_impl("query alpha", num_results=3, scrape_top=3, ctx=fake_ctx)
+        await server_module._web_search_impl("query alpha", num_results=3, ctx=fake_ctx)
         assert scrape_mock.call_count == 3
 
         scrape_mock.reset_mock()
 
-        await server_module._web_search_impl("query beta", num_results=3, scrape_top=3, ctx=fake_ctx)
+        await server_module._web_search_impl("query beta", num_results=3, ctx=fake_ctx)
 
     scrape_urls_second = [call.args[0] for call in scrape_mock.call_args_list]
     assert "https://example.com/a2" not in scrape_urls_second
@@ -188,10 +188,10 @@ async def test_previously_seen_urls_annotated_in_subsequent_results(fake_ctx):
         patch(PATCH_SCRAPE, scrape_mock),
         patch(PATCH_RERANK, rerank_mock),
     ):
-        payload1 = await server_module._web_search_impl("first search", num_results=3, scrape_top=3, ctx=fake_ctx)
+        payload1 = await server_module._web_search_impl("first search", num_results=3, ctx=fake_ctx)
         assert all(not item["previously_seen"] for item in payload1["results"])
 
-        payload2 = await server_module._web_search_impl("second search", num_results=3, scrape_top=3, ctx=fake_ctx)
+        payload2 = await server_module._web_search_impl("second search", num_results=3, ctx=fake_ctx)
 
     seen_flags = {item["url"]: item["previously_seen"] for item in payload2["results"]}
     assert seen_flags["https://example.com/a2"] is True
@@ -213,7 +213,7 @@ async def test_none_scrape_result_cached_so_broken_url_not_retried(fake_ctx):
         patch(PATCH_SCRAPE, scrape_mock),
         patch(PATCH_RERANK, rerank_mock),
     ):
-        await server_module._web_search_impl("fail test", num_results=3, scrape_top=3, ctx=fake_ctx)
+        await server_module._web_search_impl("fail test", num_results=3, ctx=fake_ctx)
         assert scrape_mock.call_count == 3
 
         scrape_mock.reset_mock()
@@ -222,7 +222,7 @@ async def test_none_scrape_result_cached_so_broken_url_not_retried(fake_ctx):
             ["https://example.com/a2", "https://example.com/new1"], prefix="Retry"
         )
 
-        await server_module._web_search_impl("retry test", num_results=2, scrape_top=2, ctx=fake_ctx)
+        await server_module._web_search_impl("retry test", num_results=2, ctx=fake_ctx)
 
     scrape_urls = [call.args[0] for call in scrape_mock.call_args_list]
     assert "https://example.com/a2" not in scrape_urls
@@ -240,7 +240,7 @@ async def test_tool_works_without_session_context():
         patch(PATCH_SCRAPE, scrape_mock),
         patch(PATCH_RERANK, rerank_mock),
     ):
-        result = await server_module._web_search_impl("direct call", num_results=2, scrape_top=2, ctx=None)
+        result = await server_module._web_search_impl("direct call", num_results=2, ctx=None)
 
     assert result["query"] == "direct call"
     assert result["results"][0]["url"] == "https://example.com/a1"
@@ -258,7 +258,7 @@ async def test_rerank_failure_falls_back_to_search_order():
         patch(PATCH_SCRAPE, scrape_mock),
         patch(PATCH_RERANK, rerank_mock),
     ):
-        payload = await server_module._web_search_impl("fallback query", num_results=2, scrape_top=2, ctx=None)
+        payload = await server_module._web_search_impl("fallback query", num_results=2, ctx=None)
 
     assert payload["meta"]["degraded"] is True
     assert any(w["type"] == "rerank_failed" for w in payload["meta"]["warnings"])
@@ -276,7 +276,7 @@ async def test_search_failure_returns_empty_degraded_payload():
         patch(PATCH_SCRAPE, scrape_mock),
         patch(PATCH_RERANK, rerank_mock),
     ):
-        payload = await server_module._web_search_impl("failed query", num_results=2, scrape_top=2, ctx=None)
+        payload = await server_module._web_search_impl("failed query", num_results=2, ctx=None)
 
     assert payload["results"] == []
     assert payload["meta"]["degraded"] is True
@@ -299,7 +299,6 @@ async def test_include_domains_filters_results(fake_ctx):
         payload = await server_module._web_search_impl(
             "python tutorial",
             num_results=2,
-            scrape_top=2,
             include_domains=["docs.python.org"],
             ctx=fake_ctx,
         )
@@ -324,7 +323,6 @@ async def test_exclude_domains_filters_results(fake_ctx):
         payload = await server_module._web_search_impl(
             "python tutorial",
             num_results=3,
-            scrape_top=3,
             exclude_domains=["example.com"],
             ctx=fake_ctx,
         )
@@ -334,14 +332,8 @@ async def test_exclude_domains_filters_results(fake_ctx):
 
 
 @pytest.mark.asyncio
-async def test_deep_mode_expands_candidate_pool(fake_ctx):
-    captured_search_kwargs = {}
-
-    async def _search_side_effect(query, **kwargs):
-        captured_search_kwargs.update(kwargs)
-        return make_search_results(URLS_C)
-
-    search_mock = AsyncMock(side_effect=_search_side_effect)
+async def test_scrape_top_is_auto_bounded_by_num_results(fake_ctx):
+    search_mock = AsyncMock(return_value=make_search_results(URLS_A))
     scrape_mock = _make_scrape_mock()
     rerank_mock = MagicMock(side_effect=_identity_rerank)
 
@@ -351,17 +343,10 @@ async def test_deep_mode_expands_candidate_pool(fake_ctx):
         patch(PATCH_RERANK, rerank_mock),
     ):
         payload = await server_module._web_search_impl(
-            "deep query",
-            num_results=3,
-            scrape_top=2,
-            mode="deep",
-            ctx=fake_ctx,
+            "bounded", num_results=2, ctx=fake_ctx,
         )
 
-    assert captured_search_kwargs["num_results"] == 20
-    assert payload["mode"] == "deep"
-    assert payload["meta"]["candidate_count"] == 20
-    assert payload["meta"]["scrape_top"] == 3
+    assert payload["meta"]["scrape_top"] == 2
 
 
 @pytest.mark.asyncio
@@ -387,7 +372,6 @@ async def test_final_results_are_domain_diversified(fake_ctx):
         payload = await server_module._web_search_impl(
             "diverse query",
             num_results=4,
-            scrape_top=4,
             ctx=fake_ctx,
         )
 

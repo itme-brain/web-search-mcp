@@ -123,14 +123,14 @@ The surface is intentionally small: four tools that compose. Pick the one that m
 | To discover URLs on a known site without fetching content | `map` |
 | Both discovery **and** content from a known site in one call | `crawl` |
 
-### `search(query, num_results=10, scrape_top=5, time_range=None, mode="balanced", include_domains=None, exclude_domains=None)`
+### `search(query, num_results=10, time_range=None, include_domains=None, exclude_domains=None)`
 
 Web search → scrape top results → rerank → return ranked markdown.
 
 - Scope to a single site with `site:<domain>` in the query (e.g. `site:docs.python.org asyncio`).
 - For recency, set `time_range` (`day` / `week` / `month` / `year`) — do NOT put dates in the query text.
 - `include_domains` / `exclude_domains` hard-filter by bare domain.
-- `mode="deep"` expands the candidate pool before reranking; `balanced` is the default.
+- Fetches a second page from SearXNG automatically if page 1 is short of `num_results` after dedup/filter. Always scrapes `min(num_results, MAX_SCRAPE)` top results.
 
 ### `extract(urls, query=None, ...browser_opts)`
 
@@ -168,7 +168,6 @@ All tools return markdown optimized for LLM consumption. Example for `search`:
 
 ```
 query: current llm context window records
-mode: balanced
 time_range: month
 results: 5
 

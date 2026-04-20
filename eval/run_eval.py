@@ -31,9 +31,7 @@ async def _run_query(server_module, query_spec: dict) -> dict:
     payload = await server_module._web_search_impl(
         query=query_spec["query"],
         num_results=query_spec.get("num_results", 5),
-        scrape_top=query_spec.get("scrape_top", 5),
         time_range=query_spec.get("time_range"),
-        mode=query_spec.get("mode", "balanced"),
         include_domains=query_spec.get("include_domains"),
         exclude_domains=query_spec.get("exclude_domains"),
         ctx=None,
@@ -44,9 +42,7 @@ async def _run_query(server_module, query_spec: dict) -> dict:
         "started_at": started_at,
         "request": {
             "num_results": query_spec.get("num_results", 5),
-            "scrape_top": query_spec.get("scrape_top", 5),
             "time_range": query_spec.get("time_range"),
-            "mode": query_spec.get("mode", "balanced"),
             "include_domains": query_spec.get("include_domains", []),
             "exclude_domains": query_spec.get("exclude_domains", []),
         },

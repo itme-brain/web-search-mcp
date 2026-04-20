@@ -63,7 +63,6 @@ def _query_summary(row: dict) -> dict:
     return {
         "id": row["id"],
         "query": row["query"],
-        "mode": response.get("mode"),
         "results_returned": len(results),
         "scraped_results": scraped,
         "degraded": bool(meta.get("degraded")),

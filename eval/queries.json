@@ -2,7 +2,6 @@
   {
     "id": "tech-python-docs",
     "query": "python asyncio taskgroup tutorial",
-    "mode": "balanced",
     "include_domains": ["docs.python.org"],
     "notes": "Documentation-focused lookup.",
     "judgments": {
@@ -15,7 +14,6 @@
   {
     "id": "tech-github-mcp",
     "query": "model context protocol github examples",
-    "mode": "balanced",
     "notes": "General technical research.",
     "judgments": {
       "expected_domains": ["github.com"],
@@ -27,7 +25,6 @@
   {
     "id": "news-ai",
     "query": "recent AI model announcements",
-    "mode": "deep",
     "time_range": "month",
     "notes": "Freshness-sensitive query.",
     "judgments": {
@@ -40,7 +37,6 @@
   {
     "id": "company-product",
     "query": "site reliability engineering incident postmortem examples",
-    "mode": "deep",
     "notes": "Broad product and engineering research.",
     "judgments": {
       "expected_domains": [],
@@ -52,7 +48,6 @@
   {
     "id": "academic-rag",
     "query": "retrieval augmented generation reranking papers",
-    "mode": "deep",
     "include_domains": ["arxiv.org"],
     "notes": "Paper-oriented query.",
     "judgments": {
@@ -65,7 +60,6 @@
   {
     "id": "docs-fastapi",
     "query": "fastapi dependency injection tutorial",
-    "mode": "balanced",
     "include_domains": ["fastapi.tiangolo.com"],
     "notes": "Single-domain docs query.",
     "judgments": {

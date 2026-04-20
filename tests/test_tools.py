@@ -67,12 +67,6 @@ async def test_search_validates_num_results():
 
 
 @pytest.mark.asyncio
-async def test_search_validates_mode():
-    with pytest.raises(ValueError, match="invalid mode"):
-        await server_module._web_search_impl("test query", mode="fast", ctx=None)
-
-
-@pytest.mark.asyncio
 async def test_search_validates_domain_filters():
     with pytest.raises(ValueError, match="bare domains"):
         await server_module._web_search_impl("test query", include_domains=["example.com/path"], ctx=None)
@@ -88,7 +82,7 @@ async def test_search_returns_structured_json():
         patch("web_search_server._scrape", AsyncMock(return_value={"content": "# Page\n\ncontent", "title": None, "screenshot": None})),
         patch(PATCH_RERANK, rerank_mock),
     ):
-        payload = await server_module._web_search_impl("test query", num_results=2, scrape_top=2, ctx=None)
+        payload = await server_module._web_search_impl("test query", num_results=2, ctx=None)
 
     assert payload["query"] == "test query"
     assert payload["meta"]["reranker"]["name"] == "flashrank"
@@ -96,4 +90,3 @@ async def test_search_returns_structured_json():
     assert payload["results"][0]["url"] == "https://example.com/a1"
     assert payload["results"][0]["normalized_url"] == "https://example.com/a1"
     assert payload["results"][0]["scraped"] is True
-    assert payload["mode"] == "balanced"
