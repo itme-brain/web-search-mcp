@@ -159,59 +159,28 @@ Crawl behavior:
 - It keeps the same bounded controls as `map_site`, then returns per-page extraction status, content, and top chunks in one response.
 - If `query` is provided, crawled pages are re-ordered by their best chunk score after extraction.
 
-`web_search` response shape:
+`web_search` response shape (markdown, optimized for LLM consumption):
 
-```json
-{
-  "query": "current llm context window records",
-  "time_range": "month",
-  "mode": "balanced",
-  "include_domains": [],
-  "exclude_domains": [],
-  "results": [
-    {
-      "rank": 1,
-      "search_rank": 3,
-      "title": "Example Title",
-      "url": "https://example.com/post",
-      "normalized_url": "https://example.com/post",
-      "domain": "example.com",
-      "snippet": "Short search-engine snippet.",
-      "content": "Most relevant extracted page content.",
-      "top_chunks": [
-        {
-          "text": "Most relevant excerpt from the page.",
-          "score": 0.92
-        }
-      ],
-      "score": 0.92,
-      "scraped": true,
-      "previously_seen": false
-    }
-  ],
-  "meta": {
-    "num_results_requested": 5,
-    "num_results_returned": 5,
-    "scrape_top": 5,
-    "candidate_count": 5,
-    "search_backend": "searxng",
-    "reranker": {
-      "name": "flashrank",
-      "model": "ms-marco-MiniLM-L-12-v2"
-    },
-    "degraded": false,
-    "warnings": [],
-    "timings_ms": {
-      "search": 120,
-      "scrape": 640,
-      "rerank": 18,
-      "total": 790
-    }
-  }
-}
+```
+query: current llm context window records
+mode: balanced
+time_range: month
+results: 5
+
+---
+
+## [Example Title](https://example.com/post)
+
+Most relevant extracted page content.
+
+---
+
+## [Another Result](https://example.com/other)
+
+More content here.
 ```
 
-When an upstream dependency partially fails, the MCP returns the same JSON shape with `meta.degraded=true` and a populated `meta.warnings` array instead of hard-failing the whole tool.
+When an upstream dependency partially fails, the response header includes `status: degraded` and a `warnings:` line instead of hard-failing the whole tool.
 
 ## Layout
 
