@@ -1,6 +1,9 @@
 fastmcp==3.2.4
 flashrank==0.2.9
 httpx==0.28.1
+pydantic-settings==2.13.1
+pysbd==0.3.4
 python-docx==1.1.2
 pypdf==5.4.0
 trafilatura==2.0.0
+url-normalize==2.2.1

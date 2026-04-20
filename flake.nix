@@ -1,5 +1,5 @@
 {
-  description = "Fully-FOSS web-search MCP server: SearXNG + Crawl4AI + Jina reranker bundled as one docker-compose stack";
+  description = "Fully-FOSS web-search MCP server: SearXNG + Crawl4AI + FlashRank bundled as one docker-compose stack";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -42,9 +42,11 @@
           fastmcp
           flashrank
           httpx
+          pysbd
           python-docx
           pypdf
           trafilatura
+          url-normalize
           pytest
           pytest-asyncio
         ]);
