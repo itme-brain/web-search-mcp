@@ -148,6 +148,38 @@ async def test_unresponsive_engines_emitted_as_warnings():
     assert "brave: HTTP 503" in details
 
 
+@pytest.mark.asyncio
+async def test_search_separates_reranked_chunks_with_ellipsis_gap():
+    """Top-K chunks from different parts of a page must be marked as
+    discontinuous so the LLM doesn't read them as continuous prose."""
+    page_with_two_distinct_paragraphs = (
+        "Paragraph one covers rockets and launch pads and mission control.\n\n"
+        "Completely unrelated paragraph about database indexes and write "
+        "amplification and cache invalidation strategies."
+    )
+    search_mock = AsyncMock(return_value=make_search_results(URLS_A[:1]))
+    scrape_mock = AsyncMock(return_value={
+        "content": page_with_two_distinct_paragraphs,
+        "title": "Mixed",
+        "screenshot": None,
+    })
+    # Rerank returns both chunks with equal scores so both are kept.
+    def rerank_both(_q, docs):
+        return [(i, 1.0) for i in range(len(docs))]
+    rerank_mock = AsyncMock(side_effect=rerank_both)
+
+    with (
+        patch(PATCH_SEARCH, search_mock),
+        patch(PATCH_SCRAPE, scrape_mock),
+        patch(PATCH_RERANK, rerank_mock),
+    ):
+        payload = await server_module.search_impl(query="anything", num_results=1)
+
+    content = payload["results"][0]["content"]
+    # When 2+ chunks are kept, they should be separated by the gap marker.
+    assert "[…]" in content, f"expected ellipsis gap in content:\n{content}"
+
+
 def test_dedup_unresponsive_engines_handles_list_and_dict_shapes():
     """SearXNG sometimes ships list pairs, sometimes dicts, sometimes dupes."""
     entries = [

@@ -63,6 +63,11 @@ _MAX_CONTENT_CHARS = 8000
 _DEDUP_SIMILARITY = 0.75
 _TOP_CHUNKS = 3
 _MAX_CHUNKS_PER_PAGE = 10
+# Joiner for reranked chunks from the same page — standard editorial "elided
+# material" mark, signals that chunks are discontinuous excerpts rather than
+# continuous prose so the LLM doesn't mis-read e.g. paragraph 2 + paragraph 15
+# as one logical flow.
+_CHUNK_GAP = "\n\n[…]\n\n"
 _MAX_EXTRACT_URLS = 20
 _MAX_MAP_URLS = 50
 _MAX_MAP_DEPTH = 2
@@ -845,7 +850,7 @@ async def _rank_document_content(query: str | None, content: str) -> tuple[str, 
     top = [{"text": chunks[idx], "score": score} for idx, score in scored[:_TOP_CHUNKS]]
     if not top:
         return content[:_MAX_CONTENT_CHARS], []
-    return "\n\n".join(item["text"] for item in top), top
+    return _CHUNK_GAP.join(item["text"] for item in top), top
 
 
 async def _extract_url_document(
@@ -1160,7 +1165,7 @@ async def search_impl(
         normalized_url = _normalize_url(url)
         top = entry_chunks.get(eidx, [])
         if top:
-            content = "\n\n".join(chunk for chunk, _ in top)
+            content = _CHUNK_GAP.join(chunk for chunk, _ in top)
         else:
             content = entry["content"]
 
