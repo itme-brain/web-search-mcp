@@ -46,6 +46,14 @@ server_app = _mod.mcp
 
 
 class FakeContext:
+    """Minimal stub for fastmcp.Context in impl-level tests.
+
+    Enforces the same JSON-serializability contract the real FastMCP
+    Context does on `set_state`, so non-serializable values (e.g. a raw
+    TTLCache) fail in pytest instead of silently passing here and
+    blowing up only at runtime against a real MCP client.
+    """
+
     def __init__(self):
         self._state = {}
 
@@ -53,6 +61,15 @@ class FakeContext:
         return self._state.get(key)
 
     def set_state(self, key, value):
+        try:
+            import json
+            json.dumps(value)
+        except (TypeError, ValueError) as exc:
+            raise TypeError(
+                f"FakeContext.set_state({key!r}): value is not JSON-serializable "
+                f"({type(value).__name__}: {exc}). Real FastMCP Context would reject "
+                f"this too. Persist as a plain dict/list/primitive."
+            ) from exc
         self._state[key] = value
 
 

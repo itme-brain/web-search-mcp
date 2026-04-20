@@ -249,6 +249,27 @@ async def _ctx_set_state(ctx: Context, key: str, value) -> None:
     await _maybe_await(ctx.set_state(key, value))
 
 
+async def _load_cache(ctx: Context | None, key: str) -> TTLCache:
+    """Load a cache from ctx state as a TTLCache.
+
+    FastMCP's ctx state requires values to be JSON-serializable, so we
+    persist as plain dicts and instantiate a TTLCache wrapper on read to
+    regain bounded-size + TTL semantics within the request.
+    """
+    cache = _new_cache()
+    if ctx:
+        stored = await _ctx_get_state(ctx, key)
+        if stored:
+            cache.update(stored)
+    return cache
+
+
+async def _save_cache(ctx: Context | None, key: str, cache: TTLCache) -> None:
+    """Persist a cache to ctx state as a plain dict."""
+    if ctx:
+        await _ctx_set_state(ctx, key, dict(cache))
+
+
 def _normalize_domains(domains: list[str] | None, *, field_name: str) -> list[str]:
     if not domains:
         return []
@@ -991,13 +1012,9 @@ async def search_impl(
     timings_ms = {"search": 0, "scrape": 0, "rerank": 0, "total": 0}
 
     # --- session state (TTL-capped to prevent unbounded growth) ---
-    scrape_cache = _new_cache()
-    query_cache = _new_cache()
-    seen_urls = _new_cache()
-    if ctx:
-        scrape_cache = await _ctx_get_state(ctx, STATE_SCRAPE_CACHE) or scrape_cache
-        query_cache = await _ctx_get_state(ctx, STATE_QUERY_CACHE) or query_cache
-        seen_urls = await _ctx_get_state(ctx, STATE_SEEN_URLS) or seen_urls
+    scrape_cache = await _load_cache(ctx, STATE_SCRAPE_CACHE)
+    query_cache = await _load_cache(ctx, STATE_QUERY_CACHE)
+    seen_urls = await _load_cache(ctx, STATE_SEEN_URLS)
 
     # --- exact query cache ---
     qkey = hashlib.sha256(
@@ -1071,8 +1088,7 @@ async def search_impl(
             },
         }
         query_cache[qkey] = response
-        if ctx:
-            await _ctx_set_state(ctx, STATE_QUERY_CACHE, query_cache)
+        await _save_cache(ctx, STATE_QUERY_CACHE, query_cache)
         return response
 
     # --- scrape (cache-aware) ---
@@ -1210,10 +1226,9 @@ async def search_impl(
     for url in new_urls:
         seen_urls[url] = True
     query_cache[qkey] = response
-    if ctx:
-        await _ctx_set_state(ctx, STATE_SCRAPE_CACHE, scrape_cache)
-        await _ctx_set_state(ctx, STATE_QUERY_CACHE, query_cache)
-        await _ctx_set_state(ctx, STATE_SEEN_URLS, seen_urls)
+    await _save_cache(ctx, STATE_SCRAPE_CACHE, scrape_cache)
+    await _save_cache(ctx, STATE_QUERY_CACHE, query_cache)
+    await _save_cache(ctx, STATE_SEEN_URLS, seen_urls)
 
     log.info(
         "query=%r chunks=%d pages=%d scrape_cache=%d query_cache=%d seen=%d",
@@ -1386,9 +1401,7 @@ async def extract_impl(
     normalized_query = query.strip() if query else None
     started = time.monotonic()
 
-    extract_cache = _new_cache()
-    if ctx:
-        extract_cache = await _ctx_get_state(ctx, STATE_EXTRACT_CACHE) or extract_cache
+    extract_cache = await _load_cache(ctx, STATE_EXTRACT_CACHE)
 
     documents = await asyncio.gather(*[
         _extract_url_document(url, normalized_query, extract_cache)
@@ -1422,8 +1435,7 @@ async def extract_impl(
             entry["pages_returned"] = document.get("pages_returned", 0)
         results.append(entry)
 
-    if ctx:
-        await _ctx_set_state(ctx, STATE_EXTRACT_CACHE, extract_cache)
+    await _save_cache(ctx, STATE_EXTRACT_CACHE, extract_cache)
 
     response = {
         "query": normalized_query,
