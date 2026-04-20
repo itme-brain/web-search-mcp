@@ -114,8 +114,7 @@ SearXNG engine allowlist, safesearch, etc. live in `searxng/config/settings.yml.
 
 ## Tools the MCP exposes
 
-- Tool: `web_search(query, num_results=10, scrape_top=5, time_range=None, mode="balanced", include_domains=None, exclude_domains=None)` — returns structured JSON with ranked results, snippets, extracted content, per-page top chunks, and response metadata. `time_range` takes `day`, `week`, `month`, `year`. `mode` is `balanced` or `deep`.
-- Tool: `site_search(query, site, num_results=10, scrape_top=5, mode="balanced", include_domains=None, exclude_domains=None)` — same JSON schema, but scoped with `site:<domain>`.
+- Tool: `web_search(query, num_results=10, scrape_top=5, time_range=None, mode="balanced", include_domains=None, exclude_domains=None)` — returns structured JSON with ranked results, snippets, extracted content, per-page top chunks, and response metadata. `time_range` takes `day`, `week`, `month`, `year`. `mode` is `balanced` or `deep`. To scope a search to one site, prefix the query with `site:<domain>`.
 - Tool: `extract_url(url, query=None)` — single-URL extraction for pages and supported files. PDFs are fully extracted with per-page chunking; when `query` is provided, pages are reranked by relevance.
 - Tool: `extract_urls(urls, query=None)` — batch extraction with per-URL statuses. Uses Crawl4AI for web pages and `pymupdf4llm` for PDFs. PDF pages are chunked and optionally reranked server-side.
 - Tool: `map_site(url, max_urls=25, max_depth=1, include_patterns=None, exclude_patterns=None, same_domain_only=True)` — discovers candidate URLs from a site using Crawl4AI link extraction and returns a structured site map.

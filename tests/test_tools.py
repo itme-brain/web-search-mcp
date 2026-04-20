@@ -55,29 +55,6 @@ async def test_extract_url_returns_structured_result_from_tool():
 
 
 @pytest.mark.asyncio
-async def test_site_search_prepends_site_prefix():
-    search_mock = AsyncMock(return_value=make_search_results(URLS_A[:2]))
-    rerank_mock = MagicMock(side_effect=_identity_rerank)
-
-    with (
-        patch(PATCH_SEARCH, search_mock),
-        patch("web_search_server._scrape", AsyncMock(return_value={"content": "# Page\n\ncontent", "title": None, "screenshot": None})),
-        patch(PATCH_RERANK, rerank_mock),
-    ):
-        async with Client(server_app) as client:
-            result = await client.call_tool(
-                "site_search",
-                {"query": "python tutorial", "site": "docs.python.org", "num_results": 2, "scrape_top": 2},
-            )
-            payload = result.data
-
-    search_mock.assert_called_once()
-    call_args = search_mock.call_args
-    assert "site:docs.python.org" in call_args[1].get("query", call_args[0][0] if call_args[0] else "")
-    assert "site:docs.python.org python tutorial" in payload
-
-
-@pytest.mark.asyncio
 async def test_web_search_validates_time_range():
     with pytest.raises(ValueError, match="invalid time_range"):
         await server_module._web_search_impl("test query", time_range="decade", ctx=None)

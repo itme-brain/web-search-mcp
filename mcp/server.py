@@ -1257,7 +1257,7 @@ async def _web_search_impl(
 # ---------------------------------------------------------------------------
 
 def _format_search_results(response: dict) -> str:
-    """Format web_search/site_search response as markdown for LLM consumption."""
+    """Format web_search response as markdown for LLM consumption."""
     parts = [f"query: {response['query']}"]
     if response.get("mode"):
         parts.append(f"mode: {response['mode']}")
@@ -1387,6 +1387,12 @@ async def web_search(
     safesearch: int | None = None,
     ctx: Context | None = None,
 ) -> str:
+    """Search the web and return ranked, scraped results as markdown.
+
+    To scope a search to a single site, prefix the query with `site:<domain>`
+    (e.g. `site:docs.python.org asyncio taskgroup`). For recency, use
+    `time_range` instead of adding dates to the query.
+    """
     response = await _web_search_impl(
         query=query,
         num_results=num_results,
@@ -1777,78 +1783,6 @@ async def crawl_site(
         extracted["meta"]["urls_failed"],
     )
     return _format_crawl_results(response)
-
-
-async def _site_search_impl(
-    query: str,
-    site: str,
-    num_results: int = 10,
-    scrape_top: int = MAX_SCRAPE,
-    mode: str = "balanced",
-    include_domains: list[str] | None = None,
-    exclude_domains: list[str] | None = None,
-    categories: list[str] | None = None,
-    language: str | None = None,
-    safesearch: int | None = None,
-    ctx: Context | None = None,
-) -> dict:
-    """Search within a specific website or domain.
-
-    Prepends 'site:<domain>' to the query and runs the full search pipeline.
-    Useful for searching documentation sites, GitHub repos, or any specific domain.
-
-    Args:
-        query: The search query.
-        site: Domain to search within (e.g. 'github.com', 'docs.python.org').
-        num_results: Number of search results to fetch (default 10).
-        scrape_top: Number of top results to scrape for full content (default 5).
-    """
-    normalized_site = site.strip()
-    if not normalized_site:
-        raise ValueError("site must not be empty")
-    scoped_query = f"site:{normalized_site} {query}"
-    return await _web_search_impl(
-        query=scoped_query,
-        num_results=num_results,
-        scrape_top=scrape_top,
-        mode=mode,
-        include_domains=include_domains,
-        exclude_domains=exclude_domains,
-        categories=categories,
-        language=language,
-        safesearch=safesearch,
-        ctx=ctx,
-    )
-
-
-@mcp.tool
-async def site_search(
-    query: str,
-    site: str,
-    num_results: int = 10,
-    scrape_top: int = MAX_SCRAPE,
-    mode: str = "balanced",
-    include_domains: list[str] | None = None,
-    exclude_domains: list[str] | None = None,
-    categories: list[str] | None = None,
-    language: str | None = None,
-    safesearch: int | None = None,
-    ctx: Context | None = None,
-) -> str:
-    response = await _site_search_impl(
-        query=query,
-        site=site,
-        num_results=num_results,
-        scrape_top=scrape_top,
-        mode=mode,
-        include_domains=include_domains,
-        exclude_domains=exclude_domains,
-        categories=categories,
-        language=language,
-        safesearch=safesearch,
-        ctx=ctx,
-    )
-    return _format_search_results(response)
 
 
 if __name__ == "__main__":
