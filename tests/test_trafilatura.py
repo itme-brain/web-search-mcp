@@ -4,8 +4,6 @@ import pytest
 
 from tests.conftest import server_module
 
-CHUNK_MIN_CHARS = server_module.CHUNK_MIN_CHARS
-
 
 class TestExtractMarkdown:
     def test_prefers_trafilatura_when_html_present(self):

@@ -261,7 +261,7 @@ async def test_rerank_failure_falls_back_to_search_order():
         payload = await server_module._web_search_impl("fallback query", num_results=2, scrape_top=2, ctx=None)
 
     assert payload["meta"]["degraded"] is True
-    assert any("rerank failed" in warning for warning in payload["meta"]["warnings"])
+    assert any(w["type"] == "rerank_failed" for w in payload["meta"]["warnings"])
     assert [item["url"] for item in payload["results"]] == URLS_A[:2]
 
 
@@ -280,7 +280,7 @@ async def test_search_failure_returns_empty_degraded_payload():
 
     assert payload["results"] == []
     assert payload["meta"]["degraded"] is True
-    assert any("search failed" in warning for warning in payload["meta"]["warnings"])
+    assert any(w["type"] == "search_failed" for w in payload["meta"]["warnings"])
 
 
 @pytest.mark.asyncio

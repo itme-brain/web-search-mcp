@@ -136,7 +136,7 @@ async def test_crawl_site_preserves_map_order_without_query():
         ],
         "meta": {
             "urls_returned": 2,
-            "warnings": ["test warning"],
+            "warnings": [{"type": "link_discovery_failed", "source": "crawl4ai", "detail": "test"}],
             "timings_ms": {"total": 5},
         },
     })
@@ -190,4 +190,4 @@ async def test_crawl_site_preserves_map_order_without_query():
         "https://docs.example.com/guide",
     ]
     assert payload["results"][1]["status"] == "error"
-    assert payload["meta"]["warnings"] == ["test warning"]
+    assert payload["meta"]["warnings"] == [{"type": "link_discovery_failed", "source": "crawl4ai", "detail": "test"}]
