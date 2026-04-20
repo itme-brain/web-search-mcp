@@ -39,7 +39,7 @@ def _identity_rerank(_query: str, documents: list[str]) -> list[tuple[int, float
 async def test_search_dict_carries_full_structured_fields():
     search_mock = AsyncMock(return_value=make_search_results(URLS_A[:2]))
     scrape_mock = AsyncMock(return_value={"content": "# Page\n\ncontent", "title": None})
-    rerank_mock = MagicMock(side_effect=_identity_rerank)
+    rerank_mock = AsyncMock(side_effect=_identity_rerank)
 
     with (
         patch(PATCH_SEARCH, search_mock),
@@ -58,7 +58,7 @@ async def test_search_dict_carries_full_structured_fields():
 async def test_search_markdown_does_not_leak_metadata_fields():
     search_mock = AsyncMock(return_value=make_search_results(URLS_A[:2]))
     scrape_mock = AsyncMock(return_value={"content": "# Page\n\ncontent", "title": None})
-    rerank_mock = MagicMock(side_effect=_identity_rerank)
+    rerank_mock = AsyncMock(side_effect=_identity_rerank)
 
     with (
         patch(PATCH_SEARCH, search_mock),

@@ -58,7 +58,7 @@ def _make_diversity_results() -> list[dict]:
 def patched_backends():
     search_mock = AsyncMock(return_value=make_search_results(URLS_A))
     scrape_mock = _make_scrape_mock()
-    rerank_mock = MagicMock(side_effect=_identity_rerank)
+    rerank_mock = AsyncMock(side_effect=_identity_rerank)
 
     with (
         patch(PATCH_SEARCH, search_mock),
@@ -115,7 +115,7 @@ async def test_query_cache_miss_on_different_query_triggers_fresh_pipeline(fake_
 
     search_mock = AsyncMock(side_effect=_search_side_effect)
     scrape_mock = _make_scrape_mock()
-    rerank_mock = MagicMock(side_effect=_identity_rerank)
+    rerank_mock = AsyncMock(side_effect=_identity_rerank)
 
     with (
         patch(PATCH_SEARCH, search_mock),
@@ -148,7 +148,7 @@ async def test_scrape_cache_reuse_skips_already_scraped_urls(fake_ctx):
 
     search_mock = AsyncMock(side_effect=_search_side_effect)
     scrape_mock = _make_scrape_mock()
-    rerank_mock = MagicMock(side_effect=_identity_rerank)
+    rerank_mock = AsyncMock(side_effect=_identity_rerank)
 
     with (
         patch(PATCH_SEARCH, search_mock),
@@ -181,7 +181,7 @@ async def test_previously_seen_urls_annotated_in_subsequent_results(fake_ctx):
 
     search_mock = AsyncMock(side_effect=_search_side_effect)
     scrape_mock = _make_scrape_mock()
-    rerank_mock = MagicMock(side_effect=_identity_rerank)
+    rerank_mock = AsyncMock(side_effect=_identity_rerank)
 
     with (
         patch(PATCH_SEARCH, search_mock),
@@ -206,7 +206,7 @@ async def test_none_scrape_result_cached_so_broken_url_not_retried(fake_ctx):
 
     search_mock = AsyncMock(return_value=make_search_results(URLS_A))
     scrape_mock = _make_scrape_mock(content_with_failure)
-    rerank_mock = MagicMock(side_effect=_identity_rerank)
+    rerank_mock = AsyncMock(side_effect=_identity_rerank)
 
     with (
         patch(PATCH_SEARCH, search_mock),
@@ -233,7 +233,7 @@ async def test_none_scrape_result_cached_so_broken_url_not_retried(fake_ctx):
 async def test_tool_works_without_session_context():
     search_mock = AsyncMock(return_value=make_search_results(URLS_A[:2]))
     scrape_mock = _make_scrape_mock()
-    rerank_mock = MagicMock(side_effect=_identity_rerank)
+    rerank_mock = AsyncMock(side_effect=_identity_rerank)
 
     with (
         patch(PATCH_SEARCH, search_mock),
@@ -251,7 +251,7 @@ async def test_tool_works_without_session_context():
 async def test_rerank_failure_falls_back_to_search_order():
     search_mock = AsyncMock(return_value=make_search_results(URLS_A[:2]))
     scrape_mock = _make_scrape_mock()
-    rerank_mock = MagicMock(side_effect=RuntimeError("rerank offline"))
+    rerank_mock = AsyncMock(side_effect=RuntimeError("rerank offline"))
 
     with (
         patch(PATCH_SEARCH, search_mock),
@@ -269,7 +269,7 @@ async def test_rerank_failure_falls_back_to_search_order():
 async def test_search_failure_returns_empty_degraded_payload():
     search_mock = AsyncMock(side_effect=RuntimeError("search offline"))
     scrape_mock = _make_scrape_mock()
-    rerank_mock = MagicMock(side_effect=_identity_rerank)
+    rerank_mock = AsyncMock(side_effect=_identity_rerank)
 
     with (
         patch(PATCH_SEARCH, search_mock),
@@ -289,7 +289,7 @@ async def test_include_domains_filters_results(fake_ctx):
     scrape_mock = _make_scrape_mock({
         "https://docs.python.org/3/tutorial/": "# Docs\n\nUseful python docs content for reranking.",
     })
-    rerank_mock = MagicMock(side_effect=_identity_rerank)
+    rerank_mock = AsyncMock(side_effect=_identity_rerank)
 
     with (
         patch(PATCH_SEARCH, search_mock),
@@ -313,7 +313,7 @@ async def test_exclude_domains_filters_results(fake_ctx):
     scrape_mock = _make_scrape_mock({
         "https://docs.python.org/3/tutorial/": "# Docs\n\nUseful python docs content for reranking.",
     })
-    rerank_mock = MagicMock(side_effect=_identity_rerank)
+    rerank_mock = AsyncMock(side_effect=_identity_rerank)
 
     with (
         patch(PATCH_SEARCH, search_mock),
@@ -335,7 +335,7 @@ async def test_exclude_domains_filters_results(fake_ctx):
 async def test_scrape_top_is_auto_bounded_by_num_results(fake_ctx):
     search_mock = AsyncMock(return_value=make_search_results(URLS_A))
     scrape_mock = _make_scrape_mock()
-    rerank_mock = MagicMock(side_effect=_identity_rerank)
+    rerank_mock = AsyncMock(side_effect=_identity_rerank)
 
     with (
         patch(PATCH_SEARCH, search_mock),
@@ -362,7 +362,7 @@ async def test_final_results_are_domain_diversified(fake_ctx):
     def _ordered_rerank(_query: str, documents: list[str]) -> list[tuple[int, float]]:
         return [(idx, float(len(documents) - idx)) for idx in range(len(documents))]
 
-    rerank_mock = MagicMock(side_effect=_ordered_rerank)
+    rerank_mock = AsyncMock(side_effect=_ordered_rerank)
 
     with (
         patch(PATCH_SEARCH, search_mock),

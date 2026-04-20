@@ -59,7 +59,7 @@ async def test_page2_fetched_when_page1_underfills():
 
     search_mock = AsyncMock(side_effect=fake_search)
     scrape_mock = AsyncMock(return_value={"content": "content", "title": None, "screenshot": None})
-    rerank_mock = MagicMock(side_effect=_identity_rerank)
+    rerank_mock = AsyncMock(side_effect=_identity_rerank)
 
     with (
         patch(PATCH_SEARCH, search_mock),
@@ -81,7 +81,7 @@ async def test_page2_skipped_when_page1_already_full():
 
     search_mock = AsyncMock(return_value=page1)
     scrape_mock = AsyncMock(return_value={"content": "content", "title": None, "screenshot": None})
-    rerank_mock = MagicMock(side_effect=_identity_rerank)
+    rerank_mock = AsyncMock(side_effect=_identity_rerank)
 
     with (
         patch(PATCH_SEARCH, search_mock),
@@ -102,7 +102,7 @@ async def test_page2_skipped_when_page1_already_full():
 async def test_cache_key_includes_time_range():
     search_mock = AsyncMock(return_value=make_search_results(URLS_A[:1]))
     scrape_mock = AsyncMock(return_value={"content": "# Page\n\ncontent", "title": None, "screenshot": None})
-    rerank_mock = MagicMock(side_effect=_identity_rerank)
+    rerank_mock = AsyncMock(side_effect=_identity_rerank)
 
     with (
         patch(PATCH_SEARCH, search_mock),

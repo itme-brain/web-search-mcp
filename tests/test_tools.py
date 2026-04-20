@@ -75,7 +75,7 @@ async def test_search_validates_domain_filters():
 @pytest.mark.asyncio
 async def test_search_returns_structured_json():
     search_mock = AsyncMock(return_value=make_search_results(URLS_A[:2]))
-    rerank_mock = MagicMock(side_effect=_identity_rerank)
+    rerank_mock = AsyncMock(side_effect=_identity_rerank)
 
     with (
         patch(PATCH_SEARCH, search_mock),

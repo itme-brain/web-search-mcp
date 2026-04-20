@@ -636,7 +636,7 @@ async def _extract_pdf_document(url: str, query: str | None = None) -> dict:
     if query:
         try:
             page_texts = [p["content"][:500] for p in all_pages]
-            scored = _rerank_scored(query, page_texts)
+            scored = await _rerank_scored(query, page_texts)
             ranked = [
                 {**all_pages[idx], "score": round(score, 4)}
                 for idx, score in scored
@@ -773,13 +773,13 @@ def _url_matches_patterns(url: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatch(url, pattern) for pattern in patterns)
 
 
-def _rank_document_content(query: str | None, content: str) -> tuple[str, list[dict]]:
+async def _rank_document_content(query: str | None, content: str) -> tuple[str, list[dict]]:
     if not query or not content:
         return content[:_MAX_CONTENT_CHARS], []
     chunks = _chunk_text(content[:_MAX_CONTENT_CHARS])
     if not chunks:
         return content[:_MAX_CONTENT_CHARS], []
-    scored = _rerank_scored(query, chunks)
+    scored = await _rerank_scored(query, chunks)
     top = [{"text": chunks[idx], "score": score} for idx, score in scored[:_TOP_CHUNKS]]
     if not top:
         return content[:_MAX_CONTENT_CHARS], []
@@ -793,7 +793,7 @@ async def _extract_url_document(
 ) -> dict:
     if url in cache:
         cached = cache[url]
-        content, top_chunks = _rank_document_content(query, cached.get("content", ""))
+        content, top_chunks = await _rank_document_content(query, cached.get("content", ""))
         return {
             **cached,
             "content": content,
@@ -832,7 +832,7 @@ async def _extract_url_document(
             "title": extracted.get("title"),
             "content": extracted.get("content", ""),
         }
-        content, top_chunks = _rank_document_content(query, extracted.get("content", ""))
+        content, top_chunks = await _rank_document_content(query, extracted.get("content", ""))
         extracted["content"] = content
         extracted["top_chunks"] = top_chunks
         extracted["cached"] = False
@@ -848,14 +848,23 @@ _ranker = Ranker(model_name=RERANK_MODEL, max_length=_RERANK_MAX_LENGTH)
 log.info("reranker ready")
 
 
-def _rerank_scored(query: str, documents: list[str]) -> list[tuple[int, float]]:
-    """Rerank documents via FlashRank. Returns (index, score) pairs sorted by descending relevance."""
+def _rerank_sync(query: str, documents: list[str]) -> list[tuple[int, float]]:
+    """Synchronous rerank — runs the FlashRank ONNX model. Call via _rerank_scored."""
     if not documents:
         return []
     passages = [{"id": i, "text": doc, "meta": {}} for i, doc in enumerate(documents)]
     request = RerankRequest(query=query, passages=passages)
     results = _ranker.rerank(request)
     return [(r["id"], float(r["score"])) for r in results]
+
+
+async def _rerank_scored(query: str, documents: list[str]) -> list[tuple[int, float]]:
+    """Rerank documents via FlashRank off the event loop.
+
+    ONNX inference on a CPU model takes tens of ms per call. Offloading to a
+    thread keeps concurrent requests (scraping, searching) responsive.
+    """
+    return await asyncio.to_thread(_rerank_sync, query, documents)
 
 
 @mcp.custom_route("/health", methods=["GET"])
@@ -1031,7 +1040,7 @@ async def search_impl(
     rerank_started = time.monotonic()
     rerank_failed = False
     try:
-        scored = _rerank_scored(query, all_chunks)
+        scored = await _rerank_scored(query, all_chunks)
     except Exception as exc:
         log.warning("rerank failed query=%r err=%s", query, exc)
         warnings.append(_warning("rerank_failed", "flashrank", str(exc)))
