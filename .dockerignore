@@ -1,0 +1,30 @@
+.git/
+.gitignore
+.dockerignore
+.claude/
+.codex/
+.venv/
+.env
+.env.local
+.direnv/
+.DS_Store
+
+# Nix
+result
+result-*
+flake.lock
+
+# Python cruft
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Not needed inside the container image (kept in git for host-side tooling)
+tests/
+eval/
+CLEANUP_PLAN.md
+README.md
+justfile
+docker-compose.yml
+searxng/

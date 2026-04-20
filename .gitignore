@@ -1,7 +1,6 @@
 # AI
 .claude
 .codex
-CLEANUP_PLAN.md
 
 __pycache__/
 *.py[cod]

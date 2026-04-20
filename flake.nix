@@ -102,9 +102,9 @@
             # Regenerate the pip lock if the source is newer. Keeps the
             # committed lockfile aligned with requirements.in without
             # silently re-resolving transitives on every deploy.
-            if [[ src/requirements.in -nt src/requirements.txt ]]; then
+            if [[ requirements.in -nt requirements.txt ]]; then
               echo ">> requirements.in is newer than requirements.txt — regenerating lock via uv"
-              uv pip compile --quiet --generate-hashes src/requirements.in -o src/requirements.txt
+              uv pip compile --quiet --generate-hashes requirements.in -o requirements.txt
             fi
 
             echo ">> building + starting stack"

@@ -243,12 +243,15 @@ When an upstream dependency partially fails, the response header includes `statu
 ## Layout
 
 ```
+Dockerfile                      # MCP container build (build context = repo root)
+requirements.in / .txt          # direct deps + uv-compiled hash-locked transitives
 docker-compose.yml              # the bundled stack
 flake.nix                       # devshell + deploy/teardown apps
 justfile                        # user-facing recipes (up, down, setup, logs, ...)
 env.sample                      # copy to .env
-eval/                           # benchmark queries, runner, scorer
-src/                            # the MCP server (FastMCP + httpx)
+src/                            # MCP server code (server/impls/core/formatters)
+eval/                           # benchmark queries, runner, scorer, live smoke
+tests/                          # pytest suite
 searxng/config/
   settings.yml.template         # tracked; settings.yml is generated from this
 ```
