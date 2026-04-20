@@ -244,6 +244,31 @@ async def test_extract_urls_surfaces_pdf_pagination_metadata():
     assert result["pages_returned"] == 3
 
 
+@pytest.mark.asyncio
+async def test_extract_cache_hit_preserves_pdf_pagination_metadata():
+    """Cache hits must carry total_pages / pages_returned / file_type through."""
+    cache = server_module._new_cache()
+    cache["https://example.com/manual.pdf"] = {
+        "status": "ok",
+        "url": "https://example.com/manual.pdf",
+        "content_type": "application/pdf",
+        "file_type": "pdf",
+        "title": "Manual",
+        "content": "## Page 1\n\nContent",
+        "total_pages": 50,
+        "pages_returned": 3,
+    }
+
+    result = await server_module._extract_url_document(
+        "https://example.com/manual.pdf", query=None, cache=cache,
+    )
+
+    assert result["cached"] is True
+    assert result["file_type"] == "pdf"
+    assert result["total_pages"] == 50
+    assert result["pages_returned"] == 3
+
+
 def test_guess_file_type_supports_docx_and_text_formats():
     assert server_module._guess_file_type(
         "https://example.com/file.docx",

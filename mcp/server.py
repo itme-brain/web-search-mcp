@@ -825,13 +825,18 @@ async def _extract_url_document(
         }
 
     if extracted["status"] == "ok":
-        cache[url] = {
+        cached_entry = {
             "status": extracted["status"],
             "url": url,
             "content_type": extracted.get("content_type"),
+            "file_type": extracted.get("file_type"),
             "title": extracted.get("title"),
             "content": extracted.get("content", ""),
         }
+        if extracted.get("total_pages") is not None:
+            cached_entry["total_pages"] = extracted["total_pages"]
+            cached_entry["pages_returned"] = extracted.get("pages_returned", 0)
+        cache[url] = cached_entry
         content, top_chunks = await _rank_document_content(query, extracted.get("content", ""))
         extracted["content"] = content
         extracted["top_chunks"] = top_chunks
