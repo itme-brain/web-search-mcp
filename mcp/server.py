@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 import httpx
 import pysbd
 import trafilatura
+from cachetools import TTLCache
 from fastmcp import Context, FastMCP
 from pydantic_settings import BaseSettings
 from url_normalize import url_normalize
@@ -65,10 +66,18 @@ _MAX_EXTRACT_URLS = 20
 _MAX_MAP_URLS = 50
 _MAX_MAP_DEPTH = 2
 
+# Session cache bounds — prevent unbounded growth in long-lived sessions.
+_CACHE_MAXSIZE = 1000
+_CACHE_TTL_S = 3600
+
 STATE_SCRAPE_CACHE = "scrape_cache"
 STATE_QUERY_CACHE = "query_cache"
 STATE_SEEN_URLS = "seen_urls"
 STATE_EXTRACT_CACHE = "extract_cache"
+
+
+def _new_cache() -> TTLCache:
+    return TTLCache(maxsize=_CACHE_MAXSIZE, ttl=_CACHE_TTL_S)
 
 VALID_TIME_RANGES = frozenset({"day", "week", "month", "year"})
 
@@ -522,7 +531,7 @@ async def _scrape(url: str) -> dict:
     return empty
 
 
-async def _scrape_cached(url: str, cache: dict[str, str | None]) -> str | None:
+async def _scrape_cached(url: str, cache) -> str | None:
     """Scrape with per-session cache. Returns cached content on hit, scrapes on miss."""
     if url in cache:
         log.debug("scrape cache hit url=%s", url)
@@ -780,7 +789,7 @@ def _rank_document_content(query: str | None, content: str) -> tuple[str, list[d
 async def _extract_url_document(
     url: str,
     query: str | None,
-    cache: dict[str, dict],
+    cache,
 ) -> dict:
     if url in cache:
         cached = cache[url]
@@ -900,14 +909,14 @@ async def search_impl(
     degraded = False
     timings_ms = {"search": 0, "scrape": 0, "rerank": 0, "total": 0}
 
-    # --- session state ---
-    scrape_cache: dict[str, str | None] = {}
-    query_cache: dict[str, dict] = {}
-    seen_urls: set[str] = set()
+    # --- session state (TTL-capped to prevent unbounded growth) ---
+    scrape_cache = _new_cache()
+    query_cache = _new_cache()
+    seen_urls = _new_cache()
     if ctx:
-        scrape_cache = await _ctx_get_state(ctx, STATE_SCRAPE_CACHE) or {}
-        query_cache = await _ctx_get_state(ctx, STATE_QUERY_CACHE) or {}
-        seen_urls = set(await _ctx_get_state(ctx, STATE_SEEN_URLS) or [])
+        scrape_cache = await _ctx_get_state(ctx, STATE_SCRAPE_CACHE) or scrape_cache
+        query_cache = await _ctx_get_state(ctx, STATE_QUERY_CACHE) or query_cache
+        seen_urls = await _ctx_get_state(ctx, STATE_SEEN_URLS) or seen_urls
 
     # --- exact query cache ---
     qkey = hashlib.sha256(
@@ -1105,12 +1114,13 @@ async def search_impl(
     }
 
     # --- persist session state ---
-    seen_urls.update(new_urls)
+    for url in new_urls:
+        seen_urls[url] = True
     query_cache[qkey] = response
     if ctx:
         await _ctx_set_state(ctx, STATE_SCRAPE_CACHE, scrape_cache)
         await _ctx_set_state(ctx, STATE_QUERY_CACHE, query_cache)
-        await _ctx_set_state(ctx, STATE_SEEN_URLS, list(seen_urls))
+        await _ctx_set_state(ctx, STATE_SEEN_URLS, seen_urls)
 
     log.info(
         "query=%r chunks=%d pages=%d scrape_cache=%d query_cache=%d seen=%d",
@@ -1283,9 +1293,9 @@ async def extract_impl(
     normalized_query = query.strip() if query else None
     started = time.monotonic()
 
-    extract_cache: dict[str, dict] = {}
+    extract_cache = _new_cache()
     if ctx:
-        extract_cache = await _ctx_get_state(ctx, STATE_EXTRACT_CACHE) or {}
+        extract_cache = await _ctx_get_state(ctx, STATE_EXTRACT_CACHE) or extract_cache
 
     documents = await asyncio.gather(*[
         _extract_url_document(url, normalized_query, extract_cache)

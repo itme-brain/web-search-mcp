@@ -381,3 +381,13 @@ async def test_final_results_are_domain_diversified(fake_ctx):
         "alpha.com",
         "alpha.com",
     ]
+
+
+def test_session_caches_are_bounded():
+    """Session caches must have a maxsize + TTL cap to prevent unbounded growth."""
+    from cachetools import TTLCache
+
+    cache = server_module._new_cache()
+    assert isinstance(cache, TTLCache)
+    assert cache.maxsize == server_module._CACHE_MAXSIZE
+    assert cache.ttl == server_module._CACHE_TTL_S

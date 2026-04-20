@@ -39,6 +39,7 @@
           };
         };
         pythonEnv = python.withPackages (ps: with ps; [
+          cachetools
           fastmcp
           flashrank
           httpx
