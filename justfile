@@ -66,3 +66,8 @@ eval:
 # Score a saved eval run, e.g. `just eval-score eval/runs/20260420T000000Z.jsonl`.
 eval-score run_file:
     nix develop -c python eval/score.py {{ run_file }}
+
+# Live end-to-end smoke: one call per tool against the running stack.
+# Pass --full to include PDF extraction and a degraded-mode engine spike.
+smoke *args:
+    nix develop -c python eval/live_smoke.py {{ args }}
