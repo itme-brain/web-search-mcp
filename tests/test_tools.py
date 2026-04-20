@@ -44,7 +44,7 @@ async def test_extract_urls_returns_structured_result_from_tool():
     with patch(PATCH_EXTRACT_URLS_IMPL, extract_mock):
         async with Client(server_app) as client:
             result = await client.call_tool(
-                "extract_urls",
+                "extract",
                 {"urls": ["https://example.com/a1"], "query": "example query"},
             )
             payload = result.data

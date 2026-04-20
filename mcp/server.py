@@ -1371,7 +1371,7 @@ def _format_crawl_results(response: dict) -> str:
 
 
 @mcp.tool
-async def web_search(
+async def search(
     query: str,
     num_results: int = 10,
     scrape_top: int = MAX_SCRAPE,
@@ -1384,11 +1384,17 @@ async def web_search(
     safesearch: int | None = None,
     ctx: Context | None = None,
 ) -> str:
-    """Search the web and return ranked, scraped results as markdown.
+    """Search the web, scrape the top results, and return ranked markdown.
 
-    To scope a search to a single site, prefix the query with `site:<domain>`
-    (e.g. `site:docs.python.org asyncio taskgroup`). For recency, use
-    `time_range` instead of adding dates to the query.
+    Use this when you don't already have URLs — it's the entry point for
+    discovering sources. For fetching URLs you already have, use `extract`.
+    For surveying a known site, use `map` or `crawl`.
+
+    Query tips:
+    - Scope to a single site with `site:<domain>` (e.g. `site:docs.python.org asyncio`).
+    - For recency, set `time_range` (`day`/`week`/`month`/`year`) — do NOT put
+      dates or years in the query text.
+    - `include_domains` / `exclude_domains` hard-filter results by bare domain.
     """
     response = await _web_search_impl(
         query=query,
@@ -1501,7 +1507,7 @@ def _maybe_build_crawl_config(
 
 
 @mcp.tool
-async def extract_urls(
+async def extract(
     urls: list[str],
     query: str | None = None,
     js_code: list[str] | None = None,
@@ -1512,7 +1518,17 @@ async def extract_urls(
     scroll_full_page: bool = False,
     ctx: Context | None = None,
 ) -> str:
-    """Extract content from one or more URLs. Pass a list even for a single URL. PDFs are fully extracted with per-page chunking. When a query is provided, PDF pages are reranked by relevance."""
+    """Fetch full content for URLs you already have.
+
+    Use this when you know the URL(s) you want — typically after `search`, `map`,
+    or from the user directly. To discover URLs first, use `search` or `map`.
+
+    Pass `urls` as a list even for a single URL (e.g. `["https://..."]`). Handles
+    HTML, PDF, DOCX, and plain-text files natively; PDFs are fully extracted
+    with per-page chunking. When `query` is provided, PDF pages are reranked so
+    the most relevant pages appear first. Browser parameters (`js_code`,
+    `wait_for`, `screenshot`, etc.) are only needed for JS-heavy pages — leave
+    them unset for normal content."""
     crawl_config = _maybe_build_crawl_config(
         js_code, wait_for, page_timeout, screenshot, remove_overlays, scroll_full_page,
     )
@@ -1640,7 +1656,7 @@ async def _map_site_impl(
 
 
 @mcp.tool
-async def map_site(
+async def map(
     url: str,
     max_urls: int = 25,
     max_depth: int = 1,
@@ -1648,6 +1664,17 @@ async def map_site(
     exclude_patterns: list[str] | None = None,
     same_domain_only: bool = True,
 ) -> str:
+    """Discover URLs on a site without fetching page content.
+
+    Use this for a cheap survey of what's on a site before deciding what to
+    read. For full content in one shot, use `crawl` instead. For specific URLs
+    you already know, use `extract`.
+
+    Returns a tree of discovered URLs with titles, depth, and discovery path —
+    no body text. `include_patterns` / `exclude_patterns` accept shell-style
+    globs against the full URL (e.g. `https://docs.example.com/api/*`).
+    `same_domain_only` keeps discovery within the root host and its subdomains.
+    """
     response = await _map_site_impl(
         url=url,
         max_urls=max_urls,
@@ -1660,7 +1687,7 @@ async def map_site(
 
 
 @mcp.tool
-async def crawl_site(
+async def crawl(
     url: str,
     query: str | None = None,
     max_urls: int = 10,
@@ -1670,7 +1697,16 @@ async def crawl_site(
     same_domain_only: bool = True,
     ctx: Context | None = None,
 ) -> str:
-    """Discover and extract a bounded set of in-scope pages from a site."""
+    """Discover URLs on a site AND extract their content in one call.
+
+    Equivalent to `map` followed by `extract` on every discovered URL. Use this
+    when you want to explore a site and read everything relevant in one shot.
+    For discovery without content, use `map`. For web-wide search, use `search`.
+    For specific known URLs, use `extract`.
+
+    When `query` is provided, extracted pages are re-ordered by their best
+    chunk score so the most relevant pages appear first. Bounded by `max_urls`
+    and `max_depth` — this is not a full-site crawler."""
     effective_max_urls = _validate_positive_int(
         "max_urls",
         max_urls,

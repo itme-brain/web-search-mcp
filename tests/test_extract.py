@@ -12,10 +12,10 @@ PATCH_EXTRACT_URL_DOCUMENT = "web_search_server._extract_url_document"
 @pytest.mark.asyncio
 async def test_extract_urls_validates_input():
     with pytest.raises(ValueError, match="urls must not be empty"):
-        await server_module.extract_urls.fn([], ctx=None)
+        await server_module.extract.fn([], ctx=None)
 
     with pytest.raises(ValueError, match="invalid URL"):
-        await server_module.extract_urls.fn(["notaurl"], ctx=None)
+        await server_module.extract.fn(["notaurl"], ctx=None)
 
 
 @pytest.mark.asyncio
@@ -114,7 +114,7 @@ async def test_extract_urls_single_url_returns_markdown():
     })
 
     with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
-        payload = await server_module.extract_urls.fn(
+        payload = await server_module.extract.fn(
             ["https://example.com/file.docx"],
             query="example query",
             ctx=fake_ctx,

@@ -169,7 +169,7 @@ async def test_web_search_tool_passes_categories():
     ):
         async with Client(server_app) as client:
             result = await client.call_tool(
-                "web_search",
+                "search",
                 {"query": "test", "num_results": 2, "scrape_top": 1, "categories": ["news"]},
             )
             payload = result.data
