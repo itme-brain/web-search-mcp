@@ -1407,7 +1407,7 @@ async def search(
     exclude_domains: list[str] | None = None,
     ctx: Context | None = None,
 ) -> str:
-    """Web search for URLs you don't already have; scrapes + reranks top results.
+    """Search the web, scrape and rerank the top results.
 
     Args:
         query: Search query. Prefix with `site:<domain>` to scope to one site.
@@ -1513,7 +1513,7 @@ async def extract(
     offset: int = 0,
     ctx: Context | None = None,
 ) -> str:
-    """Fetch full content for URLs you already have. Handles HTML, PDF, DOCX, plain text.
+    """Fetch full content for one or more URLs.
 
     Args:
         urls: URLs to fetch. Always a list — pass `["https://..."]` for one URL.
@@ -1651,7 +1651,7 @@ async def map(
     exclude_patterns: list[str] | None = None,
     same_domain_only: bool = True,
 ) -> str:
-    """Discover URLs on a site without fetching content. Cheap — use `crawl` if you also want body text.
+    """Discover URLs on a site — link graph, no body content.
 
     Args:
         url: Root URL to start discovery from.
@@ -1659,7 +1659,7 @@ async def map(
         max_depth: How many link hops to follow from the root (1-2).
         include_patterns: Shell-glob patterns against the full URL; keep only matches (e.g. `["https://docs.example.com/api/*"]`).
         exclude_patterns: Shell-glob patterns against the full URL; drop matches.
-        same_domain_only: If True (default), stay within the same registrable domain — mapping `docs.pydantic.dev` also follows `pydantic.dev/...` and `logfire.pydantic.dev/...` ("same org"). If False, follow every in-scope link.
+        same_domain_only: If True, restrict to the root's registrable domain (e.g. `docs.pydantic.dev` and `pydantic.dev` count as same). If False, follow every in-scope link.
     """
     response = await map_impl(
         url=url,
@@ -1781,7 +1781,7 @@ async def crawl(
     same_domain_only: bool = True,
     ctx: Context | None = None,
 ) -> str:
-    """Discover URLs on a site AND fetch content for each — `map` + `extract` in one call.
+    """Discover URLs on a site and fetch their content.
 
     Args:
         url: Root URL to start crawl from.
@@ -1790,7 +1790,7 @@ async def crawl(
         max_depth: How many link hops to follow from the root (1-2).
         include_patterns: Shell-glob patterns against the full URL; keep only matches.
         exclude_patterns: Shell-glob patterns against the full URL; drop matches.
-        same_domain_only: If True (default), stay within the same registrable domain as the root ("same org"). If False, follow every in-scope link.
+        same_domain_only: If True, restrict to the root's registrable domain. If False, follow every in-scope link.
     """
     response = await crawl_impl(
         url=url,
