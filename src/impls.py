@@ -9,8 +9,10 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 from collections import defaultdict, deque
+from urllib.parse import urlparse
 
 from fastmcp import Context
 
@@ -37,6 +39,70 @@ from core import (
 )
 
 log = logging.getLogger("web-search-mcp")
+_QUERY_TERM_RE = re.compile(r"[a-z0-9]+")
+
+
+def _crawl_query_terms(query: str) -> tuple[str, set[str]]:
+    """Normalize a crawl query into a phrase + token set for page ranking."""
+    phrase = " ".join(query.lower().split())
+    terms = {term for term in _QUERY_TERM_RE.findall(phrase) if len(term) >= 2}
+    return phrase, terms
+
+
+def _count_matching_terms(text: str, terms: set[str]) -> int:
+    if not text or not terms:
+        return 0
+    haystack_terms = set(_QUERY_TERM_RE.findall(text.lower()))
+    return len(haystack_terms & terms)
+
+
+def _url_path_depth(url: str) -> int:
+    path = urlparse(url).path
+    return sum(1 for segment in path.split("/") if segment)
+
+
+def _crawl_result_rank_key(result: dict, query: str) -> tuple:
+    """Build a stable sort key for crawl query ranking.
+
+    Pure reranker score is often too weak for documentation sites where the
+    homepage has broad navigation text. Prefer pages whose title / URL / best
+    chunk actually cover the query terms, then break ties with reranker score
+    and depth so specific pages beat site roots on equal evidence.
+    """
+    phrase, terms = _crawl_query_terms(query)
+    top_chunks = result.get("top_chunks", [])
+    top_chunk_texts = [chunk.get("text", "") for chunk in top_chunks if chunk.get("text")]
+    top_score = max((chunk.get("score") or 0.0) for chunk in top_chunks) if top_chunks else float("-inf")
+
+    title = result.get("title") or ""
+    url = result.get("url") or ""
+    best_chunk_text = top_chunk_texts[0] if top_chunk_texts else result.get("content", "")
+    path = urlparse(url).path.replace("/", " ")
+
+    title_hits = _count_matching_terms(title, terms)
+    url_hits = _count_matching_terms(path, terms)
+    chunk_hits = _count_matching_terms(best_chunk_text, terms)
+    coverage = len({
+        term for term in terms
+        if term in set(_QUERY_TERM_RE.findall(f"{title} {path} {best_chunk_text}".lower()))
+    })
+
+    phrase_in_title = int(bool(phrase) and phrase in title.lower())
+    phrase_in_url = int(bool(phrase) and phrase in path.lower())
+    phrase_in_chunk = int(bool(phrase) and phrase in best_chunk_text.lower())
+    lexical_total = title_hits + url_hits + chunk_hits
+
+    return (
+        coverage > 0,
+        phrase_in_title or phrase_in_url or phrase_in_chunk,
+        title_hits + url_hits,
+        coverage,
+        lexical_total,
+        top_score,
+        result.get("depth", 0),
+        _url_path_depth(url),
+        -(result.get("search_rank") or result.get("rank") or 0),
+    )
 
 
 async def search_impl(
@@ -550,12 +616,7 @@ async def crawl_impl(
         results.append(combined)
 
     if query:
-        results.sort(
-            key=lambda result: max(
-                (chunk.get("score") or 0.0) for chunk in result.get("top_chunks", [])
-            ) if result.get("top_chunks") else float("-inf"),
-            reverse=True,
-        )
+        results.sort(key=lambda result: _crawl_result_rank_key(result, query), reverse=True)
         for rank, result in enumerate(results, start=1):
             result["rank"] = rank
 

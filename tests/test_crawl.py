@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+import impls
 from tests.conftest import FakeContext, server_module
 
 PATCH_MAP_IMPL = "impls.map_impl"
@@ -184,3 +185,86 @@ async def test_crawl_preserves_map_order_without_query():
     assert "https://docs.example.com" in payload
     assert "https://docs.example.com/guide" in payload
     assert "warnings:" in payload
+
+
+@pytest.mark.asyncio
+async def test_crawl_query_ranking_prefers_specific_docs_page_over_site_root():
+    map_mock = AsyncMock(return_value={
+        "url": "https://docs.djangoproject.com",
+        "results": [
+            {
+                "rank": 1,
+                "url": "https://docs.djangoproject.com",
+                "normalized_url": "https://docs.djangoproject.com",
+                "domain": "docs.djangoproject.com",
+                "title": "Django documentation",
+                "link_text": None,
+                "depth": 0,
+                "discovered_from": None,
+                "link_type": "seed",
+            },
+            {
+                "rank": 2,
+                "url": "https://docs.djangoproject.com/en/5.2/topics/db/models/",
+                "normalized_url": "https://docs.djangoproject.com/en/5.2/topics/db/models/",
+                "domain": "docs.djangoproject.com",
+                "title": "Models",
+                "link_text": "Models",
+                "depth": 1,
+                "discovered_from": "https://docs.djangoproject.com",
+                "link_type": "internal",
+            },
+        ],
+        "meta": {
+            "urls_returned": 2,
+            "warnings": [],
+            "timings_ms": {"total": 5},
+        },
+    })
+    extract_mock = AsyncMock(return_value={
+        "query": "ORM",
+        "results": [
+            {
+                "url": "https://docs.djangoproject.com",
+                "normalized_url": "https://docs.djangoproject.com",
+                "domain": "docs.djangoproject.com",
+                "status": "ok",
+                "content_type": "text/html",
+                "title": "Django documentation",
+                "content": "# Docs Home",
+                "top_chunks": [{"text": "Database docs and navigation links.", "score": 0.92}],
+                "cached": False,
+                "error": None,
+            },
+            {
+                "url": "https://docs.djangoproject.com/en/5.2/topics/db/models/",
+                "normalized_url": "https://docs.djangoproject.com/en/5.2/topics/db/models/",
+                "domain": "docs.djangoproject.com",
+                "status": "ok",
+                "content_type": "text/html",
+                "title": "Django ORM models",
+                "content": "# Models",
+                "top_chunks": [{"text": "The Django ORM maps models to database tables.", "score": 0.91}],
+                "cached": False,
+                "error": None,
+            },
+        ],
+        "meta": {
+            "urls_requested": 2,
+            "urls_succeeded": 2,
+            "urls_failed": 0,
+            "timings_ms": {"total": 7},
+        },
+    })
+
+    with (
+        patch(PATCH_MAP_IMPL, map_mock),
+        patch(PATCH_EXTRACT_IMPL, extract_mock),
+    ):
+        payload = await impls.crawl_impl(
+            "https://docs.djangoproject.com",
+            query="ORM",
+        )
+
+    assert payload["results"][0]["url"] == "https://docs.djangoproject.com/en/5.2/topics/db/models/"
+    assert payload["results"][1]["url"] == "https://docs.djangoproject.com"
