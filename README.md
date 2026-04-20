@@ -88,7 +88,7 @@ from fastmcp import Client
 
 async def main():
     async with Client("http://localhost:8002/mcp") as c:
-        result = await c.call_tool("web_search", {"query": "current LLM context window records", "num_results": 5})
+        result = await c.call_tool("search", {"query": "current LLM context window records", "num_results": 5})
         print(result.data)
 
 asyncio.run(main())
@@ -114,51 +114,57 @@ SearXNG engine allowlist, safesearch, etc. live in `searxng/config/settings.yml.
 
 ## Tools the MCP exposes
 
-- Tool: `web_search(query, num_results=10, scrape_top=5, time_range=None, mode="balanced", include_domains=None, exclude_domains=None)` — returns structured JSON with ranked results, snippets, extracted content, per-page top chunks, and response metadata. `time_range` takes `day`, `week`, `month`, `year`. `mode` is `balanced` or `deep`. To scope a search to one site, prefix the query with `site:<domain>`.
-- Tool: `extract_url(url, query=None)` — single-URL extraction for pages and supported files. PDFs are fully extracted with per-page chunking; when `query` is provided, pages are reranked by relevance.
-- Tool: `extract_urls(urls, query=None)` — batch extraction with per-URL statuses. Uses Crawl4AI for web pages and `pymupdf4llm` for PDFs. PDF pages are chunked and optionally reranked server-side.
-- Tool: `map_site(url, max_urls=25, max_depth=1, include_patterns=None, exclude_patterns=None, same_domain_only=True)` — discovers candidate URLs from a site using Crawl4AI link extraction and returns a structured site map.
-- Tool: `crawl_site(url, query=None, max_urls=10, max_depth=1, include_patterns=None, exclude_patterns=None, same_domain_only=True)` — maps a site, then extracts each discovered page into a single structured response.
+The surface is intentionally small: four tools that compose. Pick the one that matches what you know.
 
-Mode behavior:
+| You want | Tool |
+|---|---|
+| To find sources on the open web (you don't have URLs yet) | `search` |
+| To fetch full content for URLs you already have | `extract` |
+| To discover URLs on a known site without fetching content | `map` |
+| Both discovery **and** content from a known site in one call | `crawl` |
 
-- `balanced` keeps the current pipeline shape: fetch `num_results`, scrape up to `scrape_top`, rerank, and return the top results.
-- `deep` increases recall by fetching a larger candidate set first, then filtering, deduplicating, scraping, and reranking back down to `num_results`.
+### `search(query, num_results=10, scrape_top=5, time_range=None, mode="balanced", include_domains=None, exclude_domains=None)`
 
-Domain filters:
+Web search → scrape top results → rerank → return ranked markdown.
 
-- `include_domains=["docs.python.org"]` keeps only matching domains and subdomains.
-- `exclude_domains=["reddit.com"]` removes matching domains and subdomains.
-- Domain filter entries must be bare domains, not full URLs.
+- Scope to a single site with `site:<domain>` in the query (e.g. `site:docs.python.org asyncio`).
+- For recency, set `time_range` (`day` / `week` / `month` / `year`) — do NOT put dates in the query text.
+- `include_domains` / `exclude_domains` hard-filter by bare domain.
+- `mode="deep"` expands the candidate pool before reranking; `balanced` is the default.
 
-Ranking behavior:
+### `extract(urls, query=None, ...browser_opts)`
 
-- Results are deduplicated by normalized URL and also by same-domain same-title matches.
+Fetch full content for the URLs you pass in. Always takes a list — `["https://..."]` for a single URL.
+
+- HTML, PDF, DOCX, and plain-text files are all handled natively.
+- PDFs are fully extracted with per-page chunking. Pass `query` to rerank pages by relevance; the response reports `total_pages` and `pages_returned`.
+- Partial success: one failed URL does not fail the whole call. Results include per-URL `status`, `content_type`, `file_type`, `title`, `content`, and `error`.
+- Browser parameters (`js_code`, `wait_for`, `page_timeout`, `screenshot`, `remove_overlays`, `scroll_full_page`) are only needed for JS-heavy pages — leave them unset otherwise.
+
+### `map(url, max_urls=25, max_depth=1, include_patterns=None, exclude_patterns=None, same_domain_only=True)`
+
+Cheap discovery of URLs on a site — no body content, just the link graph.
+
+- Returns normalized candidate URLs with titles, discovery depth, and the source URL each page was found from.
+- `same_domain_only=True` keeps discovery within the root host and its subdomains.
+- `include_patterns` / `exclude_patterns` accept shell-style globs against the full URL.
+- This is a bounded survey tool, not a full-content crawler.
+
+### `crawl(url, query=None, max_urls=10, max_depth=1, include_patterns=None, exclude_patterns=None, same_domain_only=True)`
+
+`map` + `extract` composed — discover the URL set, then fetch each page's content in one response.
+
+- Same bounded controls as `map`.
+- If `query` is set, pages are re-ordered by their best chunk score after extraction so the most relevant ones appear first.
+
+### Ranking + dedup (applies to `search` and `crawl` with `query`)
+
+- Results are deduplicated by normalized URL and by same-domain same-title matches.
 - Final ranking is diversity-aware, so one domain is less likely to dominate the top results when multiple relevant sources are available.
 
-Extraction behavior:
+### Response shape
 
-- `extract_url` and `extract_urls` share the same extraction pipeline and response fields.
-- `extract_urls` supports partial success: one failed URL does not fail the whole call.
-- PDF handling is explicit and library-backed via `pymupdf4llm`. PDFs are fully extracted server-side with per-page chunking. When `query` is provided, pages are reranked by relevance so the most useful pages appear first. The response includes `total_pages` and `pages_returned` metadata.
-- `docx` handling is explicit and library-backed via `python-docx`.
-- Plain-text and structured-text files like `txt`, `md`, `json`, `xml`, and `csv` are fetched and decoded through `httpx`.
-- Results include per-URL `status`, `content_type`, `file_type`, `title`, `content`, and `error`.
-
-Map behavior:
-
-- `map_site` is a bounded discovery tool, not a full-content crawl.
-- It follows links with Crawl4AI and returns normalized candidate URLs, titles, discovery depth, and the source URL each page was found from.
-- `same_domain_only=True` keeps discovery within the root host and its subdomains.
-- `include_patterns` and `exclude_patterns` accept shell-style globs against full URLs.
-
-Crawl behavior:
-
-- `crawl_site` composes `map_site` and `extract_urls`; it is not a separate crawling engine.
-- It keeps the same bounded controls as `map_site`, then returns per-page extraction status, content, and top chunks in one response.
-- If `query` is provided, crawled pages are re-ordered by their best chunk score after extraction.
-
-`web_search` response shape (markdown, optimized for LLM consumption):
+All tools return markdown optimized for LLM consumption. Example for `search`:
 
 ```
 query: current llm context window records
