@@ -11,8 +11,8 @@ PATCH_SEARCH = "core._search"
 PATCH_SCRAPE = "core._scrape"
 PATCH_RERANK = "core._rerank_scored"
 PATCH_EXTRACT_URL_DOCUMENT = "core._extract_url_document"
-PATCH_MAP_SITE_IMPL = "impls.map_impl"
-PATCH_EXTRACT_URLS_IMPL = "impls.extract_impl"
+PATCH_MAP_IMPL = "impls.map_impl"
+PATCH_EXTRACT_IMPL = "impls.extract_impl"
 
 # These fields may live in the Python dict for scripting access, but must
 # never appear as literal keys in the LLM-facing markdown output.
@@ -205,8 +205,8 @@ async def test_crawl_markdown_does_not_leak_metadata_fields():
     })
 
     with (
-        patch(PATCH_MAP_SITE_IMPL, map_mock),
-        patch(PATCH_EXTRACT_URLS_IMPL, extract_mock),
+        patch(PATCH_MAP_IMPL, map_mock),
+        patch(PATCH_EXTRACT_IMPL, extract_mock),
     ):
         markdown = await server_module.crawl.fn(
             "https://docs.example.com", query="q", max_urls=1,

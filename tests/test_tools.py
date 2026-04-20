@@ -6,7 +6,7 @@ from fastmcp import Client
 from tests.conftest import URLS_A, make_search_results, server_app, server_module
 
 PATCH_SEARCH = "core._search"
-PATCH_EXTRACT_URLS_IMPL = "impls.extract_impl"
+PATCH_EXTRACT_IMPL = "impls.extract_impl"
 PATCH_RERANK = "core._rerank_scored"
 
 
@@ -41,7 +41,7 @@ async def test_extract_urls_returns_structured_result_from_tool():
         },
     })
 
-    with patch(PATCH_EXTRACT_URLS_IMPL, extract_mock):
+    with patch(PATCH_EXTRACT_IMPL, extract_mock):
         async with Client(server_app) as client:
             result = await client.call_tool(
                 "extract",

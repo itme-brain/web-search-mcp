@@ -4,8 +4,8 @@ import pytest
 
 from tests.conftest import FakeContext, server_module
 
-PATCH_MAP_SITE_IMPL = "impls.map_impl"
-PATCH_EXTRACT_URLS_IMPL = "impls.extract_impl"
+PATCH_MAP_IMPL = "impls.map_impl"
+PATCH_EXTRACT_IMPL = "impls.extract_impl"
 
 
 @pytest.mark.asyncio
@@ -86,8 +86,8 @@ async def test_crawl_combines_map_and_extract_results():
     })
 
     with (
-        patch(PATCH_MAP_SITE_IMPL, map_mock),
-        patch(PATCH_EXTRACT_URLS_IMPL, extract_mock),
+        patch(PATCH_MAP_IMPL, map_mock),
+        patch(PATCH_EXTRACT_IMPL, extract_mock),
     ):
         payload = await server_module.crawl.fn(
             "https://docs.example.com",
@@ -173,8 +173,8 @@ async def test_crawl_preserves_map_order_without_query():
     })
 
     with (
-        patch(PATCH_MAP_SITE_IMPL, map_mock),
-        patch(PATCH_EXTRACT_URLS_IMPL, extract_mock),
+        patch(PATCH_MAP_IMPL, map_mock),
+        patch(PATCH_EXTRACT_IMPL, extract_mock),
     ):
         payload = await server_module.crawl.fn(
             "https://docs.example.com",

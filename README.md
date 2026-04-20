@@ -169,7 +169,8 @@ Examples:
 Fetch full content for the URLs you pass in. Always takes a list — `["https://..."]` for a single URL.
 
 - HTML, PDF, DOCX, and plain-text files are all handled natively.
-- PDFs are fully extracted with per-page chunking. Pass `query` to rerank pages by relevance; the response reports `total_pages` and `pages_returned`.
+- Each result is capped at ~8000 chars; when more is available the footer shows `N of M chars shown — pass offset=N to continue` so you can paginate with `offset`.
+- PDFs carry `total_pages` metadata (informational). Pass `query` to chunk-rerank the content and return the most-relevant excerpts first; omit to get raw content from the top of the document.
 - Partial success: one failed URL does not fail the whole call. Results include per-URL `status`, `content_type`, `file_type`, `title`, `content`, and `error`.
 
 Examples:

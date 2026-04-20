@@ -54,13 +54,11 @@ server_app = server.mcp
 class _ServerModuleProxy:
     """Back-compat facade resolving attributes across the four split modules.
 
-    Existing tests reference `server_module.X` — keep that working without
-    rewriting every line by resolving X on the first split module that has
-    it. Tests can also `import core`, `import impls`, etc. directly.
-
-    Note: this does NOT help with `unittest.mock.patch("web_search_server.X")`
-    strings — those get rewritten per-module because mock.patch uses
-    sys.modules, not attribute lookup.
+    Tests reference `server_module.X` — resolve X by walking the split
+    modules in order. New tests can also `import core`, `import impls`,
+    etc. directly. `unittest.mock.patch` targets (the "core.X" / "impls.X"
+    strings) always point at the module that defines X, since mock.patch
+    uses sys.modules rather than attribute lookup.
     """
     _search_order = (server, impls, core, formatters)
 
