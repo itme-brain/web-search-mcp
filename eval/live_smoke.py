@@ -140,6 +140,7 @@ async def _burst_search(client: Client) -> None:
         "current llm context window records",
     ]
     engines_seen: set[str] = set()
+    scrape_failures = 0
     for q in queries:
         try:
             result = await client.call_tool("search", {"query": q, "num_results": 3})
@@ -155,8 +156,12 @@ async def _burst_search(client: Client) -> None:
             print(f"  {q!r}: {warnings_line}")
             for chunk in warnings_line.split(":", 1)[1].split(";"):
                 chunk = chunk.strip()
-                if chunk:
+                if not chunk:
+                    continue
+                if _looks_like_engine_warning(chunk):
                     engines_seen.add(chunk)
+                else:
+                    scrape_failures += 1
         else:
             print(f"  {q!r}: clean")
     print()
@@ -164,6 +169,19 @@ async def _burst_search(client: Client) -> None:
         print(f"unique engine warnings across burst: {sorted(engines_seen)}")
     else:
         print("no engine warnings surfaced — all upstreams responsive this run")
+    if scrape_failures:
+        print(f"non-engine warnings across burst (scrape/rerank): {scrape_failures}")
+
+
+def _looks_like_engine_warning(chunk: str) -> bool:
+    """Engine warnings render as `<engine>: <reason>`; other warning types
+    (scrape_failed = 'N of M pages failed') have no colon, or a multi-word
+    prefix like 'page 2: ...'. Heuristic: first `:` must be preceded by a
+    single non-whitespace token that looks like an engine identifier."""
+    head, sep, _ = chunk.partition(":")
+    if not sep:
+        return False
+    return bool(head) and " " not in head
 
 
 async def _main() -> None:

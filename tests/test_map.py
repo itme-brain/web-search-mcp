@@ -150,3 +150,27 @@ async def test_map_can_include_external_links():
         "https://docs.example.com",
         "https://other.example.net/page",
     ]
+
+
+@pytest.mark.asyncio
+async def test_discover_page_links_preserves_nav_footer_header():
+    """Link discovery must NOT strip nav/footer/header/aside — those are
+    exactly where a docs site's link graph lives. Stripping them with the
+    default content-extraction config made map return ~0 URLs on real
+    sites."""
+    captured: dict = {}
+
+    async def fake_post(client, url, priority, crawler_config=None):
+        captured["crawler_config"] = crawler_config
+        return {"results": [{"links": {"internal": [], "external": []}}]}
+
+    with patch("web_search_server._crawl_post", side_effect=fake_post):
+        await server_module._discover_page_links("https://example.com")
+
+    cfg = captured["crawler_config"]
+    assert cfg is not None, "map config was not passed through"
+    excluded = cfg["params"].get("excluded_tags", [])
+    for tag in ("nav", "footer", "header", "aside"):
+        assert tag not in excluded, (
+            f"{tag!r} in excluded_tags would hide the link graph: {excluded}"
+        )

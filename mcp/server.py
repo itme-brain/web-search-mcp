@@ -543,6 +543,18 @@ _DEFAULT_CRAWL_CONFIG = {
     },
 }
 
+# Separate config for link discovery (map/crawl). The default config
+# strips nav/footer/header/aside to get clean content — but that's
+# exactly where a docs site's link graph lives. Using the default here
+# was making `map` return ~0 URLs on real sites. Keep the full page
+# when we're only interested in hrefs.
+_MAP_CRAWL_CONFIG = {
+    "type": "CrawlerRunConfig",
+    "params": {
+        "remove_overlay_elements": True,
+    },
+}
+
 
 def _is_retryable_crawl_error(exc: BaseException) -> bool:
     """Retry only on Crawl4AI transient failures: network issues and 5xx.
@@ -562,11 +574,20 @@ def _is_retryable_crawl_error(exc: BaseException) -> bool:
     retry=retry_if_exception(_is_retryable_crawl_error),
     reraise=True,
 )
-async def _crawl_post(client: httpx.AsyncClient, url: str, priority: int) -> dict:
+async def _crawl_post(
+    client: httpx.AsyncClient,
+    url: str,
+    priority: int,
+    crawler_config: dict | None = None,
+) -> dict:
     """POST to Crawl4AI's /crawl endpoint with exponential-backoff retry."""
     resp = await client.post(
         f"{CRAWL4AI_URL}/crawl",
-        json={"urls": [url], "priority": priority, "crawler_config": _DEFAULT_CRAWL_CONFIG},
+        json={
+            "urls": [url],
+            "priority": priority,
+            "crawler_config": crawler_config or _DEFAULT_CRAWL_CONFIG,
+        },
     )
     resp.raise_for_status()
     return resp.json()
@@ -827,7 +848,7 @@ async def _extract_text_document(url: str, file_type: str) -> dict:
 
 async def _discover_page_links(url: str) -> dict:
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-        data = await _crawl_post(client, url, priority=6)
+        data = await _crawl_post(client, url, priority=6, crawler_config=_MAP_CRAWL_CONFIG)
 
         task_id = data.get("task_id")
         if task_id:
