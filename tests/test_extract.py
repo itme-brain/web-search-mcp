@@ -43,8 +43,8 @@ async def test_extract_urls_returns_structured_results():
     ])
 
     with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
-        payload = await server_module.extract_urls.fn(
-            ["https://example.com/page", "https://example.com/file.pdf"],
+        payload = await server_module._extract_urls_impl(
+            urls=["https://example.com/page", "https://example.com/file.pdf"],
             query="example query",
             ctx=fake_ctx,
         )
@@ -84,9 +84,8 @@ async def test_extract_urls_reports_partial_failures():
     ])
 
     with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
-        payload = await server_module.extract_urls.fn(
-            ["https://example.com/page", "https://example.com/missing.pdf"],
-            ctx=None,
+        payload = await server_module._extract_urls_impl(
+            urls=["https://example.com/page", "https://example.com/missing.pdf"],
         )
 
     assert payload["meta"]["urls_succeeded"] == 1
@@ -121,10 +120,9 @@ async def test_extract_url_returns_single_result_shape():
             ctx=fake_ctx,
         )
 
-    assert payload["query"] == "example query"
-    assert payload["result"]["url"] == "https://example.com/file.docx"
-    assert payload["result"]["file_type"] == "docx"
-    assert payload["meta"]["urls_requested"] == 1
+    assert "example query" in payload
+    assert "https://example.com/file.docx" in payload
+    assert "Example Doc" in payload
 
 
 def test_docx_bytes_to_markdown_extracts_paragraphs_and_tables():

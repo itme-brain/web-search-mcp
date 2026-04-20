@@ -183,7 +183,5 @@ class TestFindSimilarTool:
                 )
                 payload = result.data
 
-        assert payload["source_url"] == "https://example.com/source"
-        assert "results" in payload
-        assert "meta" in payload
-        assert "queries_generated" in payload["meta"]
+        assert "https://example.com/source" in payload
+        assert "Similar" in payload

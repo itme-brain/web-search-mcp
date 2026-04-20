@@ -10,7 +10,7 @@ PATCH_DISCOVER_PAGE_LINKS = "web_search_server._discover_page_links"
 @pytest.mark.asyncio
 async def test_map_site_validates_url():
     with pytest.raises(ValueError, match="invalid URL"):
-        await server_module.map_site.fn("notaurl")
+        await server_module._map_site_impl("notaurl")
 
 
 @pytest.mark.asyncio
@@ -44,7 +44,7 @@ async def test_map_site_discovers_same_domain_links_only():
     ])
 
     with patch(PATCH_DISCOVER_PAGE_LINKS, discover_mock):
-        payload = await server_module.map_site.fn(
+        payload = await server_module._map_site_impl(
             "https://docs.example.com",
             max_urls=10,
             max_depth=1,
@@ -98,7 +98,7 @@ async def test_map_site_applies_depth_and_patterns():
     ])
 
     with patch(PATCH_DISCOVER_PAGE_LINKS, discover_mock):
-        payload = await server_module.map_site.fn(
+        payload = await server_module._map_site_impl(
             "https://docs.example.com",
             max_urls=10,
             max_depth=2,
@@ -138,7 +138,7 @@ async def test_map_site_can_include_external_links():
     ])
 
     with patch(PATCH_DISCOVER_PAGE_LINKS, discover_mock):
-        payload = await server_module.map_site.fn(
+        payload = await server_module._map_site_impl(
             "https://docs.example.com",
             same_domain_only=False,
             max_urls=10,

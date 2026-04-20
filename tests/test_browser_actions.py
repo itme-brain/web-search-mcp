@@ -1,9 +1,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastmcp import Client
-
-from tests.conftest import server_app, server_module, FakeContext
+from tests.conftest import server_module, FakeContext
 
 PATCH_SCRAPE_IMPL = "web_search_server._scrape_impl"
 PATCH_SCRAPE = "web_search_server._scrape"
@@ -148,11 +146,9 @@ class TestExtractUrlScreenshot:
             patch(PATCH_SCRAPE, scrape_mock),
             patch(PATCH_DETECT_FILE_TYPE, detect_mock),
         ):
-            async with Client(server_app) as client:
-                result = await client.call_tool(
-                    "extract_url",
-                    {"url": "https://example.com", "screenshot": True},
-                )
-                payload = result.data
+            response = await server_module._extract_urls_impl(
+                urls=["https://example.com"],
+                crawl_config=server_module._build_crawl_config(screenshot=True),
+            )
 
-        assert payload["result"]["screenshot"] == "base64encodedpng"
+        assert response["results"][0]["screenshot"] == "base64encodedpng"

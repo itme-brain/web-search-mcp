@@ -174,7 +174,6 @@ async def test_web_search_tool_passes_categories():
             )
             payload = result.data
 
-    assert payload["categories"] == ["news"]
     call_kwargs = search_mock.call_args_list[0][1]
     assert call_kwargs.get("categories") == ["news"]
 
@@ -206,13 +205,10 @@ async def test_image_search_returns_image_fields():
             )
             payload = result.data
 
-    assert len(payload["results"]) == 1
-    img = payload["results"][0]
-    assert img["image_url"] == "https://cdn.example.com/image.jpg"
-    assert img["thumbnail_url"] == "https://cdn.example.com/thumb.jpg"
-    assert img["source_url"] == "https://example.com/source"
-    assert img["dimensions"] == "1920x1080"
-    assert img["format"] == "jpeg"
+    assert "Northern Lights" in payload
+    assert "https://cdn.example.com/image.jpg" in payload
+    assert "https://example.com/source" in payload
+    assert "1920x1080" in payload
 
     call_kwargs = search_mock.call_args[1]
     assert call_kwargs.get("categories") == ["images"]
