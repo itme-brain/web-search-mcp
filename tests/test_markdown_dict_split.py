@@ -7,12 +7,12 @@ import pytest
 
 from tests.conftest import URLS_A, make_search_results, server_module
 
-PATCH_SEARCH = "web_search_server._search"
-PATCH_SCRAPE = "web_search_server._scrape"
-PATCH_RERANK = "web_search_server._rerank_scored"
-PATCH_EXTRACT_URL_DOCUMENT = "web_search_server._extract_url_document"
-PATCH_MAP_SITE_IMPL = "web_search_server.map_impl"
-PATCH_EXTRACT_URLS_IMPL = "web_search_server.extract_impl"
+PATCH_SEARCH = "core._search"
+PATCH_SCRAPE = "core._scrape"
+PATCH_RERANK = "core._rerank_scored"
+PATCH_EXTRACT_URL_DOCUMENT = "core._extract_url_document"
+PATCH_MAP_SITE_IMPL = "impls.map_impl"
+PATCH_EXTRACT_URLS_IMPL = "impls.extract_impl"
 
 # These fields may live in the Python dict for scripting access, but must
 # never appear as literal keys in the LLM-facing markdown output.
@@ -147,7 +147,7 @@ async def test_map_markdown_does_not_leak_metadata_fields():
         ],
     })
 
-    with patch("web_search_server._discover_page_links", discover_mock):
+    with patch("core._discover_page_links", discover_mock):
         markdown = await server_module.map.fn(
             "https://docs.example.com", max_urls=5, max_depth=1,
         )

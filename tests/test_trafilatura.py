@@ -8,7 +8,7 @@ class TestExtractMarkdown:
         long_text = "This is substantial extracted content. " * 10
         result = {"html": "<html><body><p>test</p></body></html>", "markdown": "raw md"}
 
-        with patch("web_search_server.trafilatura.extract", return_value=long_text) as mock:
+        with patch("core.trafilatura.extract", return_value=long_text) as mock:
             output = server_module._extract_markdown(result)
             mock.assert_called_once()
             assert output == long_text
@@ -19,7 +19,7 @@ class TestExtractMarkdown:
             "markdown": {"fit_markdown": "fit content here", "raw_markdown": "raw content"},
         }
 
-        with patch("web_search_server.trafilatura.extract", return_value="x"):
+        with patch("core.trafilatura.extract", return_value="x"):
             output = server_module._extract_markdown(result)
             assert output == "fit content here"
 
@@ -29,7 +29,7 @@ class TestExtractMarkdown:
             "markdown": {"fit_markdown": "fit md", "raw_markdown": "raw md"},
         }
 
-        with patch("web_search_server.trafilatura.extract", return_value=None):
+        with patch("core.trafilatura.extract", return_value=None):
             output = server_module._extract_markdown(result)
             assert output == "fit md"
 
@@ -39,7 +39,7 @@ class TestExtractMarkdown:
             "markdown": "string markdown",
         }
 
-        with patch("web_search_server.trafilatura.extract", side_effect=Exception("boom")):
+        with patch("core.trafilatura.extract", side_effect=Exception("boom")):
             output = server_module._extract_markdown(result)
             assert output == "string markdown"
 

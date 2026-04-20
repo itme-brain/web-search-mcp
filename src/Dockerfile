@@ -16,6 +16,6 @@ WORKDIR /app
 COPY requirements.txt .
 RUN uv pip install --system --no-cache --require-hashes -r requirements.txt
 
-COPY server.py .
+COPY server.py core.py impls.py formatters.py ./
 
 CMD ["python", "server.py"]

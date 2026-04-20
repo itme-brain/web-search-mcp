@@ -6,7 +6,7 @@ from docx import Document as DocxDocument
 
 from tests.conftest import FakeContext, server_module
 
-PATCH_EXTRACT_URL_DOCUMENT = "web_search_server._extract_url_document"
+PATCH_EXTRACT_URL_DOCUMENT = "core._extract_url_document"
 
 
 @pytest.mark.asyncio
@@ -171,8 +171,8 @@ async def test_extract_pdf_returns_joined_content_and_metadata():
     fake_client.__aexit__ = AsyncMock(return_value=None)
 
     with (
-        patch("web_search_server._pdf_extract_all_pages", return_value=(fake_pages, "Test PDF", 10)),
-        patch("web_search_server.httpx.AsyncClient", return_value=fake_client),
+        patch("core._pdf_extract_all_pages", return_value=(fake_pages, "Test PDF", 10)),
+        patch("core.httpx.AsyncClient", return_value=fake_client),
     ):
         result = await server_module._extract_pdf_document("https://example.com/manual.pdf")
 

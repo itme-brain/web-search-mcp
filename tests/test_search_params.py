@@ -4,9 +4,9 @@ import pytest
 
 from tests.conftest import URLS_A, make_search_results, server_module
 
-PATCH_SEARCH = "web_search_server._search"
-PATCH_SCRAPE = "web_search_server._scrape"
-PATCH_RERANK = "web_search_server._rerank_scored"
+PATCH_SEARCH = "core._search"
+PATCH_SCRAPE = "core._scrape"
+PATCH_RERANK = "core._rerank_scored"
 
 
 def _identity_rerank(_query: str, documents: list[str]) -> list[tuple[int, float]]:
@@ -29,7 +29,7 @@ async def test_search_passes_time_range_and_pageno_to_searxng():
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=None)
 
-    with patch("web_search_server.httpx.AsyncClient", return_value=mock_client):
+    with patch("core.httpx.AsyncClient", return_value=mock_client):
         await server_module._search("test", num_results=5, time_range="week", pageno=2)
 
     call_kwargs = mock_client.get.call_args

@@ -4,7 +4,7 @@ import pytest
 
 from tests.conftest import server_module
 
-PATCH_DISCOVER_PAGE_LINKS = "web_search_server._discover_page_links"
+PATCH_DISCOVER_PAGE_LINKS = "core._discover_page_links"
 
 
 @pytest.mark.asyncio
@@ -185,7 +185,7 @@ async def test_discover_page_links_preserves_nav_footer_header():
         captured["crawler_config"] = crawler_config
         return {"results": [{"links": {"internal": [], "external": []}}]}
 
-    with patch("web_search_server._crawl_post", side_effect=fake_post):
+    with patch("core._crawl_post", side_effect=fake_post):
         await server_module._discover_page_links("https://example.com")
 
     cfg = captured["crawler_config"]

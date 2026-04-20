@@ -85,20 +85,20 @@ async def test_poll_crawl_task_stops_after_max_iterations():
     mock_client.get = AsyncMock(return_value=stuck_resp)
 
     # Swap asyncio.sleep for a no-op so the test doesn't wait real seconds.
-    import web_search_server as server
-    original_sleep = server.asyncio.sleep
+    import core
+    original_sleep = core.asyncio.sleep
 
     async def _fake_sleep(_secs):
         return None
 
-    server.asyncio.sleep = _fake_sleep
+    core.asyncio.sleep = _fake_sleep
     try:
-        result = await server._poll_crawl_task(mock_client, "task-123")
+        result = await core._poll_crawl_task(mock_client, "task-123")
     finally:
-        server.asyncio.sleep = original_sleep
+        core.asyncio.sleep = original_sleep
 
     assert result is None
-    assert mock_client.get.call_count == server._MAX_TASK_POLLS
+    assert mock_client.get.call_count == core._MAX_TASK_POLLS
 
 
 @pytest.mark.asyncio

@@ -3,9 +3,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from tests.conftest import SCRAPE_CONTENT, URLS_A, URLS_B, make_search_results, server_module
 
-PATCH_SEARCH = "web_search_server._search"
-PATCH_SCRAPE = "web_search_server._scrape"
-PATCH_RERANK = "web_search_server._rerank_scored"
+PATCH_SEARCH = "core._search"
+PATCH_SCRAPE = "core._scrape"
+PATCH_RERANK = "core._rerank_scored"
 
 URLS_C = [
     "https://example.com/c1",

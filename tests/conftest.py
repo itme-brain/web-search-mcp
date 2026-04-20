@@ -1,11 +1,16 @@
-import importlib.util
 import sys
 import types
 from pathlib import Path
 
 import pytest
 
-_SERVER_PATH = Path(__file__).resolve().parent.parent / "src" / "server.py"
+# Make the server's flat-layout modules importable as top-level names.
+_SRC = Path(__file__).resolve().parent.parent / "src"
+sys.path.insert(0, str(_SRC))
+
+# Stub flashrank BEFORE src/core.py gets imported (which instantiates Ranker
+# at module-load time). Same ordering requirement as before — just applied to
+# the new layout.
 _flashrank = types.ModuleType("flashrank")
 
 
@@ -36,13 +41,37 @@ if "trafilatura" not in sys.modules:
     _trafilatura.extract = lambda *args, **kwargs: None
     sys.modules["trafilatura"] = _trafilatura
 
-_spec = importlib.util.spec_from_file_location("web_search_server", _SERVER_PATH)
-_mod = importlib.util.module_from_spec(_spec)
-sys.modules["web_search_server"] = _mod
-_spec.loader.exec_module(_mod)
+# Import the four split modules. `core` pulls in Settings + Ranker on first
+# import; the stub above has to be in place first.
+import core  # noqa: E402
+import formatters  # noqa: E402
+import impls  # noqa: E402
+import server  # noqa: E402
 
-server_module = _mod
-server_app = _mod.mcp
+server_app = server.mcp
+
+
+class _ServerModuleProxy:
+    """Back-compat facade resolving attributes across the four split modules.
+
+    Existing tests reference `server_module.X` — keep that working without
+    rewriting every line by resolving X on the first split module that has
+    it. Tests can also `import core`, `import impls`, etc. directly.
+
+    Note: this does NOT help with `unittest.mock.patch("web_search_server.X")`
+    strings — those get rewritten per-module because mock.patch uses
+    sys.modules, not attribute lookup.
+    """
+    _search_order = (server, impls, core, formatters)
+
+    def __getattr__(self, name):
+        for mod in self._search_order:
+            if hasattr(mod, name):
+                return getattr(mod, name)
+        raise AttributeError(f"no such attribute across split modules: {name!r}")
+
+
+server_module = _ServerModuleProxy()
 
 
 class FakeContext:

@@ -1,21 +1,24 @@
 import argparse
 import asyncio
-import importlib.util
 import json
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-SERVER_PATH = ROOT / "src" / "server.py"
+sys.path.insert(0, str(ROOT / "src"))
 
 
 def _load_server_module():
-    spec = importlib.util.spec_from_file_location("web_search_eval_server", SERVER_PATH)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
+    """Import impls from the src/ package path.
+
+    Project layout is flat files in src/ that cross-import each other;
+    adding src/ to sys.path lets us import them as top-level modules.
+    """
+    import impls  # noqa: F401  (triggers core + ranker init)
+    import server  # noqa: F401
+    return server
 
 
 def _load_queries(path: Path) -> list[dict]:

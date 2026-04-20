@@ -5,9 +5,9 @@ from fastmcp import Client
 
 from tests.conftest import URLS_A, make_search_results, server_app, server_module
 
-PATCH_SEARCH = "web_search_server._search"
-PATCH_EXTRACT_URLS_IMPL = "web_search_server.extract_impl"
-PATCH_RERANK = "web_search_server._rerank_scored"
+PATCH_SEARCH = "core._search"
+PATCH_EXTRACT_URLS_IMPL = "impls.extract_impl"
+PATCH_RERANK = "core._rerank_scored"
 
 
 def _identity_rerank(_query: str, documents: list[str]) -> list[tuple[int, float]]:
@@ -79,7 +79,7 @@ async def test_search_returns_structured_json():
 
     with (
         patch(PATCH_SEARCH, search_mock),
-        patch("web_search_server._scrape", AsyncMock(return_value={"content": "# Page\n\ncontent", "title": None, "screenshot": None})),
+        patch("core._scrape", AsyncMock(return_value={"content": "# Page\n\ncontent", "title": None, "screenshot": None})),
         patch(PATCH_RERANK, rerank_mock),
     ):
         payload = await server_module.search_impl("test query", num_results=2, ctx=None)
