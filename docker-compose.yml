@@ -14,15 +14,10 @@ services:
     environment:
       - SEARXNG_URL=http://searxng:8080
       - CRAWL4AI_URL=http://crawl4ai:11235
-      - RERANK_MODEL=${RERANK_MODEL:-ms-marco-MiniLM-L-12-v2}
-      - RERANK_MAX_LENGTH=${RERANK_MAX_LENGTH:-512}
+      - RERANK_MODEL=${RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
+      - REQUEST_TIMEOUT=${REQUEST_TIMEOUT:-30}
+      - MAX_RESULTS=${MAX_RESULTS:-10}
       - MAX_SCRAPE=${MAX_SCRAPE:-5}
-      - MAX_NUM_RESULTS=${MAX_NUM_RESULTS:-10}
-      - MAX_SCRAPE_TOP=${MAX_SCRAPE_TOP:-5}
-      - SCRAPE_TIMEOUT=${SCRAPE_TIMEOUT:-30}
-      - SCRAPE_HTTP_TIMEOUT=${SCRAPE_HTTP_TIMEOUT:-15}
-      - SEARCH_TIMEOUT=${SEARCH_TIMEOUT:-10}
-      - MAX_CONTENT_CHARS=${MAX_CONTENT_CHARS:-8000}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     healthcheck:
       <<: *healthcheck-defaults

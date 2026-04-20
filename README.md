@@ -101,18 +101,13 @@ asyncio.run(main())
 | Var | Default | Purpose |
 |---|---|---|
 | `MCP_HOST_PORT` | `8002` | Host port the MCP server binds to |
-| `MAX_NUM_RESULTS` | `10` | Hard upper bound accepted by the MCP tool |
-| `MAX_SCRAPE` | `5` | How many top results to scrape for full content |
-| `MAX_SCRAPE_TOP` | `5` | Hard upper bound accepted by the MCP tool |
-| `MAX_EXTRACT_URLS` | `20` | Hard upper bound accepted by `extract_urls` |
-| `MAX_MAP_URLS` | `50` | Hard upper bound accepted by `map_site` |
-| `MAX_MAP_DEPTH` | `2` | Hard upper bound accepted by `map_site` |
-| `SCRAPE_TIMEOUT` | `30` | Total per-URL scrape budget (seconds, end-to-end) |
-| `SCRAPE_HTTP_TIMEOUT` | `15` | Per-request HTTP timeout inside the scrape loop |
-| `SEARCH_TIMEOUT` | `10` | SearXNG request timeout |
-| `MAX_CONTENT_CHARS` | `4000` | Max chars per scraped page passed to the reranker |
-| `LOG_LEVEL` | `INFO` | MCP log level (`DEBUG` for scrape/rerank failure detail) |
-| `RERANK_MODEL` | `ms-marco-MiniLM-L-12-v2` | FlashRank model id loaded by the MCP server |
+| `SEARXNG_URL` | `http://searxng:8080` | SearXNG endpoint (set by compose) |
+| `CRAWL4AI_URL` | `http://crawl4ai:11235` | Crawl4AI endpoint (set by compose) |
+| `REQUEST_TIMEOUT` | `30` | Timeout budget for search and scrape requests (seconds) |
+| `MAX_RESULTS` | `10` | Max search results to return |
+| `MAX_SCRAPE` | `5` | Max results to fetch full content for |
+| `RERANK_MODEL` | `BAAI/bge-reranker-v2-m3` | FlashRank reranker model |
+| `LOG_LEVEL` | `INFO` | MCP log level (`DEBUG` for failure detail) |
 | `SEARXNG_IMAGE` / `CRAWL4AI_IMAGE` | pinned | Override to bump upstream image versions |
 
 SearXNG engine allowlist, safesearch, etc. live in `searxng/config/settings.yml.template`. Edit there to change defaults for new deployments; `settings.yml` itself is generated on first boot and gitignored.
@@ -202,7 +197,7 @@ Crawl behavior:
     "search_backend": "searxng",
     "reranker": {
       "name": "flashrank",
-      "model": "ms-marco-MiniLM-L-12-v2"
+      "model": "BAAI/bge-reranker-v2-m3"
     },
     "degraded": false,
     "warnings": [],
