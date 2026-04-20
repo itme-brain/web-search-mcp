@@ -116,8 +116,8 @@ SearXNG engine allowlist, safesearch, etc. live in `searxng/config/settings.yml.
 
 - Tool: `web_search(query, num_results=10, scrape_top=5, time_range=None, mode="balanced", include_domains=None, exclude_domains=None)` — returns structured JSON with ranked results, snippets, extracted content, per-page top chunks, and response metadata. `time_range` takes `day`, `week`, `month`, `year`. `mode` is `balanced` or `deep`.
 - Tool: `site_search(query, site, num_results=10, scrape_top=5, mode="balanced", include_domains=None, exclude_domains=None)` — same JSON schema, but scoped with `site:<domain>`.
-- Tool: `extract_url(url, query=None)` — structured single-URL extraction for pages and supported files.
-- Tool: `extract_urls(urls, query=None)` — batch extraction with per-URL statuses. Uses Crawl4AI for web pages and `pypdf` for PDFs, returning markdown content only in v1.
+- Tool: `extract_url(url, query=None, start_page=None, end_page=None)` — single-URL extraction for pages and supported files. For PDFs, `start_page`/`end_page` (1-indexed, inclusive) select a page range; the response includes `total_pages` for pagination.
+- Tool: `extract_urls(urls, query=None, start_page=None, end_page=None)` — batch extraction with per-URL statuses. Uses Crawl4AI for web pages and `pypdf` for PDFs. Page range applies to all PDF URLs in the batch.
 - Tool: `map_site(url, max_urls=25, max_depth=1, include_patterns=None, exclude_patterns=None, same_domain_only=True)` — discovers candidate URLs from a site using Crawl4AI link extraction and returns a structured site map.
 - Tool: `crawl_site(url, query=None, max_urls=10, max_depth=1, include_patterns=None, exclude_patterns=None, same_domain_only=True)` — maps a site, then extracts each discovered page into a single structured response.
 
@@ -141,7 +141,7 @@ Extraction behavior:
 
 - `extract_url` and `extract_urls` share the same extraction pipeline and response fields.
 - `extract_urls` supports partial success: one failed URL does not fail the whole call.
-- PDF handling is explicit and library-backed via `pypdf`.
+- PDF handling is explicit and library-backed via `pypdf`. For large PDFs, use `start_page`/`end_page` to paginate — the response includes `total_pages` so the model can request subsequent ranges.
 - `docx` handling is explicit and library-backed via `python-docx`.
 - Plain-text and structured-text files like `txt`, `md`, `json`, `xml`, and `csv` are fetched and decoded through `httpx`.
 - Results include per-URL `status`, `content_type`, `file_type`, `title`, `content`, and `error`.

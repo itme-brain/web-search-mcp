@@ -639,17 +639,25 @@ async def _detect_file_type(url: str) -> tuple[str, str | None]:
     return _guess_file_type(url, content_type), _content_type_without_charset(content_type)
 
 
-def _pdf_bytes_to_markdown(data: bytes) -> tuple[str, str | None]:
+def _pdf_bytes_to_markdown(
+    data: bytes,
+    start_page: int | None = None,
+    end_page: int | None = None,
+) -> tuple[str, str | None, int]:
+    """Extract PDF pages to markdown. Returns (content, title, total_pages)."""
     reader = PdfReader(io.BytesIO(data))
+    total_pages = len(reader.pages)
     title = None
     if reader.metadata:
         title = reader.metadata.title
+    first = (start_page or 1) - 1
+    last = min(end_page or total_pages, total_pages)
     sections: list[str] = []
-    for page_number, page in enumerate(reader.pages, start=1):
+    for page_number, page in enumerate(reader.pages[first:last], start=first + 1):
         text = (page.extract_text() or "").strip()
         if text:
             sections.append(f"## Page {page_number}\n\n{text}")
-    return "\n\n".join(sections)[:_MAX_CONTENT_CHARS], title
+    return "\n\n".join(sections)[:_MAX_CONTENT_CHARS], title, total_pages
 
 
 def _docx_bytes_to_markdown(data: bytes) -> tuple[str, str | None]:
@@ -674,11 +682,17 @@ def _docx_bytes_to_markdown(data: bytes) -> tuple[str, str | None]:
     return "\n\n".join(sections)[:_MAX_CONTENT_CHARS], title
 
 
-async def _extract_pdf_document(url: str) -> dict:
+async def _extract_pdf_document(
+    url: str,
+    start_page: int | None = None,
+    end_page: int | None = None,
+) -> dict:
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, follow_redirects=True) as client:
         resp = await client.get(url)
         resp.raise_for_status()
-        content, title = _pdf_bytes_to_markdown(resp.content)
+        content, title, total_pages = _pdf_bytes_to_markdown(
+            resp.content, start_page=start_page, end_page=end_page,
+        )
         return {
             "status": "ok",
             "url": url,
@@ -686,6 +700,9 @@ async def _extract_pdf_document(url: str) -> dict:
             "file_type": "pdf",
             "title": title,
             "content": content,
+            "total_pages": total_pages,
+            "start_page": start_page or 1,
+            "end_page": min(end_page or total_pages, total_pages),
         }
 
 
@@ -812,8 +829,11 @@ async def _extract_url_document(
     query: str | None,
     cache: dict[str, dict],
     crawl_config: dict | None = None,
+    start_page: int | None = None,
+    end_page: int | None = None,
 ) -> dict:
-    if crawl_config is None and url in cache:
+    # Skip cache when a page range is specified (caller wants a specific window).
+    if crawl_config is None and start_page is None and end_page is None and url in cache:
         cached = cache[url]
         content, top_chunks = _rank_document_content(query, cached.get("content", ""))
         return {
@@ -828,7 +848,7 @@ async def _extract_url_document(
     try:
         file_type, content_type = await _detect_file_type(url)
         if file_type == "pdf":
-            extracted = await _extract_pdf_document(url)
+            extracted = await _extract_pdf_document(url, start_page=start_page, end_page=end_page)
         elif file_type == "docx":
             extracted = await _extract_docx_document(url)
         elif file_type in {"text", "markdown", "json", "xml", "csv"}:
@@ -1278,6 +1298,8 @@ def _format_extract_results(response: dict) -> str:
             section = f"## [{title}]({url})\n\n{content}"
         else:
             section = f"## [{title}]({url})"
+        if r.get("total_pages") is not None:
+            section += f"\n\n_pages {r['start_page']}-{r['end_page']} of {r['total_pages']}_"
         sections.append(section)
 
     return "\n\n".join(sections)
@@ -1459,6 +1481,8 @@ async def _extract_urls_impl(
     urls: list[str],
     query: str | None = None,
     crawl_config: dict | None = None,
+    start_page: int | None = None,
+    end_page: int | None = None,
     ctx: Context | None = None,
 ) -> dict:
     """Extract a batch of URLs with per-URL status reporting.
@@ -1475,7 +1499,10 @@ async def _extract_urls_impl(
         extract_cache = await _ctx_get_state(ctx, STATE_EXTRACT_CACHE) or {}
 
     documents = await asyncio.gather(*[
-        _extract_url_document(url, normalized_query, extract_cache, crawl_config)
+        _extract_url_document(
+            url, normalized_query, extract_cache, crawl_config,
+            start_page=start_page, end_page=end_page,
+        )
         for url in urls
     ])
 
@@ -1503,6 +1530,10 @@ async def _extract_urls_impl(
         }
         if document.get("screenshot"):
             entry["screenshot"] = document["screenshot"]
+        if document.get("total_pages") is not None:
+            entry["total_pages"] = document["total_pages"]
+            entry["start_page"] = document.get("start_page", 1)
+            entry["end_page"] = document.get("end_page")
         results.append(entry)
 
     if ctx:
@@ -1549,6 +1580,8 @@ def _maybe_build_crawl_config(
 async def extract_url(
     url: str,
     query: str | None = None,
+    start_page: int | None = None,
+    end_page: int | None = None,
     js_code: list[str] | None = None,
     wait_for: str | None = None,
     page_timeout: int | None = None,
@@ -1557,11 +1590,14 @@ async def extract_url(
     scroll_full_page: bool = False,
     ctx: Context | None = None,
 ) -> str:
-    """Extract a single URL with the same structured schema as extract_urls."""
+    """Extract content from a single URL. For PDFs, use start_page/end_page to read specific page ranges (1-indexed, inclusive). The response includes total_pages so you can paginate through large documents."""
     crawl_config = _maybe_build_crawl_config(
         js_code, wait_for, page_timeout, screenshot, remove_overlays, scroll_full_page,
     )
-    response = await _extract_urls_impl(urls=[url], query=query, crawl_config=crawl_config, ctx=ctx)
+    response = await _extract_urls_impl(
+        urls=[url], query=query, crawl_config=crawl_config,
+        start_page=start_page, end_page=end_page, ctx=ctx,
+    )
     result = response["results"][0]
     response_dict = {
         "query": response["query"],
@@ -1578,6 +1614,8 @@ async def extract_url(
 async def extract_urls(
     urls: list[str],
     query: str | None = None,
+    start_page: int | None = None,
+    end_page: int | None = None,
     js_code: list[str] | None = None,
     wait_for: str | None = None,
     page_timeout: int | None = None,
@@ -1586,10 +1624,14 @@ async def extract_urls(
     scroll_full_page: bool = False,
     ctx: Context | None = None,
 ) -> str:
+    """Extract content from multiple URLs. For PDFs, use start_page/end_page to read specific page ranges (1-indexed, inclusive). The page range applies to all PDF URLs in the batch."""
     crawl_config = _maybe_build_crawl_config(
         js_code, wait_for, page_timeout, screenshot, remove_overlays, scroll_full_page,
     )
-    response = await _extract_urls_impl(urls=urls, query=query, crawl_config=crawl_config, ctx=ctx)
+    response = await _extract_urls_impl(
+        urls=urls, query=query, crawl_config=crawl_config,
+        start_page=start_page, end_page=end_page, ctx=ctx,
+    )
     return _format_extract_results(response)
 
 

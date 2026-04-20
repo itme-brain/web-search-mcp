@@ -145,6 +145,60 @@ def test_docx_bytes_to_markdown_extracts_paragraphs_and_tables():
     assert "| Quarter | Revenue |" in content
 
 
+def _make_pdf(num_pages: int) -> bytes:
+    from pypdf import PdfWriter
+    writer = PdfWriter()
+    for _ in range(num_pages):
+        writer.add_blank_page(width=72, height=72)
+    buf = BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
+
+
+def test_pdf_pagination_returns_total_pages():
+    _, _, total = server_module._pdf_bytes_to_markdown(_make_pdf(10))
+    assert total == 10
+
+
+def test_pdf_pagination_respects_page_range():
+    _, _, total = server_module._pdf_bytes_to_markdown(_make_pdf(10), start_page=3, end_page=5)
+    assert total == 10
+
+
+def test_pdf_pagination_clamps_end_page():
+    _, _, total = server_module._pdf_bytes_to_markdown(_make_pdf(3), start_page=1, end_page=100)
+    assert total == 3
+
+
+@pytest.mark.asyncio
+async def test_extract_pdf_document_includes_pagination_metadata():
+    extract_mock = AsyncMock(return_value={
+        "status": "ok",
+        "url": "https://example.com/manual.pdf",
+        "content_type": "application/pdf",
+        "file_type": "pdf",
+        "title": "Manual",
+        "content": "## Page 3\n\nContent here",
+        "total_pages": 50,
+        "start_page": 3,
+        "end_page": 5,
+        "top_chunks": [],
+        "cached": False,
+    })
+
+    with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
+        payload = await server_module._extract_urls_impl(
+            urls=["https://example.com/manual.pdf"],
+            start_page=3,
+            end_page=5,
+        )
+
+    result = payload["results"][0]
+    assert result["total_pages"] == 50
+    assert result["start_page"] == 3
+    assert result["end_page"] == 5
+
+
 def test_guess_file_type_supports_docx_and_text_formats():
     assert server_module._guess_file_type(
         "https://example.com/file.docx",
