@@ -13,8 +13,11 @@ from collections import defaultdict, deque
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 
 import httpx
+import pysbd
 import trafilatura
 from fastmcp import Context, FastMCP
+from pydantic_settings import BaseSettings
+from url_normalize import url_normalize
 from flashrank import Ranker, RerankRequest
 from docx import Document as DocxDocument
 from pypdf import PdfReader
@@ -29,25 +32,35 @@ log = logging.getLogger("web-search-mcp")
 
 mcp = FastMCP("Web Search", version="0.0.1")
 
-SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://searxng:8080")
-CRAWL4AI_URL = os.environ.get("CRAWL4AI_URL", "http://crawl4ai:11235")
-RERANK_MODEL = os.environ.get("RERANK_MODEL", "ms-marco-MiniLM-L-12-v2")
-RERANK_MAX_LENGTH = int(os.environ.get("RERANK_MAX_LENGTH", "512"))
-MAX_SCRAPE = int(os.environ.get("MAX_SCRAPE", "5"))
-SCRAPE_TIMEOUT = int(os.environ.get("SCRAPE_TIMEOUT", "30"))
-SCRAPE_HTTP_TIMEOUT = int(os.environ.get("SCRAPE_HTTP_TIMEOUT", "15"))
-SEARCH_TIMEOUT = int(os.environ.get("SEARCH_TIMEOUT", "10"))
-MAX_CONTENT_CHARS = int(os.environ.get("MAX_CONTENT_CHARS", "8000"))
-CHUNK_MIN_CHARS = int(os.environ.get("CHUNK_MIN_CHARS", "50"))
-CHUNK_MAX_CHARS = int(os.environ.get("CHUNK_MAX_CHARS", "500"))
-MAX_CHUNKS_PER_PAGE = int(os.environ.get("MAX_CHUNKS_PER_PAGE", "10"))
-TOP_CHUNKS_PER_PAGE = int(os.environ.get("TOP_CHUNKS_PER_PAGE", "3"))
-DEDUP_SIMILARITY = float(os.environ.get("DEDUP_SIMILARITY", "0.85"))
-MAX_NUM_RESULTS = int(os.environ.get("MAX_NUM_RESULTS", "10"))
-MAX_SCRAPE_TOP = int(os.environ.get("MAX_SCRAPE_TOP", str(MAX_SCRAPE)))
-MAX_EXTRACT_URLS = int(os.environ.get("MAX_EXTRACT_URLS", "20"))
-MAX_MAP_URLS = int(os.environ.get("MAX_MAP_URLS", "50"))
-MAX_MAP_DEPTH = int(os.environ.get("MAX_MAP_DEPTH", "2"))
+
+class Settings(BaseSettings):
+    searxng_url: str = "http://searxng:8080"
+    crawl4ai_url: str = "http://crawl4ai:11235"
+    rerank_model: str = "BAAI/bge-reranker-v2-m3"
+    request_timeout: int = 30
+    max_results: int = 10
+    max_scrape: int = 5
+
+
+settings = Settings()
+
+SEARXNG_URL = settings.searxng_url
+CRAWL4AI_URL = settings.crawl4ai_url
+RERANK_MODEL = settings.rerank_model
+REQUEST_TIMEOUT = settings.request_timeout
+MAX_RESULTS = settings.max_results
+MAX_SCRAPE = settings.max_scrape
+
+# Internal constants — not user-configurable.
+_RERANK_MAX_LENGTH = 512
+_HTTP_TIMEOUT = max(REQUEST_TIMEOUT // 2, 10)
+_MAX_CONTENT_CHARS = 8000
+_DEDUP_SIMILARITY = 0.75
+_TOP_CHUNKS = 3
+_MAX_CHUNKS_PER_PAGE = 10
+_MAX_EXTRACT_URLS = 20
+_MAX_MAP_URLS = 50
+_MAX_MAP_DEPTH = 2
 
 STATE_SCRAPE_CACHE = "scrape_cache"
 STATE_QUERY_CACHE = "query_cache"
@@ -61,7 +74,7 @@ VALID_CATEGORIES = frozenset({
     "files", "science", "social media", "it",
 })
 
-_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+_SENTENCE_SPLITTER = pysbd.Segmenter(language="en", clean=False)
 _TRACKING_PARAMS = frozenset({
     "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
     "ref", "fbclid", "gclid", "dclid", "msclkid", "mc_cid", "mc_eid",
@@ -70,8 +83,14 @@ _WORD_SPLIT = re.compile(r"\W+")
 _WHITESPACE = re.compile(r"\s+")
 
 
+def _warning(error_type: str, source: str, detail: str) -> dict:
+    """Create a structured warning dict for programmatic error handling."""
+    return {"type": error_type, "source": source, "detail": detail}
+
+
 def _normalize_url(url: str) -> str:
-    parsed = urlparse(url)
+    normalized = url_normalize(url)
+    parsed = urlparse(normalized)
     host = parsed.hostname or ""
     if host.startswith("www."):
         host = host[4:]
@@ -122,7 +141,7 @@ def _dedup_chunks(chunks: list[str], entry_map: list[int]) -> tuple[list[str], l
         for prev in seen_words:
             intersection = len(words & prev)
             union = len(words | prev)
-            if union and intersection / union >= DEDUP_SIMILARITY:
+            if union and intersection / union >= _DEDUP_SIMILARITY:
                 is_dup = True
                 break
         if not is_dup:
@@ -306,26 +325,29 @@ def _diversify_ranked_entries(ranked_entry_idxs: list[int], entries: list[dict])
 
 
 def _chunk_text(text: str) -> list[str]:
-    """Split text into paragraph-sized chunks suitable for reranking."""
+    """Split text into paragraph-based chunks suitable for reranking.
+
+    Keeps paragraphs intact. Only splits paragraphs longer than 2000 chars
+    by sentence boundaries so the reranker can score them effectively.
+    """
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
     chunks: list[str] = []
     for para in paragraphs:
-        if len(para) <= CHUNK_MAX_CHARS:
-            if len(para) >= CHUNK_MIN_CHARS:
-                chunks.append(para)
+        if len(para) <= 2000:
+            chunks.append(para)
             continue
-        sentences = _SENTENCE_SPLIT.split(para)
+        # Long paragraph — split by sentence into ~1000-char groups.
+        sentences = _SENTENCE_SPLITTER.segment(para)
         current = ""
         for sent in sentences:
-            if current and len(current) + len(sent) + 1 > CHUNK_MAX_CHARS:
-                if len(current) >= CHUNK_MIN_CHARS:
-                    chunks.append(current)
+            if current and len(current) + len(sent) + 1 > 1000:
+                chunks.append(current)
                 current = sent
             else:
                 current = f"{current} {sent}".strip() if current else sent
-        if current and len(current) >= CHUNK_MIN_CHARS:
+        if current:
             chunks.append(current)
-    return chunks[:MAX_CHUNKS_PER_PAGE]
+    return chunks[:_MAX_CHUNKS_PER_PAGE]
 
 
 async def _search(
@@ -354,7 +376,7 @@ async def _search(
     if pageno > 1:
         params["pageno"] = pageno
 
-    async with httpx.AsyncClient(timeout=SEARCH_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
         resp = await client.get(f"{SEARXNG_URL}/search", params=params)
         resp.raise_for_status()
         return resp.json().get("results", [])[:num_results]
@@ -363,8 +385,8 @@ async def _search(
 def _mode_settings(mode: str, num_results: int, scrape_top: int) -> tuple[int, int]:
     if mode == "deep":
         candidate_count = max(num_results * 2, 20)
-        deep_scrape_top = max(scrape_top, min(num_results, MAX_SCRAPE_TOP))
-        return candidate_count, min(deep_scrape_top, MAX_SCRAPE_TOP)
+        deep_scrape_top = max(scrape_top, min(num_results, MAX_SCRAPE))
+        return candidate_count, min(deep_scrape_top, MAX_SCRAPE)
     return num_results, scrape_top
 
 
@@ -385,7 +407,7 @@ def _extract_markdown(result: dict) -> str | None:
             extracted = trafilatura.extract(
                 html, output_format="txt", include_links=True, include_tables=True,
             )
-            if extracted and len(extracted.strip()) >= CHUNK_MIN_CHARS:
+            if extracted and len(extracted.strip()) >= 50:
                 return extracted
         except Exception:
             pass
@@ -528,7 +550,7 @@ _DEFAULT_CRAWL_CONFIG = _build_crawl_config()
 async def _scrape_impl(url: str, crawl_config: dict | None = None) -> dict:
     """Scrape a URL via Crawl4AI. Returns {content, title, screenshot}."""
     config = crawl_config or _DEFAULT_CRAWL_CONFIG
-    async with httpx.AsyncClient(timeout=SCRAPE_HTTP_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
         resp = await client.post(
             f"{CRAWL4AI_URL}/crawl",
             json={"urls": [url], "priority": 8, "crawler_config": config},
@@ -563,15 +585,15 @@ async def _scrape_impl(url: str, crawl_config: dict | None = None) -> dict:
 
 
 async def _scrape(url: str, crawl_config: dict | None = None) -> dict:
-    """Scrape a URL via Crawl4AI, bounded by SCRAPE_TIMEOUT seconds end-to-end.
+    """Scrape a URL via Crawl4AI, bounded by REQUEST_TIMEOUT seconds end-to-end.
 
     Returns {content, title, screenshot}. On failure content is None.
     """
     empty = {"content": None, "title": None, "screenshot": None}
     try:
-        return await asyncio.wait_for(_scrape_impl(url, crawl_config), timeout=SCRAPE_TIMEOUT)
+        return await asyncio.wait_for(_scrape_impl(url, crawl_config), timeout=REQUEST_TIMEOUT)
     except asyncio.TimeoutError:
-        log.warning("scrape timed out url=%s budget=%ss", url, SCRAPE_TIMEOUT)
+        log.warning("scrape timed out url=%s budget=%ss", url, REQUEST_TIMEOUT)
     except httpx.HTTPError as e:
         log.warning("scrape http error url=%s err=%s", url, e)
     except (ValueError, KeyError) as e:
@@ -597,7 +619,7 @@ async def _scrape_cached(
 
 async def _head_content_type(url: str) -> str | None:
     try:
-        async with httpx.AsyncClient(timeout=SCRAPE_HTTP_TIMEOUT, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, follow_redirects=True) as client:
             resp = await client.head(url)
             resp.raise_for_status()
             return resp.headers.get("content-type")
@@ -627,7 +649,7 @@ def _pdf_bytes_to_markdown(data: bytes) -> tuple[str, str | None]:
         text = (page.extract_text() or "").strip()
         if text:
             sections.append(f"## Page {page_number}\n\n{text}")
-    return "\n\n".join(sections)[:MAX_CONTENT_CHARS], title
+    return "\n\n".join(sections)[:_MAX_CONTENT_CHARS], title
 
 
 def _docx_bytes_to_markdown(data: bytes) -> tuple[str, str | None]:
@@ -649,11 +671,11 @@ def _docx_bytes_to_markdown(data: bytes) -> tuple[str, str | None]:
         if rows:
             sections.append(f"## Table {table_number}\n\n" + "\n".join(rows))
 
-    return "\n\n".join(sections)[:MAX_CONTENT_CHARS], title
+    return "\n\n".join(sections)[:_MAX_CONTENT_CHARS], title
 
 
 async def _extract_pdf_document(url: str) -> dict:
-    async with httpx.AsyncClient(timeout=SCRAPE_TIMEOUT, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, follow_redirects=True) as client:
         resp = await client.get(url)
         resp.raise_for_status()
         content, title = _pdf_bytes_to_markdown(resp.content)
@@ -686,7 +708,7 @@ async def _extract_web_document(url: str, crawl_config: dict | None = None) -> d
         "content_type": "text/html",
         "file_type": "html",
         "title": result.get("title"),
-        "content": content[:MAX_CONTENT_CHARS],
+        "content": content[:_MAX_CONTENT_CHARS],
     }
     if result.get("screenshot"):
         doc["screenshot"] = result["screenshot"]
@@ -694,7 +716,7 @@ async def _extract_web_document(url: str, crawl_config: dict | None = None) -> d
 
 
 async def _extract_docx_document(url: str) -> dict:
-    async with httpx.AsyncClient(timeout=SCRAPE_TIMEOUT, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, follow_redirects=True) as client:
         resp = await client.get(url)
         resp.raise_for_status()
         content, title = _docx_bytes_to_markdown(resp.content)
@@ -710,7 +732,7 @@ async def _extract_docx_document(url: str) -> dict:
 
 
 async def _extract_text_document(url: str, file_type: str) -> dict:
-    async with httpx.AsyncClient(timeout=SCRAPE_TIMEOUT, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, follow_redirects=True) as client:
         resp = await client.get(url)
         resp.raise_for_status()
         return {
@@ -721,12 +743,12 @@ async def _extract_text_document(url: str, file_type: str) -> dict:
             or "text/plain",
             "file_type": file_type,
             "title": None,
-            "content": resp.text[:MAX_CONTENT_CHARS],
+            "content": resp.text[:_MAX_CONTENT_CHARS],
         }
 
 
 async def _discover_page_links(url: str) -> dict:
-    async with httpx.AsyncClient(timeout=SCRAPE_HTTP_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
         resp = await client.post(
             f"{CRAWL4AI_URL}/crawl",
             json={"urls": [url], "priority": 6, "crawler_config": _DEFAULT_CRAWL_CONFIG},
@@ -774,14 +796,14 @@ def _url_matches_patterns(url: str, patterns: list[str]) -> bool:
 
 def _rank_document_content(query: str | None, content: str) -> tuple[str, list[dict]]:
     if not query or not content:
-        return content[:MAX_CONTENT_CHARS], []
-    chunks = _chunk_text(content[:MAX_CONTENT_CHARS])
+        return content[:_MAX_CONTENT_CHARS], []
+    chunks = _chunk_text(content[:_MAX_CONTENT_CHARS])
     if not chunks:
-        return content[:MAX_CONTENT_CHARS], []
+        return content[:_MAX_CONTENT_CHARS], []
     scored = _rerank_scored(query, chunks)
-    top = [{"text": chunks[idx], "score": score} for idx, score in scored[:TOP_CHUNKS_PER_PAGE]]
+    top = [{"text": chunks[idx], "score": score} for idx, score in scored[:_TOP_CHUNKS]]
     if not top:
-        return content[:MAX_CONTENT_CHARS], []
+        return content[:_MAX_CONTENT_CHARS], []
     return "\n\n".join(item["text"] for item in top), top
 
 
@@ -843,8 +865,8 @@ async def _extract_url_document(
     return extracted
 
 
-log.info("loading reranker model=%s max_length=%d", RERANK_MODEL, RERANK_MAX_LENGTH)
-_ranker = Ranker(model_name=RERANK_MODEL, max_length=RERANK_MAX_LENGTH)
+log.info("loading reranker model=%s max_length=%d", RERANK_MODEL, _RERANK_MAX_LENGTH)
+_ranker = Ranker(model_name=RERANK_MODEL, max_length=_RERANK_MAX_LENGTH)
 log.info("reranker ready")
 
 
@@ -907,8 +929,8 @@ async def _web_search_impl(
         time_range: Time filter for recency: 'day', 'week', 'month', or 'year'. Use this instead of adding dates to the query. Omit or pass null for no filter.
     """
     query = _validate_query(query)
-    num_results = _validate_positive_int("num_results", num_results, maximum=MAX_NUM_RESULTS)
-    scrape_top = _validate_positive_int("scrape_top", scrape_top, maximum=MAX_SCRAPE_TOP)
+    num_results = _validate_positive_int("num_results", num_results, maximum=MAX_RESULTS)
+    scrape_top = _validate_positive_int("scrape_top", scrape_top, maximum=MAX_SCRAPE)
     time_range = _normalize_time_range(time_range)
     mode = _normalize_mode(mode)
     include_domains = _normalize_domains(include_domains, field_name="include_domains")
@@ -918,7 +940,7 @@ async def _web_search_impl(
     safesearch = _normalize_safesearch(safesearch)
     candidate_count, scrape_top = _mode_settings(mode, num_results, scrape_top)
     started = time.monotonic()
-    warnings: list[str] = []
+    warnings: list[dict] = []
     degraded = False
     timings_ms = {"search": 0, "scrape": 0, "rerank": 0, "total": 0}
 
@@ -966,7 +988,7 @@ async def _web_search_impl(
         )
     except Exception as exc:
         degraded = True
-        warnings.append(f"search failed: {exc}")
+        warnings.append(_warning("search_failed", "searxng", str(exc)))
         results = []
 
     if results and mode == "deep":
@@ -982,7 +1004,7 @@ async def _web_search_impl(
             )
             results.extend(page2)
         except Exception as exc:
-            warnings.append(f"page 2 search failed: {exc}")
+            warnings.append(_warning("search_failed", "searxng", f"page 2: {exc}"))
 
     timings_ms["search"] = int((time.monotonic() - search_started) * 1000)
     if results:
@@ -1006,7 +1028,7 @@ async def _web_search_impl(
                 "search_backend": "searxng",
                 "reranker": {"name": "flashrank", "model": RERANK_MODEL},
                 "degraded": degraded,
-                "warnings": warnings or [f"no results found for query: {query}"],
+                "warnings": warnings or [_warning("no_results", "searxng", query)],
                 "timings_ms": {
                     **timings_ms,
                     "total": int((time.monotonic() - started) * 1000),
@@ -1029,12 +1051,12 @@ async def _web_search_impl(
     scrape_failures = sum(1 for content in scraped if content is None)
     if scrape_failures:
         degraded = True
-        warnings.append(f"scrape failed for {scrape_failures} of {to_scrape} pages")
+        warnings.append(_warning("scrape_failed", "crawl4ai", f"{scrape_failures} of {to_scrape} pages failed"))
 
     # --- build entries ---
     entries: list[dict] = []
     for i, result in enumerate(results[:to_scrape]):
-        raw = scraped[i][:MAX_CONTENT_CHARS] if scraped[i] else None
+        raw = scraped[i][:_MAX_CONTENT_CHARS] if scraped[i] else None
         entries.append({
             "title": result.get("title", "Untitled"),
             "url": result.get("url", ""),
@@ -1072,7 +1094,7 @@ async def _web_search_impl(
         scored = _rerank_scored(query, all_chunks)
     except Exception as exc:
         log.warning("rerank failed query=%r err=%s", query, exc)
-        warnings.append(f"rerank failed: {exc}")
+        warnings.append(_warning("rerank_failed", "flashrank", str(exc)))
         degraded = True
         rerank_failed = True
         scored = []
@@ -1086,7 +1108,7 @@ async def _web_search_impl(
 
     for eidx in entry_chunks:
         entry_chunks[eidx].sort(key=lambda x: x[1], reverse=True)
-        entry_chunks[eidx] = entry_chunks[eidx][:TOP_CHUNKS_PER_PAGE]
+        entry_chunks[eidx] = entry_chunks[eidx][:_TOP_CHUNKS]
 
     # --- rank pages by best chunk score ---
     entry_best: dict[int, float | None] = {
@@ -1212,7 +1234,7 @@ async def image_search(
 ) -> dict:
     """Search for images via SearXNG. Returns image URLs, thumbnails, and source metadata."""
     query = _validate_query(query)
-    num_results = _validate_positive_int("num_results", num_results, maximum=MAX_NUM_RESULTS)
+    num_results = _validate_positive_int("num_results", num_results, maximum=MAX_RESULTS)
     time_range = _normalize_time_range(time_range)
     language = language.strip() if language else None
     safesearch = _normalize_safesearch(safesearch)
@@ -1276,7 +1298,7 @@ async def _extract_urls_impl(
     Uses Crawl4AI for web pages and pypdf for PDF documents.
     Returns markdown content only in v1.
     """
-    urls = _validate_urls(urls, maximum=MAX_EXTRACT_URLS)
+    urls = _validate_urls(urls, maximum=_MAX_EXTRACT_URLS)
     normalized_query = query.strip() if query else None
     started = time.monotonic()
 
@@ -1411,8 +1433,8 @@ async def _map_site_impl(
 ) -> dict:
     """Discover in-scope URLs from a site using Crawl4AI link extraction."""
     root_url = _validate_urls([url], maximum=1)[0]
-    max_urls = _validate_positive_int("max_urls", max_urls, maximum=MAX_MAP_URLS)
-    max_depth = _validate_positive_int("max_depth", max_depth, maximum=MAX_MAP_DEPTH)
+    max_urls = _validate_positive_int("max_urls", max_urls, maximum=_MAX_MAP_URLS)
+    max_depth = _validate_positive_int("max_depth", max_depth, maximum=_MAX_MAP_DEPTH)
     include_patterns = _normalize_glob_patterns(include_patterns, field_name="include_patterns")
     exclude_patterns = _normalize_glob_patterns(exclude_patterns, field_name="exclude_patterns")
 
@@ -1423,7 +1445,7 @@ async def _map_site_impl(
     queue = deque([(root_url, 0, None)])
     visited_pages: set[str] = set()
     discovered: dict[str, dict] = {}
-    warnings: list[str] = []
+    warnings: list[dict] = []
 
     while queue and len(discovered) < max_urls:
         current_url, depth, discovered_from = queue.popleft()
@@ -1447,16 +1469,16 @@ async def _map_site_impl(
             continue
 
         try:
-            page = await asyncio.wait_for(_discover_page_links(current_url), timeout=SCRAPE_TIMEOUT)
+            page = await asyncio.wait_for(_discover_page_links(current_url), timeout=REQUEST_TIMEOUT)
         except asyncio.TimeoutError:
-            warnings.append(f"link discovery timed out for {current_url}")
+            warnings.append(_warning("link_discovery_timeout", "crawl4ai", current_url))
             continue
         except httpx.HTTPError as exc:
-            warnings.append(f"link discovery failed for {current_url}: {exc}")
+            warnings.append(_warning("link_discovery_failed", "crawl4ai", f"{current_url}: {exc}"))
             continue
 
         if page["status"] != "ok":
-            warnings.append(page.get("error") or f"link discovery failed for {current_url}")
+            warnings.append(_warning("link_discovery_failed", "crawl4ai", page.get("error") or current_url))
             continue
 
         current_entry["title"] = page.get("title") or current_entry["title"]
@@ -1554,7 +1576,7 @@ async def crawl_site(
     effective_max_urls = _validate_positive_int(
         "max_urls",
         max_urls,
-        maximum=min(MAX_MAP_URLS, MAX_EXTRACT_URLS),
+        maximum=min(_MAX_MAP_URLS, _MAX_EXTRACT_URLS),
     )
     started = time.monotonic()
 
@@ -1747,7 +1769,7 @@ async def _find_similar_impl(
 ) -> dict:
     """Find pages similar to the given URL by extracting keywords and searching."""
     started = time.monotonic()
-    warnings: list[str] = []
+    warnings: list[dict] = []
     timings_ms: dict[str, int] = {}
 
     scrape_cache: dict[str, str | None] = {}
@@ -1802,7 +1824,7 @@ async def _find_similar_impl(
     source_normalized = _normalize_url(url)
     for i, sr in enumerate(search_results):
         if isinstance(sr, Exception):
-            warnings.append(f"query {i+1} failed: {sr}")
+            warnings.append(_warning("search_failed", "searxng", f"query {i+1}: {sr}"))
             continue
         for r in sr:
             if _normalize_url(r.get("url", "")) != source_normalized:
@@ -1832,7 +1854,7 @@ async def _find_similar_impl(
     try:
         scored = _rerank_scored(summary, candidate_snippets)
     except Exception as exc:
-        warnings.append(f"rerank failed: {exc}")
+        warnings.append(_warning("rerank_failed", "flashrank", str(exc)))
         scored = [(i, 0.0) for i in range(len(all_candidates))]
     timings_ms["rerank"] = int((time.monotonic() - rerank_started) * 1000)
 
@@ -1875,7 +1897,7 @@ async def find_similar(
     and reranks candidates by similarity to the source.
     """
     url = _validate_urls([url], maximum=1)[0]
-    num_results = _validate_positive_int("num_results", num_results, maximum=MAX_NUM_RESULTS)
+    num_results = _validate_positive_int("num_results", num_results, maximum=MAX_RESULTS)
     return await _find_similar_impl(url=url, num_results=num_results, ctx=ctx)
 
 
