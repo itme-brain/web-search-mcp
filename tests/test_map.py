@@ -14,7 +14,10 @@ async def test_map_validates_url():
 
 
 @pytest.mark.asyncio
-async def test_map_discovers_same_domain_links_only():
+async def test_map_discovers_same_org_links():
+    """same_domain_only=True uses registrable-domain match ("same org"):
+    docs.example.com, blog.example.com, api.example.com all pass; an
+    entirely different TLD/site does not."""
     discover_mock = AsyncMock(side_effect=[
         {
             "status": "ok",
@@ -34,6 +37,12 @@ async def test_map_discovers_same_domain_links_only():
                     "link_type": "external",
                 },
                 {
+                    "url": "https://example.com/about",
+                    "title": "About",
+                    "text": "About (parent domain)",
+                    "link_type": "external",
+                },
+                {
                     "url": "https://other.example.net/page",
                     "title": "Other",
                     "text": "Other",
@@ -50,14 +59,26 @@ async def test_map_discovers_same_domain_links_only():
             max_depth=1,
         )
 
-    returned_urls = [result["url"] for result in payload["results"]]
-    assert returned_urls == [
-        "https://docs.example.com",
-        "https://docs.example.com/guide",
-    ]
-    assert all("blog.example.com" not in url for url in returned_urls)
-    assert all("other.example.net" not in url for url in returned_urls)
+    returned_urls = set(result["url"] for result in payload["results"])
+    # all share registrable domain example.com
+    assert "https://docs.example.com" in returned_urls
+    assert "https://docs.example.com/guide" in returned_urls
+    assert "https://blog.example.com/post" in returned_urls
+    assert "https://example.com/about" in returned_urls
+    # different registrable domain (example.net), excluded
+    assert "https://other.example.net/page" not in returned_urls
     assert payload["meta"]["same_domain_only"] is True
+
+
+def test_registrable_domain_basic():
+    """Last two labels win for common TLDs."""
+    rd = server_module._registrable_domain
+    assert rd("docs.pydantic.dev") == "pydantic.dev"
+    assert rd("pydantic.dev") == "pydantic.dev"
+    assert rd("logfire.pydantic.dev") == "pydantic.dev"
+    assert rd("a.b.c.example.com") == "example.com"
+    assert rd("example.com") == "example.com"
+    assert rd("www.example.com") == "example.com"
 
 
 @pytest.mark.asyncio

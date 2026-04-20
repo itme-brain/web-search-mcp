@@ -220,6 +220,23 @@ def _domain_from_url(url: str) -> str:
     return urlparse(url).hostname or ""
 
 
+def _registrable_domain(domain: str) -> str:
+    """Return the registrable domain (last two labels).
+
+    Good enough for conventional TLDs (.com, .dev, .org); imprecise for
+    multi-part TLDs like .co.uk where the true registrable domain is
+    three labels. A public-suffix list would be more correct but adds a
+    dep for a marginal fidelity gain. Used by map/crawl same-domain
+    scoping so `map docs.pydantic.dev` also discovers pydantic.dev/...,
+    logfire.pydantic.dev, etc. — "same org" rather than "same host."
+    """
+    bare = domain[4:] if domain.startswith("www.") else domain
+    parts = bare.split(".")
+    if len(parts) <= 2:
+        return bare
+    return ".".join(parts[-2:])
+
+
 def _validate_urls(urls: list[str], *, maximum: int) -> list[str]:
     if not urls:
         raise ValueError("urls must not be empty")
@@ -1510,7 +1527,7 @@ async def map_impl(
 
     started = time.monotonic()
     root_domain = _domain_from_url(root_url).lower()
-    bare_root_domain = root_domain[4:] if root_domain.startswith("www.") else root_domain
+    root_registrable = _registrable_domain(root_domain)
 
     queue = deque([(root_url, 0, None)])
     visited_pages: set[str] = set()
@@ -1557,9 +1574,8 @@ async def map_impl(
             link_url = link["url"]
             normalized_link = _normalize_url(link_url)
             domain = _domain_from_url(link_url).lower()
-            bare_domain = domain[4:] if domain.startswith("www.") else domain
 
-            if same_domain_only and not _match_domain(bare_domain, [bare_root_domain]):
+            if same_domain_only and _registrable_domain(domain) != root_registrable:
                 continue
             if include_patterns and not _url_matches_patterns(link_url, include_patterns):
                 continue
@@ -1630,7 +1646,10 @@ async def map(
     Returns a tree of discovered URLs with titles, depth, and discovery path —
     no body text. `include_patterns` / `exclude_patterns` accept shell-style
     globs against the full URL (e.g. `https://docs.example.com/api/*`).
-    `same_domain_only` keeps discovery within the root host and its subdomains.
+    `same_domain_only` keeps discovery within the same registrable domain as
+    the root URL (e.g. mapping `docs.pydantic.dev` also discovers
+    `pydantic.dev/...` and `logfire.pydantic.dev/...` — "same org," not
+    just "same host"). Set `False` to follow every in-scope link.
     """
     response = await map_impl(
         url=url,

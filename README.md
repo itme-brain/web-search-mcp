@@ -185,7 +185,7 @@ Examples:
 Cheap discovery of URLs on a site — no body content, just the link graph.
 
 - Returns normalized candidate URLs with titles, discovery depth, and the source URL each page was found from.
-- `same_domain_only=True` keeps discovery within the root host and its subdomains.
+- `same_domain_only=True` keeps discovery within the same registrable domain (e.g. mapping `docs.pydantic.dev` also follows `pydantic.dev/...`, `logfire.pydantic.dev/...`, etc. — "same org," not just "same host"). Set `False` to follow every link the page points at.
 - `include_patterns` / `exclude_patterns` accept shell-style globs against the full URL.
 - This is a bounded survey tool, not a full-content crawler.
 
