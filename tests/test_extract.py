@@ -154,9 +154,11 @@ def test_pdf_extract_all_pages_returns_per_page_chunks():
 
 
 @pytest.mark.asyncio
-async def test_extract_pdf_returns_per_page_chunks_with_metadata():
+async def test_extract_pdf_returns_joined_content_and_metadata():
+    """PDF extractor now returns flattened content (no per-page headers).
+    Reranking happens centrally in _rank_document_content, same as HTML."""
     fake_pages = [
-        {"page": i, "content": f"Content for page {i}"}
+        {"page": i, "content": f"Page {i} content body paragraph"}
         for i in range(1, 11)
     ]
 
@@ -176,55 +178,29 @@ async def test_extract_pdf_returns_per_page_chunks_with_metadata():
 
     assert result["title"] == "Test PDF"
     assert result["total_pages"] == 10
-    assert result["pages_returned"] > 0
-    assert "## Page 1" in result["content"]
+    # Total chars = sum of page content lengths plus the "\n\n" joiners.
+    assert result["total_chars"] == len(result["content"]) > 0
+    # Content is joined page bodies — NO "## Page N" page headers anymore.
+    assert "## Page" not in result["content"]
+    assert "Page 1 content body paragraph" in result["content"]
+    # pages_returned is gone — page-level selection is no longer the unit.
+    assert "pages_returned" not in result
 
 
 @pytest.mark.asyncio
-async def test_extract_pdf_reranks_pages_with_query():
-    fake_pages = [
-        {"page": i, "content": f"Content for page {i}"}
-        for i in range(1, 6)
-    ]
-
-    fake_resp = AsyncMock()
-    fake_resp.content = b"fake pdf bytes"
-    fake_resp.raise_for_status = lambda: None
-    fake_client = AsyncMock()
-    fake_client.get = AsyncMock(return_value=fake_resp)
-    fake_client.__aenter__ = AsyncMock(return_value=fake_client)
-    fake_client.__aexit__ = AsyncMock(return_value=None)
-
-    # Reranker returns pages in reverse relevance order
-    def fake_rerank(_query, docs):
-        return [(i, 1.0 - i * 0.1) for i in reversed(range(len(docs)))]
-
-    with (
-        patch("web_search_server._pdf_extract_all_pages", return_value=(fake_pages, "Test", 5)),
-        patch("web_search_server.httpx.AsyncClient", return_value=fake_client),
-        patch("web_search_server._rerank_scored", side_effect=fake_rerank),
-    ):
-        result = await server_module._extract_pdf_document(
-            "https://example.com/manual.pdf",
-            query="relevant content",
-        )
-
-    # Reranked content should have score annotations
-    assert "(score:" in result["content"]
-    assert result["pages_returned"] > 0
-
-
-@pytest.mark.asyncio
-async def test_extract_urls_surfaces_pdf_pagination_metadata():
+async def test_extract_urls_surfaces_pdf_total_pages_metadata():
+    """total_pages stays as informational PDF metadata ('this doc has N
+    pages'); pages_returned no longer exists since pages aren't the
+    selection unit anymore — chars are."""
     extract_mock = AsyncMock(return_value={
         "status": "ok",
         "url": "https://example.com/manual.pdf",
         "content_type": "application/pdf",
         "file_type": "pdf",
         "title": "Manual",
-        "content": "## Page 1\n\nContent",
+        "content": "paragraph one\n\nparagraph two",
+        "total_chars": 28,
         "total_pages": 50,
-        "pages_returned": 3,
         "top_chunks": [],
         "cached": False,
     })
@@ -236,12 +212,12 @@ async def test_extract_urls_surfaces_pdf_pagination_metadata():
 
     result = payload["results"][0]
     assert result["total_pages"] == 50
-    assert result["pages_returned"] == 3
+    assert result["total_chars"] == 28
 
 
 @pytest.mark.asyncio
-async def test_extract_cache_hit_preserves_pdf_pagination_metadata():
-    """Cache hits must carry total_pages / pages_returned / file_type through."""
+async def test_extract_cache_hit_preserves_pdf_metadata():
+    """Cache hits must carry total_pages + file_type through."""
     cache = server_module._new_cache()
     cache["https://example.com/manual.pdf"] = {
         "status": "ok",
@@ -249,9 +225,9 @@ async def test_extract_cache_hit_preserves_pdf_pagination_metadata():
         "content_type": "application/pdf",
         "file_type": "pdf",
         "title": "Manual",
-        "content": "## Page 1\n\nContent",
+        "content": "Body paragraph from the cached PDF.",
+        "total_chars": 36,
         "total_pages": 50,
-        "pages_returned": 3,
     }
 
     result = await server_module._extract_url_document(
@@ -261,7 +237,6 @@ async def test_extract_cache_hit_preserves_pdf_pagination_metadata():
     assert result["cached"] is True
     assert result["file_type"] == "pdf"
     assert result["total_pages"] == 50
-    assert result["pages_returned"] == 3
 
 
 def test_guess_file_type_supports_docx_and_text_formats():

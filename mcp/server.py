@@ -745,12 +745,13 @@ def _pdf_extract_all_pages(data: bytes) -> tuple[list[dict], str | None, int]:
     return pages, title, total_pages
 
 
-async def _extract_pdf_document(url: str, query: str | None = None) -> dict:
-    """Download a PDF, extract all pages, optionally rerank by query.
+async def _extract_pdf_document(url: str) -> dict:
+    """Download a PDF, extract pages, and return joined markdown.
 
-    Returns per-page chunks in the content field formatted as markdown
-    sections. When a query is provided, pages are reranked so the most
-    relevant pages appear first.
+    No query-time reranking here — PDFs go through the same central
+    `_rank_document_content` chunk-rerank path as HTML/docx/text. Pages
+    are joined with `\\n\\n` so `_chunk_text` sees paragraph boundaries
+    that naturally align with page boundaries.
     """
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, follow_redirects=True) as client:
         resp = await client.get(url)
@@ -768,45 +769,18 @@ async def _extract_pdf_document(url: str, query: str | None = None) -> dict:
             "content": "",
             "total_chars": 0,
             "total_pages": total_pages,
-            "pages_returned": 0,
         }
 
-    if query:
-        try:
-            page_texts = [p["content"][:500] for p in all_pages]
-            scored = await _rerank_scored(query, page_texts)
-            ranked = [
-                {**all_pages[idx], "score": round(score, 4)}
-                for idx, score in scored
-            ]
-        except Exception:
-            ranked = all_pages
-    else:
-        ranked = all_pages
-
-    # Build content within char budget, page by page.
-    sections: list[str] = []
-    char_budget = _MAX_CONTENT_CHARS
-    for chunk in ranked:
-        heading = f"## Page {chunk['page']}"
-        if "score" in chunk:
-            heading += f" (score: {chunk['score']})"
-        section = f"{heading}\n\n{chunk['content']}"
-        if char_budget - len(section) < 0 and sections:
-            break
-        sections.append(section)
-        char_budget -= len(section) + 2
-
+    full_content = "\n\n".join(p["content"] for p in all_pages)
     return {
         "status": "ok",
         "url": url,
         "content_type": "application/pdf",
         "file_type": "pdf",
         "title": title,
-        "content": "\n\n".join(sections),
-        "total_chars": sum(len(p["content"]) for p in all_pages),
+        "content": full_content,
+        "total_chars": len(full_content),
         "total_pages": total_pages,
-        "pages_returned": len(sections),
     }
 
 
@@ -951,7 +925,7 @@ async def _extract_url_document(
     try:
         file_type, content_type = await _detect_file_type(url)
         if file_type == "pdf":
-            extracted = await _extract_pdf_document(url, query=query)
+            extracted = await _extract_pdf_document(url)
         elif file_type == "docx":
             extracted = await _extract_docx_document(url)
         elif file_type in {"text", "markdown", "json", "xml", "csv"}:
@@ -985,7 +959,6 @@ async def _extract_url_document(
         }
         if extracted.get("total_pages") is not None:
             cached_entry["total_pages"] = extracted["total_pages"]
-            cached_entry["pages_returned"] = extracted.get("pages_returned", 0)
         cache[url] = cached_entry
         content, top_chunks = await _rank_document_content(query, raw, offset=offset)
         extracted["content"] = content
@@ -1368,8 +1341,6 @@ def _format_document_section(r: dict) -> str:
         section = f"## [{title}]({url})\n\n{content}"
     else:
         section = f"## [{title}]({url})"
-    if r.get("total_pages") is not None:
-        section += f"\n\n_{r['pages_returned']} of {r['total_pages']} pages extracted_"
     # Truncation signal: tell the LLM exactly where to resume via offset.
     offset = r.get("offset", 0) or 0
     total_chars = r.get("total_chars")
@@ -1518,7 +1489,6 @@ async def extract_impl(
         }
         if document.get("total_pages") is not None:
             entry["total_pages"] = document["total_pages"]
-            entry["pages_returned"] = document.get("pages_returned", 0)
         results.append(entry)
 
     await _save_cache(ctx, STATE_EXTRACT_CACHE, extract_cache)
@@ -1770,7 +1740,6 @@ async def crawl_impl(
         }
         if extracted_result.get("total_pages") is not None:
             combined["total_pages"] = extracted_result["total_pages"]
-            combined["pages_returned"] = extracted_result.get("pages_returned", 0)
         if extracted_result.get("title"):
             combined["title"] = extracted_result["title"]
         results.append(combined)
