@@ -118,6 +118,7 @@ SearXNG engine allowlist, safesearch, etc. live in `searxng/config/settings.yml.
 - Tool: `site_search(query, site, num_results=10, scrape_top=5, mode="balanced", include_domains=None, exclude_domains=None)` — same JSON schema, but scoped with `site:<domain>`.
 - Tool: `extract_url(url, query=None, start_page=None, end_page=None)` — single-URL extraction for pages and supported files. For PDFs, `start_page`/`end_page` (1-indexed, inclusive) select a page range; the response includes `total_pages` for pagination.
 - Tool: `extract_urls(urls, query=None, start_page=None, end_page=None)` — batch extraction with per-URL statuses. Uses Crawl4AI for web pages and `pypdf` for PDFs. Page range applies to all PDF URLs in the batch.
+- Tool: `extract_document_chunks(url, query=None, max_pages=50)` — extracts a full PDF as page-level chunks in a single call. When `query` is provided, pages are reranked by relevance. Use this instead of `extract_url` for large PDFs where serial pagination would be too slow.
 - Tool: `map_site(url, max_urls=25, max_depth=1, include_patterns=None, exclude_patterns=None, same_domain_only=True)` — discovers candidate URLs from a site using Crawl4AI link extraction and returns a structured site map.
 - Tool: `crawl_site(url, query=None, max_urls=10, max_depth=1, include_patterns=None, exclude_patterns=None, same_domain_only=True)` — maps a site, then extracts each discovered page into a single structured response.
 

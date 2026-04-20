@@ -2129,6 +2129,160 @@ async def find_similar(
     return _format_similar_results(response)
 
 
+_MAX_CHUNK_PAGES = 100
+
+
+def _pdf_extract_all_pages(data: bytes) -> tuple[list[dict], str | None]:
+    """Extract every page from a PDF into individual chunks.
+
+    Returns (pages, title) where each page is {page: int, content: str}.
+    """
+    reader = PdfReader(io.BytesIO(data))
+    title = None
+    if reader.metadata:
+        title = reader.metadata.title
+    pages: list[dict] = []
+    for page_number, page in enumerate(reader.pages, start=1):
+        text = (page.extract_text() or "").strip()
+        if text:
+            pages.append({"page": page_number, "content": text})
+    return pages, title
+
+
+async def _extract_document_chunks_impl(
+    url: str,
+    query: str | None = None,
+    max_pages: int = 50,
+) -> dict:
+    """Download a document, extract all pages, optionally rerank by query."""
+    url = _validate_urls([url], maximum=1)[0]
+    max_pages = _validate_positive_int("max_pages", max_pages, maximum=_MAX_CHUNK_PAGES)
+    started = time.monotonic()
+    timings_ms: dict[str, int] = {}
+    warnings: list[dict] = []
+
+    file_type, content_type = await _detect_file_type(url)
+    if file_type != "pdf":
+        return {
+            "url": url,
+            "title": None,
+            "total_pages": 0,
+            "pages_returned": 0,
+            "query": query,
+            "chunks": [],
+            "meta": {
+                "error": f"extract_document_chunks only supports PDFs, got {file_type or 'unknown'}",
+                "warnings": warnings,
+                "timings_ms": {"total": int((time.monotonic() - started) * 1000)},
+            },
+        }
+
+    fetch_started = time.monotonic()
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, follow_redirects=True) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+    timings_ms["fetch"] = int((time.monotonic() - fetch_started) * 1000)
+
+    parse_started = time.monotonic()
+    all_pages, title = _pdf_extract_all_pages(resp.content)
+    total_pages = len(PdfReader(io.BytesIO(resp.content)).pages)
+    timings_ms["parse"] = int((time.monotonic() - parse_started) * 1000)
+
+    if not all_pages:
+        return {
+            "url": url,
+            "title": title,
+            "total_pages": total_pages,
+            "pages_returned": 0,
+            "query": query,
+            "chunks": [],
+            "meta": {
+                "error": "no extractable text in PDF",
+                "warnings": warnings,
+                "timings_ms": {**timings_ms, "total": int((time.monotonic() - started) * 1000)},
+            },
+        }
+
+    if query:
+        rerank_started = time.monotonic()
+        try:
+            page_texts = [p["content"][:500] for p in all_pages]
+            scored = _rerank_scored(query, page_texts)
+            ranked_pages = [
+                {**all_pages[idx], "score": round(score, 4)}
+                for idx, score in scored[:max_pages]
+            ]
+        except Exception as exc:
+            warnings.append(_warning("rerank_failed", "flashrank", str(exc)))
+            ranked_pages = all_pages[:max_pages]
+        timings_ms["rerank"] = int((time.monotonic() - rerank_started) * 1000)
+    else:
+        ranked_pages = all_pages[:max_pages]
+
+    timings_ms["total"] = int((time.monotonic() - started) * 1000)
+    return {
+        "url": url,
+        "title": title,
+        "total_pages": total_pages,
+        "pages_returned": len(ranked_pages),
+        "query": query,
+        "chunks": ranked_pages,
+        "meta": {
+            "warnings": warnings,
+            "timings_ms": timings_ms,
+        },
+    }
+
+
+def _format_document_chunks(response: dict) -> str:
+    """Format extract_document_chunks response as markdown."""
+    parts = [f"url: {response['url']}"]
+    if response.get("title"):
+        parts.append(f"title: {response['title']}")
+    parts.append(f"total_pages: {response['total_pages']}")
+    parts.append(f"pages_returned: {response['pages_returned']}")
+    if response.get("query"):
+        parts.append(f"query: {response['query']}")
+    meta = response.get("meta", {})
+    if meta.get("error"):
+        parts.append(f"error: {meta['error']}")
+    warnings = meta.get("warnings", [])
+    if warnings:
+        parts.append("warnings: " + "; ".join(w.get("detail", str(w)) for w in warnings))
+    header = "\n".join(parts)
+
+    sections = [header, "---"]
+    for chunk in response.get("chunks", []):
+        page = chunk["page"]
+        content = chunk["content"]
+        score = chunk.get("score")
+        heading = f"## Page {page}"
+        if score is not None:
+            heading += f" (score: {score})"
+        sections.append(f"{heading}\n\n{content}")
+
+    return "\n\n".join(sections)
+
+
+@mcp.tool
+async def extract_document_chunks(
+    url: str,
+    query: str | None = None,
+    max_pages: int = 50,
+) -> str:
+    """Extract a full PDF document as page-level chunks in a single call.
+
+    Downloads the PDF once, extracts all pages server-side, and returns
+    per-page content. When a query is provided, pages are reranked by
+    relevance so the most useful pages appear first.
+
+    Use this instead of extract_url for large PDFs where serial pagination
+    would be too slow. Currently supports PDF only.
+    """
+    response = await _extract_document_chunks_impl(url=url, query=query, max_pages=max_pages)
+    return _format_document_chunks(response)
+
+
 if __name__ == "__main__":
     mcp.run(
         transport="http",
