@@ -1194,6 +1194,171 @@ async def _web_search_impl(
     return response
 
 
+# ---------------------------------------------------------------------------
+# Markdown formatters – convert internal response dicts into LLM-friendly text
+# ---------------------------------------------------------------------------
+
+def _format_search_results(response: dict) -> str:
+    """Format web_search/site_search response as markdown for LLM consumption."""
+    parts = [f"query: {response['query']}"]
+    if response.get("mode"):
+        parts.append(f"mode: {response['mode']}")
+    if response.get("time_range"):
+        parts.append(f"time_range: {response['time_range']}")
+    meta = response.get("meta", {})
+    parts.append(f"results: {meta.get('num_results_returned', len(response.get('results', [])))}")
+    if meta.get("degraded"):
+        parts.append("status: degraded")
+    warnings = meta.get("warnings", [])
+    if warnings:
+        parts.append("warnings: " + "; ".join(w.get("detail", str(w)) for w in warnings))
+    header = "\n".join(parts)
+
+    sections = [header, "---"]
+    for r in response.get("results", []):
+        title = r.get("title", "Untitled")
+        url = r.get("url", "")
+        content = r.get("content", "")
+        section = f"## [{title}]({url})\n\n{content}" if content else f"## [{title}]({url})"
+        sections.append(section)
+
+    return "\n\n".join(sections)
+
+
+def _format_image_results(response: dict) -> str:
+    """Format image_search response as markdown."""
+    parts = [f"query: {response['query']}"]
+    meta = response.get("meta", {})
+    parts.append(f"results: {meta.get('num_results_returned', len(response.get('results', [])))}")
+    if meta.get("error"):
+        parts.append(f"error: {meta['error']}")
+    header = "\n".join(parts)
+
+    sections = [header, "---"]
+    for r in response.get("results", []):
+        title = r.get("title", "Untitled")
+        source_url = r.get("source_url", "")
+        image_url = r.get("image_url", "")
+        dims = r.get("dimensions")
+        line = f"## [{title}]({source_url})\n\n![{title}]({image_url})"
+        if dims:
+            line += f"\n{dims}"
+        sections.append(line)
+
+    return "\n\n".join(sections)
+
+
+def _format_extract_results(response: dict) -> str:
+    """Format extract_url/extract_urls response as markdown."""
+    parts = []
+    if response.get("query"):
+        parts.append(f"query: {response['query']}")
+    # handle both single-result (extract_url) and multi-result (extract_urls)
+    results = response.get("results", [])
+    if "result" in response:
+        results = [response["result"]]
+    meta = response.get("meta", {})
+    succeeded = meta.get("urls_succeeded", sum(1 for r in results if r.get("status") == "ok"))
+    failed = meta.get("urls_failed", sum(1 for r in results if r.get("status") != "ok"))
+    parts.append(f"succeeded: {succeeded}")
+    if failed:
+        parts.append(f"failed: {failed}")
+    header = "\n".join(parts)
+
+    sections = [header, "---"] if parts else ["---"]
+    for r in results:
+        title = r.get("title") or "Untitled"
+        url = r.get("url", "")
+        content = r.get("content", "")
+        status = r.get("status", "")
+        if status == "error":
+            error = r.get("error", "extraction failed")
+            section = f"## [{title}]({url})\n\n**Error:** {error}"
+        elif content:
+            section = f"## [{title}]({url})\n\n{content}"
+        else:
+            section = f"## [{title}]({url})"
+        sections.append(section)
+
+    return "\n\n".join(sections)
+
+
+def _format_map_results(response: dict) -> str:
+    """Format map_site response as markdown."""
+    parts = [f"url: {response['url']}"]
+    meta = response.get("meta", {})
+    parts.append(f"urls_found: {meta.get('urls_returned', len(response.get('results', [])))}")
+    warnings = meta.get("warnings", [])
+    if warnings:
+        parts.append("warnings: " + "; ".join(w.get("detail", str(w)) for w in warnings))
+    header = "\n".join(parts)
+
+    sections = [header, "---"]
+    for r in response.get("results", []):
+        title = r.get("title") or r.get("link_text") or r.get("url", "")
+        url = r.get("url", "")
+        depth = r.get("depth", 0)
+        indent = "  " * depth
+        sections.append(f"{indent}- [{title}]({url})")
+
+    return "\n\n".join(sections)
+
+
+def _format_crawl_results(response: dict) -> str:
+    """Format crawl_site response as markdown."""
+    parts = [f"url: {response['url']}"]
+    if response.get("query"):
+        parts.append(f"query: {response['query']}")
+    meta = response.get("meta", {})
+    parts.append(f"succeeded: {meta.get('urls_succeeded', 0)}")
+    if meta.get("urls_failed"):
+        parts.append(f"failed: {meta['urls_failed']}")
+    warnings = meta.get("warnings", [])
+    if warnings:
+        parts.append("warnings: " + "; ".join(w.get("detail", str(w)) for w in warnings))
+    header = "\n".join(parts)
+
+    sections = [header, "---"]
+    for r in response.get("results", []):
+        title = r.get("title") or "Untitled"
+        url = r.get("url", "")
+        content = r.get("content", "")
+        status = r.get("status", "")
+        if status == "error":
+            error = r.get("error", "extraction failed")
+            section = f"## [{title}]({url})\n\n**Error:** {error}"
+        elif content:
+            section = f"## [{title}]({url})\n\n{content}"
+        else:
+            section = f"## [{title}]({url})"
+        sections.append(section)
+
+    return "\n\n".join(sections)
+
+
+def _format_similar_results(response: dict) -> str:
+    """Format find_similar response as markdown."""
+    parts = [f"source: [{response.get('source_title') or 'Untitled'}]({response['source_url']})"]
+    meta = response.get("meta", {})
+    parts.append(f"results: {len(response.get('results', []))}")
+    if meta.get("error"):
+        parts.append(f"error: {meta['error']}")
+    warnings = meta.get("warnings", [])
+    if warnings:
+        parts.append("warnings: " + "; ".join(w.get("detail", str(w)) for w in warnings))
+    header = "\n".join(parts)
+
+    sections = [header, "---"]
+    for r in response.get("results", []):
+        title = r.get("title", "Untitled")
+        url = r.get("url", "")
+        snippet = r.get("snippet", "")
+        section = f"## [{title}]({url})\n\n{snippet}" if snippet else f"## [{title}]({url})"
+        sections.append(section)
+
+    return "\n\n".join(sections)
+
+
 @mcp.tool
 async def web_search(
     query: str,
@@ -1207,8 +1372,8 @@ async def web_search(
     language: str | None = None,
     safesearch: int | None = None,
     ctx: Context | None = None,
-) -> dict:
-    return await _web_search_impl(
+) -> str:
+    response = await _web_search_impl(
         query=query,
         num_results=num_results,
         scrape_top=scrape_top,
@@ -1221,6 +1386,7 @@ async def web_search(
         safesearch=safesearch,
         ctx=ctx,
     )
+    return _format_search_results(response)
 
 
 @mcp.tool
@@ -1231,7 +1397,7 @@ async def image_search(
     safesearch: int | None = None,
     time_range: str | None = None,
     ctx: Context | None = None,
-) -> dict:
+) -> str:
     """Search for images via SearXNG. Returns image URLs, thumbnails, and source metadata."""
     query = _validate_query(query)
     num_results = _validate_positive_int("num_results", num_results, maximum=MAX_RESULTS)
@@ -1250,7 +1416,7 @@ async def image_search(
             safesearch=safesearch,
         )
     except Exception as exc:
-        return {
+        response = {
             "query": query,
             "results": [],
             "meta": {
@@ -1261,6 +1427,7 @@ async def image_search(
                 "timings_ms": {"total": int((time.monotonic() - started) * 1000)},
             },
         }
+        return _format_image_results(response)
 
     results: list[dict] = []
     for rank, item in enumerate(raw, 1):
@@ -1275,7 +1442,7 @@ async def image_search(
             "format": item.get("img_format"),
         })
 
-    return {
+    response = {
         "query": query,
         "results": results,
         "meta": {
@@ -1285,6 +1452,7 @@ async def image_search(
             "timings_ms": {"total": int((time.monotonic() - started) * 1000)},
         },
     }
+    return _format_image_results(response)
 
 
 async def _extract_urls_impl(
@@ -1388,14 +1556,14 @@ async def extract_url(
     remove_overlays: bool = True,
     scroll_full_page: bool = False,
     ctx: Context | None = None,
-) -> dict:
+) -> str:
     """Extract a single URL with the same structured schema as extract_urls."""
     crawl_config = _maybe_build_crawl_config(
         js_code, wait_for, page_timeout, screenshot, remove_overlays, scroll_full_page,
     )
     response = await _extract_urls_impl(urls=[url], query=query, crawl_config=crawl_config, ctx=ctx)
     result = response["results"][0]
-    return {
+    response_dict = {
         "query": response["query"],
         "result": result,
         "meta": {
@@ -1403,6 +1571,7 @@ async def extract_url(
             "url": result["url"],
         },
     }
+    return _format_extract_results(response_dict)
 
 
 @mcp.tool
@@ -1416,11 +1585,12 @@ async def extract_urls(
     remove_overlays: bool = True,
     scroll_full_page: bool = False,
     ctx: Context | None = None,
-) -> dict:
+) -> str:
     crawl_config = _maybe_build_crawl_config(
         js_code, wait_for, page_timeout, screenshot, remove_overlays, scroll_full_page,
     )
-    return await _extract_urls_impl(urls=urls, query=query, crawl_config=crawl_config, ctx=ctx)
+    response = await _extract_urls_impl(urls=urls, query=query, crawl_config=crawl_config, ctx=ctx)
+    return _format_extract_results(response)
 
 
 async def _map_site_impl(
@@ -1550,8 +1720,8 @@ async def map_site(
     include_patterns: list[str] | None = None,
     exclude_patterns: list[str] | None = None,
     same_domain_only: bool = True,
-) -> dict:
-    return await _map_site_impl(
+) -> str:
+    response = await _map_site_impl(
         url=url,
         max_urls=max_urls,
         max_depth=max_depth,
@@ -1559,6 +1729,7 @@ async def map_site(
         exclude_patterns=exclude_patterns,
         same_domain_only=same_domain_only,
     )
+    return _format_map_results(response)
 
 
 @mcp.tool
@@ -1571,7 +1742,7 @@ async def crawl_site(
     exclude_patterns: list[str] | None = None,
     same_domain_only: bool = True,
     ctx: Context | None = None,
-) -> dict:
+) -> str:
     """Discover and extract a bounded set of in-scope pages from a site."""
     effective_max_urls = _validate_positive_int(
         "max_urls",
@@ -1652,7 +1823,7 @@ async def crawl_site(
         extracted["meta"]["urls_succeeded"],
         extracted["meta"]["urls_failed"],
     )
-    return response
+    return _format_crawl_results(response)
 
 
 async def _site_search_impl(
@@ -1710,8 +1881,8 @@ async def site_search(
     language: str | None = None,
     safesearch: int | None = None,
     ctx: Context | None = None,
-) -> dict:
-    return await _site_search_impl(
+) -> str:
+    response = await _site_search_impl(
         query=query,
         site=site,
         num_results=num_results,
@@ -1724,6 +1895,7 @@ async def site_search(
         safesearch=safesearch,
         ctx=ctx,
     )
+    return _format_search_results(response)
 
 
 _STOPWORDS = frozenset({
@@ -1890,7 +2062,7 @@ async def find_similar(
     url: str,
     num_results: int = 10,
     ctx: Context | None = None,
-) -> dict:
+) -> str:
     """Find web pages similar to the given URL.
 
     Scrapes the source page, extracts keywords, searches for related content,
@@ -1898,7 +2070,8 @@ async def find_similar(
     """
     url = _validate_urls([url], maximum=1)[0]
     num_results = _validate_positive_int("num_results", num_results, maximum=MAX_RESULTS)
-    return await _find_similar_impl(url=url, num_results=num_results, ctx=ctx)
+    response = await _find_similar_impl(url=url, num_results=num_results, ctx=ctx)
+    return _format_similar_results(response)
 
 
 if __name__ == "__main__":
