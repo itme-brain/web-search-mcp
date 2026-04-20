@@ -1,7 +1,7 @@
 """Pin the markdown/dict contract: metadata fields stay in the Python dict
 for scripts/eval, but never leak into the LLM-facing markdown output."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 

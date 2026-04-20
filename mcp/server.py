@@ -574,7 +574,7 @@ async def _scrape(url: str) -> dict:
     return empty
 
 
-async def _scrape_cached(url: str, cache) -> str | None:
+async def _scrape_cached(url: str, cache: TTLCache) -> str | None:
     """Scrape with per-session cache. Returns cached content on hit, scrapes on miss."""
     if url in cache:
         log.debug("scrape cache hit url=%s", url)
@@ -593,13 +593,6 @@ async def _head_content_type(url: str) -> str | None:
             return resp.headers.get("content-type")
     except httpx.HTTPError:
         return None
-
-
-async def _looks_like_pdf(url: str) -> bool:
-    if urlparse(url).path.lower().endswith(".pdf"):
-        return True
-    content_type = await _head_content_type(url)
-    return bool(content_type and "application/pdf" in content_type.lower())
 
 
 async def _detect_file_type(url: str) -> tuple[str, str | None]:
@@ -821,7 +814,7 @@ async def _rank_document_content(query: str | None, content: str) -> tuple[str, 
 async def _extract_url_document(
     url: str,
     query: str | None,
-    cache,
+    cache: TTLCache,
 ) -> dict:
     if url in cache:
         cached = cache[url]

@@ -95,11 +95,6 @@ async def test_extract_urls_reports_partial_failures():
 
 
 @pytest.mark.asyncio
-async def test_pdf_suffix_detected_without_network():
-    assert await server_module._looks_like_pdf("https://example.com/report.pdf") is True
-
-
-@pytest.mark.asyncio
 async def test_extract_urls_single_url_returns_markdown():
     fake_ctx = FakeContext()
     extract_mock = AsyncMock(return_value={

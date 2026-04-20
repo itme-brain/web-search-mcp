@@ -85,20 +85,5 @@ SCRAPE_CONTENT = {
 
 
 @pytest.fixture
-def search_results_a():
-    return make_search_results(URLS_A, prefix="Alpha")
-
-
-@pytest.fixture
-def search_results_b():
-    return make_search_results(URLS_B, prefix="Beta")
-
-
-@pytest.fixture
-def scrape_content():
-    return dict(SCRAPE_CONTENT)
-
-
-@pytest.fixture
 def fake_ctx():
     return FakeContext()

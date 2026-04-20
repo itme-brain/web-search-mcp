@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from tests.conftest import SCRAPE_CONTENT, URLS_A, URLS_B, make_search_results, server_module

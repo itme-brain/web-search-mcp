@@ -1,9 +1,8 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastmcp import Client
 
-from tests.conftest import URLS_A, make_search_results, server_app, server_module
+from tests.conftest import URLS_A, make_search_results, server_module
 
 PATCH_SEARCH = "web_search_server._search"
 PATCH_SCRAPE = "web_search_server._scrape"
