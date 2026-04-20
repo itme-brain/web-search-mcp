@@ -720,7 +720,7 @@ def _docx_bytes_to_markdown(data: bytes) -> tuple[str, str | None]:
         if rows:
             sections.append(f"## Table {table_number}\n\n" + "\n".join(rows))
 
-    return "\n\n".join(sections)[:_MAX_CONTENT_CHARS], title
+    return "\n\n".join(sections), title
 
 
 def _pdf_extract_all_pages(data: bytes) -> tuple[list[dict], str | None, int]:
@@ -766,6 +766,7 @@ async def _extract_pdf_document(url: str, query: str | None = None) -> dict:
             "file_type": "pdf",
             "title": title,
             "content": "",
+            "total_chars": 0,
             "total_pages": total_pages,
             "pages_returned": 0,
         }
@@ -803,6 +804,7 @@ async def _extract_pdf_document(url: str, query: str | None = None) -> dict:
         "file_type": "pdf",
         "title": title,
         "content": "\n\n".join(sections),
+        "total_chars": sum(len(p["content"]) for p in all_pages),
         "total_pages": total_pages,
         "pages_returned": len(sections),
     }
@@ -819,6 +821,7 @@ async def _extract_web_document(url: str) -> dict:
             "file_type": "html",
             "title": None,
             "content": "",
+            "total_chars": 0,
             "error": "extraction failed",
         }
     return {
@@ -827,7 +830,8 @@ async def _extract_web_document(url: str) -> dict:
         "content_type": "text/html",
         "file_type": "html",
         "title": result.get("title"),
-        "content": content[:_MAX_CONTENT_CHARS],
+        "content": content,
+        "total_chars": len(content),
     }
 
 
@@ -844,6 +848,7 @@ async def _extract_docx_document(url: str) -> dict:
             "file_type": "docx",
             "title": title,
             "content": content,
+            "total_chars": len(content),
         }
 
 
@@ -859,7 +864,8 @@ async def _extract_text_document(url: str, file_type: str) -> dict:
             or "text/plain",
             "file_type": file_type,
             "title": None,
-            "content": resp.text[:_MAX_CONTENT_CHARS],
+            "content": resp.text,
+            "total_chars": len(resp.text),
         }
 
 
@@ -899,7 +905,18 @@ def _url_matches_patterns(url: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatch(url, pattern) for pattern in patterns)
 
 
-async def _rank_document_content(query: str | None, content: str) -> tuple[str, list[dict]]:
+async def _rank_document_content(
+    query: str | None, content: str, offset: int = 0,
+) -> tuple[str, list[dict]]:
+    """Return (display, top_chunks) for one document's raw content.
+
+    offset>0 bypasses rerank and returns the next [offset, offset+MAX]
+    slice — caller wants raw continuation after a prior truncated view.
+    query+offset=0 returns top-K reranked chunks.
+    No query, no offset returns the first-MAX slice.
+    """
+    if offset > 0:
+        return content[offset:offset + _MAX_CONTENT_CHARS], []
     if not query or not content:
         return content[:_MAX_CONTENT_CHARS], []
     chunks = _chunk_text(content[:_MAX_CONTENT_CHARS])
@@ -916,10 +933,12 @@ async def _extract_url_document(
     url: str,
     query: str | None,
     cache: TTLCache,
+    offset: int = 0,
 ) -> dict:
     if url in cache:
         cached = cache[url]
-        content, top_chunks = await _rank_document_content(query, cached.get("content", ""))
+        raw = cached.get("content", "")
+        content, top_chunks = await _rank_document_content(query, raw, offset=offset)
         return {
             **cached,
             "content": content,
@@ -947,28 +966,35 @@ async def _extract_url_document(
             "file_type": file_type,
             "title": None,
             "content": "",
+            "total_chars": 0,
             "error": str(exc),
         }
 
     if extracted["status"] == "ok":
+        # Cache the FULL raw content so later calls with offset can slice it.
+        raw = extracted.get("content", "")
+        total_chars = extracted.get("total_chars", len(raw))
         cached_entry = {
             "status": extracted["status"],
             "url": url,
             "content_type": extracted.get("content_type"),
             "file_type": extracted.get("file_type"),
             "title": extracted.get("title"),
-            "content": extracted.get("content", ""),
+            "content": raw,
+            "total_chars": total_chars,
         }
         if extracted.get("total_pages") is not None:
             cached_entry["total_pages"] = extracted["total_pages"]
             cached_entry["pages_returned"] = extracted.get("pages_returned", 0)
         cache[url] = cached_entry
-        content, top_chunks = await _rank_document_content(query, extracted.get("content", ""))
+        content, top_chunks = await _rank_document_content(query, raw, offset=offset)
         extracted["content"] = content
+        extracted["total_chars"] = total_chars
         extracted["top_chunks"] = top_chunks
         extracted["cached"] = False
         return extracted
 
+    extracted.setdefault("total_chars", 0)
     extracted["top_chunks"] = []
     extracted["cached"] = False
     return extracted
@@ -1321,22 +1347,42 @@ def _format_extract_results(response: dict) -> str:
 
     sections = [header, "---"] if parts else ["---"]
     for r in results:
-        title = r.get("title") or "Untitled"
-        url = r.get("url", "")
-        content = r.get("content", "")
-        status = r.get("status", "")
-        if status == "error":
-            error = r.get("error", "extraction failed")
-            section = f"## [{title}]({url})\n\n**Error:** {error}"
-        elif content:
-            section = f"## [{title}]({url})\n\n{content}"
-        else:
-            section = f"## [{title}]({url})"
-        if r.get("total_pages") is not None:
-            section += f"\n\n_{r['pages_returned']} of {r['total_pages']} pages extracted_"
-        sections.append(section)
+        sections.append(_format_document_section(r))
 
     return "\n\n".join(sections)
+
+
+def _format_document_section(r: dict) -> str:
+    """Render one extracted-document section as markdown.
+
+    Shared by the extract + crawl formatters. Emits the truncation signal
+    when the caller would benefit from a follow-up `offset=N` call."""
+    title = r.get("title") or "Untitled"
+    url = r.get("url", "")
+    content = r.get("content", "")
+    status = r.get("status", "")
+    if status == "error":
+        error = r.get("error", "extraction failed")
+        section = f"## [{title}]({url})\n\n**Error:** {error}"
+    elif content:
+        section = f"## [{title}]({url})\n\n{content}"
+    else:
+        section = f"## [{title}]({url})"
+    if r.get("total_pages") is not None:
+        section += f"\n\n_{r['pages_returned']} of {r['total_pages']} pages extracted_"
+    # Truncation signal: tell the LLM exactly where to resume via offset.
+    offset = r.get("offset", 0) or 0
+    total_chars = r.get("total_chars")
+    chars_shown = r.get("chars_shown", len(content))
+    if total_chars and offset + chars_shown < total_chars:
+        next_offset = offset + chars_shown
+        section += (
+            f"\n\n_{offset:,}–{next_offset:,} of {total_chars:,} chars shown — "
+            f"pass `offset={next_offset}` to continue._"
+        )
+    elif total_chars and offset > 0:
+        section += f"\n\n_end of document ({total_chars:,} chars total)._"
+    return section
 
 
 def _format_map_results(response: dict) -> str:
@@ -1376,18 +1422,7 @@ def _format_crawl_results(response: dict) -> str:
 
     sections = [header, "---"]
     for r in response.get("results", []):
-        title = r.get("title") or "Untitled"
-        url = r.get("url", "")
-        content = r.get("content", "")
-        status = r.get("status", "")
-        if status == "error":
-            error = r.get("error", "extraction failed")
-            section = f"## [{title}]({url})\n\n**Error:** {error}"
-        elif content:
-            section = f"## [{title}]({url})\n\n{content}"
-        else:
-            section = f"## [{title}]({url})"
-        sections.append(section)
+        sections.append(_format_document_section(r))
 
     return "\n\n".join(sections)
 
@@ -1427,6 +1462,7 @@ async def search(
 async def extract_impl(
     urls: list[str],
     query: str | None = None,
+    offset: int = 0,
     ctx: Context | None = None,
 ) -> dict:
     """Extract a batch of URLs with per-URL status reporting.
@@ -1434,15 +1470,22 @@ async def extract_impl(
     Uses Crawl4AI for web pages and pymupdf4llm for PDF documents.
     PDFs are fully extracted with per-page chunking and optional
     query-based reranking.
+
+    `offset` slides the return window N chars into the full extracted
+    content — pair with the per-result `total_chars` / `chars_shown`
+    metadata to paginate through long documents. offset>0 bypasses
+    query-based rerank in favor of raw continuation.
     """
     urls = _validate_urls(urls, maximum=_MAX_EXTRACT_URLS)
+    if offset < 0:
+        raise ValueError("offset must be >= 0")
     normalized_query = query.strip() if query else None
     started = time.monotonic()
 
     extract_cache = await _load_cache(ctx, STATE_EXTRACT_CACHE)
 
     documents = await asyncio.gather(*[
-        _extract_url_document(url, normalized_query, extract_cache)
+        _extract_url_document(url, normalized_query, extract_cache, offset=offset)
         for url in urls
     ])
 
@@ -1455,6 +1498,8 @@ async def extract_impl(
         else:
             urls_failed += 1
         url = document["url"]
+        content = document.get("content", "")
+        total_chars = document.get("total_chars", len(content))
         entry = {
             "url": url,
             "normalized_url": _normalize_url(url),
@@ -1463,7 +1508,10 @@ async def extract_impl(
             "content_type": document.get("content_type"),
             "file_type": document.get("file_type"),
             "title": document.get("title"),
-            "content": document.get("content", ""),
+            "content": content,
+            "chars_shown": len(content),
+            "offset": offset,
+            "total_chars": total_chars,
             "top_chunks": document.get("top_chunks", []),
             "cached": document.get("cached", False),
             "error": document.get("error"),
@@ -1495,6 +1543,7 @@ async def extract_impl(
 async def extract(
     urls: list[str],
     query: str | None = None,
+    offset: int = 0,
     ctx: Context | None = None,
 ) -> str:
     """Fetch full content for URLs you already have.
@@ -1505,8 +1554,14 @@ async def extract(
     Pass `urls` as a list even for a single URL (e.g. `["https://..."]`). Handles
     HTML, PDF, DOCX, and plain-text files natively; PDFs are fully extracted
     with per-page chunking. When `query` is provided, PDF pages are reranked so
-    the most relevant pages appear first."""
-    response = await extract_impl(urls=urls, query=query, ctx=ctx)
+    the most relevant pages appear first.
+
+    Each result is capped at ~8000 chars. If the output shows the content was
+    truncated (footer says `N of M chars shown`), call again with
+    `offset=N` to continue reading from where the previous call ended. `offset`
+    bypasses query-based reranking — use it for raw continuation after you've
+    already seen the reranked first slice."""
+    response = await extract_impl(urls=urls, query=query, offset=offset, ctx=ctx)
     return _format_extract_results(response)
 
 
@@ -1706,10 +1761,16 @@ async def crawl_impl(
             "status": extracted_result["status"],
             "content_type": extracted_result.get("content_type"),
             "content": extracted_result.get("content", ""),
+            "chars_shown": extracted_result.get("chars_shown"),
+            "offset": extracted_result.get("offset", 0),
+            "total_chars": extracted_result.get("total_chars"),
             "top_chunks": extracted_result.get("top_chunks", []),
             "cached": extracted_result.get("cached", False),
             "error": extracted_result.get("error"),
         }
+        if extracted_result.get("total_pages") is not None:
+            combined["total_pages"] = extracted_result["total_pages"]
+            combined["pages_returned"] = extracted_result.get("pages_returned", 0)
         if extracted_result.get("title"):
             combined["title"] = extracted_result["title"]
         results.append(combined)

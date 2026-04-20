@@ -271,3 +271,112 @@ def test_guess_file_type_supports_docx_and_text_formats():
     ) == "docx"
     assert server_module._guess_file_type("https://example.com/data.json", "application/json") == "json"
     assert server_module._guess_file_type("https://example.com/notes.txt", "text/plain; charset=utf-8") == "text"
+
+
+# ---------------------------------------------------------------------------
+# Truncation signal + offset continuation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_extract_markdown_signals_truncation_with_next_offset():
+    """When content is truncated, markdown footer must tell the LLM
+    how to continue (offset=N).
+
+    _extract_url_document returns content already sliced to <= MAX
+    plus the full total_chars alongside — simulate that shape.
+    """
+    full_length = 24000
+    sliced = "x" * 8000
+    extract_mock = AsyncMock(return_value={
+        "status": "ok",
+        "url": "https://example.com/long",
+        "content_type": "text/html",
+        "file_type": "html",
+        "title": "Long Page",
+        "content": sliced,
+        "total_chars": full_length,
+    })
+
+    with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
+        markdown = await server_module.extract.fn(["https://example.com/long"])
+
+    assert "chars shown" in markdown
+    assert "offset=8000" in markdown, f"truncation footer missing offset hint:\n{markdown}"
+
+
+@pytest.mark.asyncio
+async def test_extract_no_signal_when_content_fits():
+    """Short content that wasn't truncated must not emit a truncation footer."""
+    short = "tiny content"
+    extract_mock = AsyncMock(return_value={
+        "status": "ok",
+        "url": "https://example.com/short",
+        "content_type": "text/html",
+        "file_type": "html",
+        "title": "Short",
+        "content": short,
+        "total_chars": len(short),
+    })
+
+    with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
+        markdown = await server_module.extract.fn(["https://example.com/short"])
+
+    assert "chars shown" not in markdown
+    assert "end of document" not in markdown
+
+
+@pytest.mark.asyncio
+async def test_extract_offset_bypasses_rerank_and_slices_raw():
+    """offset>0 returns the raw content slice, skipping query rerank."""
+    long_content = "A" * 20000
+    fake_cache = server_module._new_cache()
+    fake_cache["https://example.com/long"] = {
+        "status": "ok",
+        "url": "https://example.com/long",
+        "content_type": "text/html",
+        "file_type": "html",
+        "title": "Long",
+        "content": long_content,
+        "total_chars": len(long_content),
+    }
+
+    result = await server_module._extract_url_document(
+        "https://example.com/long",
+        query="something",
+        cache=fake_cache,
+        offset=8000,
+    )
+    assert result["content"] == long_content[8000:16000]
+    # Offset skips rerank — no top_chunks.
+    assert result["top_chunks"] == []
+
+
+@pytest.mark.asyncio
+async def test_extract_rejects_negative_offset():
+    with pytest.raises(ValueError, match="offset must be >= 0"):
+        await server_module.extract_impl(
+            urls=["https://example.com/a"], offset=-1,
+        )
+
+
+@pytest.mark.asyncio
+async def test_extract_offset_reaching_end_shows_end_marker():
+    long_content = "B" * 12000
+    extract_mock = AsyncMock(return_value={
+        "status": "ok",
+        "url": "https://example.com/page",
+        "content_type": "text/html",
+        "file_type": "html",
+        "title": "Page",
+        "content": long_content[8000:],  # simulating the slice returned
+        "total_chars": 12000,
+    })
+
+    with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
+        markdown = await server_module.extract.fn(
+            ["https://example.com/page"], offset=8000,
+        )
+
+    assert "end of document" in markdown
+    assert "12,000 chars total" in markdown
