@@ -66,6 +66,7 @@
           pkgs.coreutils
           pkgs.openssl
           pkgs.gnused
+          pkgs.uv
         ];
 
         deploy = pkgs.writeShellApplication {
@@ -96,6 +97,14 @@
               sed "s|ultrasecretkey|$(openssl rand -hex 32)|" \
                 searxng/config/settings.yml.template \
                 > searxng/config/settings.yml
+            fi
+
+            # Regenerate the pip lock if the source is newer. Keeps the
+            # committed lockfile aligned with requirements.in without
+            # silently re-resolving transitives on every deploy.
+            if [[ mcp/requirements.in -nt mcp/requirements.txt ]]; then
+              echo ">> requirements.in is newer than requirements.txt — regenerating lock via uv"
+              uv pip compile --quiet --generate-hashes mcp/requirements.in -o mcp/requirements.txt
             fi
 
             echo ">> building + starting stack"
