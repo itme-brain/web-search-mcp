@@ -80,7 +80,7 @@ claude mcp add --transport http web-search http://localhost:8002/mcp
 
 All of these accept a streamable-HTTP MCP entry. Use the same URL as above; the exact JSON key differs per client (`"transport": "http"`, `"type": "streamable-http"`, etc.) — consult your client's docs.
 
-### Generic MCP client (Python, for scripting)
+### Generic MCP client (Python, over HTTP)
 
 ```python
 import asyncio
@@ -93,6 +93,25 @@ async def main():
 
 asyncio.run(main())
 ```
+
+### Scripting against the Python API (in-process)
+
+When you want the raw Python dict (not markdown), import the impls directly. The four public impls are `search_impl`, `extract_impl`, `map_impl`, and `crawl_impl`:
+
+```python
+import asyncio, sys
+sys.path.insert(0, "mcp")  # or set PYTHONPATH=mcp
+from server import search_impl
+
+async def main():
+    response = await search_impl("current LLM context windows", num_results=5)
+    for r in response["results"]:
+        print(r["rank"], r["title"], r["url"])
+
+asyncio.run(main())
+```
+
+MCP clients get markdown; Python callers get structured dicts. The `@mcp.tool` wrappers are thin formatters around these impls.
 
 ## Configuration
 
