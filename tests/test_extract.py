@@ -156,17 +156,17 @@ def _make_pdf(num_pages: int) -> bytes:
 
 
 def test_pdf_pagination_returns_total_pages():
-    _, _, total = server_module._pdf_bytes_to_markdown(_make_pdf(10))
+    _, _, total, _ = server_module._pdf_bytes_to_markdown(_make_pdf(10))
     assert total == 10
 
 
 def test_pdf_pagination_respects_page_range():
-    _, _, total = server_module._pdf_bytes_to_markdown(_make_pdf(10), start_page=3, end_page=5)
+    _, _, total, _ = server_module._pdf_bytes_to_markdown(_make_pdf(10), start_page=3, end_page=5)
     assert total == 10
 
 
 def test_pdf_pagination_clamps_end_page():
-    _, _, total = server_module._pdf_bytes_to_markdown(_make_pdf(3), start_page=1, end_page=100)
+    _, _, total, _ = server_module._pdf_bytes_to_markdown(_make_pdf(3), start_page=1, end_page=100)
     assert total == 3
 
 

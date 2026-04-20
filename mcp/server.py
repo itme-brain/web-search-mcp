@@ -643,8 +643,13 @@ def _pdf_bytes_to_markdown(
     data: bytes,
     start_page: int | None = None,
     end_page: int | None = None,
-) -> tuple[str, str | None, int]:
-    """Extract PDF pages to markdown. Returns (content, title, total_pages)."""
+) -> tuple[str, str | None, int, int]:
+    """Extract PDF pages to markdown.
+
+    Returns (content, title, total_pages, last_page_included).
+    Pages are added incrementally; if the budget is exhausted mid-document
+    the returned last_page_included reflects where extraction actually stopped.
+    """
     reader = PdfReader(io.BytesIO(data))
     total_pages = len(reader.pages)
     title = None
@@ -653,11 +658,19 @@ def _pdf_bytes_to_markdown(
     first = (start_page or 1) - 1
     last = min(end_page or total_pages, total_pages)
     sections: list[str] = []
+    char_budget = _MAX_CONTENT_CHARS
+    last_page_included = first  # 0-indexed; will convert to 1-indexed at return
     for page_number, page in enumerate(reader.pages[first:last], start=first + 1):
         text = (page.extract_text() or "").strip()
-        if text:
-            sections.append(f"## Page {page_number}\n\n{text}")
-    return "\n\n".join(sections)[:_MAX_CONTENT_CHARS], title, total_pages
+        if not text:
+            continue
+        section = f"## Page {page_number}\n\n{text}"
+        if char_budget - len(section) < 0 and sections:
+            break
+        sections.append(section)
+        char_budget -= len(section) + 2  # account for "\n\n" join separator
+        last_page_included = page_number
+    return "\n\n".join(sections), title, total_pages, last_page_included
 
 
 def _docx_bytes_to_markdown(data: bytes) -> tuple[str, str | None]:
@@ -690,7 +703,7 @@ async def _extract_pdf_document(
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, follow_redirects=True) as client:
         resp = await client.get(url)
         resp.raise_for_status()
-        content, title, total_pages = _pdf_bytes_to_markdown(
+        content, title, total_pages, last_page = _pdf_bytes_to_markdown(
             resp.content, start_page=start_page, end_page=end_page,
         )
         return {
@@ -702,7 +715,7 @@ async def _extract_pdf_document(
             "content": content,
             "total_pages": total_pages,
             "start_page": start_page or 1,
-            "end_page": min(end_page or total_pages, total_pages),
+            "end_page": last_page,
         }
 
 
