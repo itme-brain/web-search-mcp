@@ -44,7 +44,7 @@
           httpx
           pysbd
           python-docx
-          pypdf
+          pymupdf4llm
           trafilatura
           url-normalize
           pytest

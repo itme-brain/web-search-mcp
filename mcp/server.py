@@ -19,8 +19,9 @@ from fastmcp import Context, FastMCP
 from pydantic_settings import BaseSettings
 from url_normalize import url_normalize
 from flashrank import Ranker, RerankRequest
+import pymupdf
+import pymupdf4llm
 from docx import Document as DocxDocument
-from pypdf import PdfReader
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -661,21 +662,26 @@ def _docx_bytes_to_markdown(data: bytes) -> tuple[str, str | None]:
     return "\n\n".join(sections)[:_MAX_CONTENT_CHARS], title
 
 
-def _pdf_extract_all_pages(data: bytes) -> tuple[list[dict], str | None]:
-    """Extract every page from a PDF into individual chunks.
+def _pdf_extract_all_pages(data: bytes) -> tuple[list[dict], str | None, int]:
+    """Extract every page from a PDF into clean markdown chunks.
 
-    Returns (pages, title) where each page is {page: int, content: str}.
+    Uses pymupdf4llm for layout-aware extraction with header/footer
+    stripping — the PDF equivalent of what Crawl4AI does for HTML.
+
+    Returns (pages, title, total_pages) where each page is
+    {page: int, content: str}.
     """
-    reader = PdfReader(io.BytesIO(data))
-    title = None
-    if reader.metadata:
-        title = reader.metadata.title
+    doc = pymupdf.Document(stream=data, filetype="pdf")
+    title = doc.metadata.get("title") or None
+    total_pages = doc.page_count
+    chunks = pymupdf4llm.to_markdown(doc, page_chunks=True, header=False, footer=False)
     pages: list[dict] = []
-    for page_number, page in enumerate(reader.pages, start=1):
-        text = (page.extract_text() or "").strip()
+    for chunk in chunks:
+        text = chunk.get("text", "").strip()
         if text:
-            pages.append({"page": page_number, "content": text})
-    return pages, title
+            page_num = chunk.get("metadata", {}).get("page", 0) + 1  # 0-based → 1-based
+            pages.append({"page": page_num, "content": text})
+    return pages, title, total_pages
 
 
 async def _extract_pdf_document(url: str, query: str | None = None) -> dict:
@@ -689,8 +695,7 @@ async def _extract_pdf_document(url: str, query: str | None = None) -> dict:
         resp = await client.get(url)
         resp.raise_for_status()
 
-    all_pages, title = _pdf_extract_all_pages(resp.content)
-    total_pages = len(PdfReader(io.BytesIO(resp.content)).pages)
+    all_pages, title, total_pages = _pdf_extract_all_pages(resp.content)
 
     if not all_pages:
         return {
@@ -1518,7 +1523,7 @@ async def _extract_urls_impl(
 ) -> dict:
     """Extract a batch of URLs with per-URL status reporting.
 
-    Uses Crawl4AI for web pages and pypdf for PDF documents.
+    Uses Crawl4AI for web pages and pymupdf4llm for PDF documents.
     PDFs are fully extracted with per-page chunking and optional
     query-based reranking.
     """

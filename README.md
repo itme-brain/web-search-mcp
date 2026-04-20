@@ -117,7 +117,7 @@ SearXNG engine allowlist, safesearch, etc. live in `searxng/config/settings.yml.
 - Tool: `web_search(query, num_results=10, scrape_top=5, time_range=None, mode="balanced", include_domains=None, exclude_domains=None)` — returns structured JSON with ranked results, snippets, extracted content, per-page top chunks, and response metadata. `time_range` takes `day`, `week`, `month`, `year`. `mode` is `balanced` or `deep`.
 - Tool: `site_search(query, site, num_results=10, scrape_top=5, mode="balanced", include_domains=None, exclude_domains=None)` — same JSON schema, but scoped with `site:<domain>`.
 - Tool: `extract_url(url, query=None)` — single-URL extraction for pages and supported files. PDFs are fully extracted with per-page chunking; when `query` is provided, pages are reranked by relevance.
-- Tool: `extract_urls(urls, query=None)` — batch extraction with per-URL statuses. Uses Crawl4AI for web pages and `pypdf` for PDFs. PDF pages are chunked and optionally reranked server-side.
+- Tool: `extract_urls(urls, query=None)` — batch extraction with per-URL statuses. Uses Crawl4AI for web pages and `pymupdf4llm` for PDFs. PDF pages are chunked and optionally reranked server-side.
 - Tool: `map_site(url, max_urls=25, max_depth=1, include_patterns=None, exclude_patterns=None, same_domain_only=True)` — discovers candidate URLs from a site using Crawl4AI link extraction and returns a structured site map.
 - Tool: `crawl_site(url, query=None, max_urls=10, max_depth=1, include_patterns=None, exclude_patterns=None, same_domain_only=True)` — maps a site, then extracts each discovered page into a single structured response.
 
@@ -141,7 +141,7 @@ Extraction behavior:
 
 - `extract_url` and `extract_urls` share the same extraction pipeline and response fields.
 - `extract_urls` supports partial success: one failed URL does not fail the whole call.
-- PDF handling is explicit and library-backed via `pypdf`. PDFs are fully extracted server-side with per-page chunking. When `query` is provided, pages are reranked by relevance so the most useful pages appear first. The response includes `total_pages` and `pages_returned` metadata.
+- PDF handling is explicit and library-backed via `pymupdf4llm`. PDFs are fully extracted server-side with per-page chunking. When `query` is provided, pages are reranked by relevance so the most useful pages appear first. The response includes `total_pages` and `pages_returned` metadata.
 - `docx` handling is explicit and library-backed via `python-docx`.
 - Plain-text and structured-text files like `txt`, `md`, `json`, `xml`, and `csv` are fetched and decoded through `httpx`.
 - Results include per-URL `status`, `content_type`, `file_type`, `title`, `content`, and `error`.

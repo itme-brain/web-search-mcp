@@ -146,16 +146,16 @@ def test_docx_bytes_to_markdown_extracts_paragraphs_and_tables():
 
 
 def test_pdf_extract_all_pages_returns_per_page_chunks():
-    from pypdf import PdfWriter
-    writer = PdfWriter()
+    import pymupdf
+    doc = pymupdf.Document()
     for _ in range(5):
-        writer.add_blank_page(width=72, height=72)
-    buf = BytesIO()
-    writer.write(buf)
+        doc.new_page(width=72, height=72)
+    pdf_bytes = doc.tobytes()
     # Blank pages have no extractable text
-    pages, title = server_module._pdf_extract_all_pages(buf.getvalue())
+    pages, title, total_pages = server_module._pdf_extract_all_pages(pdf_bytes)
     assert isinstance(pages, list)
     assert len(pages) == 0
+    assert total_pages == 5
 
 
 @pytest.mark.asyncio
@@ -173,13 +173,9 @@ async def test_extract_pdf_returns_per_page_chunks_with_metadata():
     fake_client.__aenter__ = AsyncMock(return_value=fake_client)
     fake_client.__aexit__ = AsyncMock(return_value=None)
 
-    fake_reader = AsyncMock()
-    fake_reader.pages = [None] * 10
-
     with (
-        patch("web_search_server._pdf_extract_all_pages", return_value=(fake_pages, "Test PDF")),
+        patch("web_search_server._pdf_extract_all_pages", return_value=(fake_pages, "Test PDF", 10)),
         patch("web_search_server.httpx.AsyncClient", return_value=fake_client),
-        patch("web_search_server.PdfReader", return_value=fake_reader),
     ):
         result = await server_module._extract_pdf_document("https://example.com/manual.pdf")
 
@@ -204,17 +200,13 @@ async def test_extract_pdf_reranks_pages_with_query():
     fake_client.__aenter__ = AsyncMock(return_value=fake_client)
     fake_client.__aexit__ = AsyncMock(return_value=None)
 
-    fake_reader = AsyncMock()
-    fake_reader.pages = [None] * 5
-
     # Reranker returns pages in reverse relevance order
     def fake_rerank(_query, docs):
         return [(i, 1.0 - i * 0.1) for i in reversed(range(len(docs)))]
 
     with (
-        patch("web_search_server._pdf_extract_all_pages", return_value=(fake_pages, "Test")),
+        patch("web_search_server._pdf_extract_all_pages", return_value=(fake_pages, "Test", 5)),
         patch("web_search_server.httpx.AsyncClient", return_value=fake_client),
-        patch("web_search_server.PdfReader", return_value=fake_reader),
         patch("web_search_server._rerank_scored", side_effect=fake_rerank),
     ):
         result = await server_module._extract_pdf_document(
