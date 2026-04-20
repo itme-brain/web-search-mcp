@@ -151,6 +151,15 @@ Web search → scrape top results → rerank → return ranked markdown.
 - `include_domains` / `exclude_domains` hard-filter by bare domain.
 - Fetches a second page from SearXNG automatically if page 1 is short of `num_results` after dedup/filter. Always scrapes `min(num_results, MAX_SCRAPE)` top results.
 
+Examples:
+
+```json
+{"query": "python asyncio taskgroup"}
+{"query": "site:docs.python.org asyncio taskgroup"}
+{"query": "ai safety paper", "time_range": "month", "num_results": 5}
+{"query": "rust async runtime", "exclude_domains": ["reddit.com", "quora.com"]}
+```
+
 ### `extract(urls, query=None)`
 
 Fetch full content for the URLs you pass in. Always takes a list — `["https://..."]` for a single URL.
@@ -158,6 +167,14 @@ Fetch full content for the URLs you pass in. Always takes a list — `["https://
 - HTML, PDF, DOCX, and plain-text files are all handled natively.
 - PDFs are fully extracted with per-page chunking. Pass `query` to rerank pages by relevance; the response reports `total_pages` and `pages_returned`.
 - Partial success: one failed URL does not fail the whole call. Results include per-URL `status`, `content_type`, `file_type`, `title`, `content`, and `error`.
+
+Examples:
+
+```json
+{"urls": ["https://docs.python.org/3/library/asyncio-task.html"]}
+{"urls": ["https://arxiv.org/pdf/2301.00001.pdf"], "query": "attention mechanism"}
+{"urls": ["https://a.example/doc.html", "https://b.example/paper.pdf"]}
+```
 
 ### `map(url, max_urls=25, max_depth=1, include_patterns=None, exclude_patterns=None, same_domain_only=True)`
 
@@ -168,12 +185,27 @@ Cheap discovery of URLs on a site — no body content, just the link graph.
 - `include_patterns` / `exclude_patterns` accept shell-style globs against the full URL.
 - This is a bounded survey tool, not a full-content crawler.
 
+Examples:
+
+```json
+{"url": "https://docs.example.com"}
+{"url": "https://docs.example.com", "include_patterns": ["https://docs.example.com/api/*"]}
+{"url": "https://example.com", "max_depth": 2, "max_urls": 50}
+```
+
 ### `crawl(url, query=None, max_urls=10, max_depth=1, include_patterns=None, exclude_patterns=None, same_domain_only=True)`
 
 `map` + `extract` composed — discover the URL set, then fetch each page's content in one response.
 
 - Same bounded controls as `map`.
 - If `query` is set, pages are re-ordered by their best chunk score after extraction so the most relevant ones appear first.
+
+Examples:
+
+```json
+{"url": "https://docs.example.com", "query": "authentication flow"}
+{"url": "https://blog.example.com", "include_patterns": ["*/2026/*"], "max_urls": 8}
+```
 
 ### Ranking + dedup (applies to `search` and `crawl` with `query`)
 
