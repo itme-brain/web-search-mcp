@@ -1407,17 +1407,14 @@ async def search(
     exclude_domains: list[str] | None = None,
     ctx: Context | None = None,
 ) -> str:
-    """Search the web, scrape the top results, and return ranked markdown.
+    """Web search for URLs you don't already have; scrapes + reranks top results.
 
-    Use this when you don't already have URLs — it's the entry point for
-    discovering sources. For fetching URLs you already have, use `extract`.
-    For surveying a known site, use `map` or `crawl`.
-
-    Query tips:
-    - Scope to a single site with `site:<domain>` (e.g. `site:docs.python.org asyncio`).
-    - For recency, set `time_range` (`day`/`week`/`month`/`year`) — do NOT put
-      dates or years in the query text.
-    - `include_domains` / `exclude_domains` hard-filter results by bare domain.
+    Args:
+        query: Search query. Prefix with `site:<domain>` to scope to one site.
+        num_results: How many results to return (1-10).
+        time_range: Recency filter — `day` / `week` / `month` / `year`. Omit for no filter. Do NOT put dates or years in the query text; use this instead.
+        include_domains: Keep only results from these bare domains (e.g. `["docs.python.org"]`).
+        exclude_domains: Drop results from these bare domains.
     """
     response = await search_impl(
         query=query,
@@ -1516,21 +1513,13 @@ async def extract(
     offset: int = 0,
     ctx: Context | None = None,
 ) -> str:
-    """Fetch full content for URLs you already have.
+    """Fetch full content for URLs you already have. Handles HTML, PDF, DOCX, plain text.
 
-    Use this when you know the URL(s) you want — typically after `search`, `map`,
-    or from the user directly. To discover URLs first, use `search` or `map`.
-
-    Pass `urls` as a list even for a single URL (e.g. `["https://..."]`). Handles
-    HTML, PDF, DOCX, and plain-text files natively; PDFs are fully extracted
-    with per-page chunking. When `query` is provided, PDF pages are reranked so
-    the most relevant pages appear first.
-
-    Each result is capped at ~8000 chars. If the output shows the content was
-    truncated (footer says `N of M chars shown`), call again with
-    `offset=N` to continue reading from where the previous call ended. `offset`
-    bypasses query-based reranking — use it for raw continuation after you've
-    already seen the reranked first slice."""
+    Args:
+        urls: URLs to fetch. Always a list — pass `["https://..."]` for one URL.
+        query: Optional. Reranks the document's chunks and returns the top matches. Omit to get raw content from the top of the document.
+        offset: Byte offset into the document. When the output footer says `N of M chars shown — pass offset=N to continue`, call again with that `offset` to read the next slice. `offset > 0` bypasses `query` reranking in favor of raw continuation.
+    """
     response = await extract_impl(urls=urls, query=query, offset=offset, ctx=ctx)
     return _format_extract_results(response)
 
@@ -1662,19 +1651,15 @@ async def map(
     exclude_patterns: list[str] | None = None,
     same_domain_only: bool = True,
 ) -> str:
-    """Discover URLs on a site without fetching page content.
+    """Discover URLs on a site without fetching content. Cheap — use `crawl` if you also want body text.
 
-    Use this for a cheap survey of what's on a site before deciding what to
-    read. For full content in one shot, use `crawl` instead. For specific URLs
-    you already know, use `extract`.
-
-    Returns a tree of discovered URLs with titles, depth, and discovery path —
-    no body text. `include_patterns` / `exclude_patterns` accept shell-style
-    globs against the full URL (e.g. `https://docs.example.com/api/*`).
-    `same_domain_only` keeps discovery within the same registrable domain as
-    the root URL (e.g. mapping `docs.pydantic.dev` also discovers
-    `pydantic.dev/...` and `logfire.pydantic.dev/...` — "same org," not
-    just "same host"). Set `False` to follow every in-scope link.
+    Args:
+        url: Root URL to start discovery from.
+        max_urls: Maximum URLs to discover (1-50).
+        max_depth: How many link hops to follow from the root (1-2).
+        include_patterns: Shell-glob patterns against the full URL; keep only matches (e.g. `["https://docs.example.com/api/*"]`).
+        exclude_patterns: Shell-glob patterns against the full URL; drop matches.
+        same_domain_only: If True (default), stay within the same registrable domain — mapping `docs.pydantic.dev` also follows `pydantic.dev/...` and `logfire.pydantic.dev/...` ("same org"). If False, follow every in-scope link.
     """
     response = await map_impl(
         url=url,
@@ -1796,16 +1781,17 @@ async def crawl(
     same_domain_only: bool = True,
     ctx: Context | None = None,
 ) -> str:
-    """Discover URLs on a site AND extract their content in one call.
+    """Discover URLs on a site AND fetch content for each — `map` + `extract` in one call.
 
-    Equivalent to `map` followed by `extract` on every discovered URL. Use this
-    when you want to explore a site and read everything relevant in one shot.
-    For discovery without content, use `map`. For web-wide search, use `search`.
-    For specific known URLs, use `extract`.
-
-    When `query` is provided, extracted pages are re-ordered by their best
-    chunk score so the most relevant pages appear first. Bounded by `max_urls`
-    and `max_depth` — this is not a full-site crawler."""
+    Args:
+        url: Root URL to start crawl from.
+        query: Optional. Reranks discovered pages by best-chunk relevance so the most useful pages appear first.
+        max_urls: Maximum pages to crawl (1-20).
+        max_depth: How many link hops to follow from the root (1-2).
+        include_patterns: Shell-glob patterns against the full URL; keep only matches.
+        exclude_patterns: Shell-glob patterns against the full URL; drop matches.
+        same_domain_only: If True (default), stay within the same registrable domain as the root ("same org"). If False, follow every in-scope link.
+    """
     response = await crawl_impl(
         url=url,
         query=query,
