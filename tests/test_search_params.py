@@ -114,3 +114,55 @@ async def test_cache_key_includes_time_range():
         # same query, different time_range — should NOT hit cache
         await server_module.search_impl(query="test", num_results=1, time_range="week")
         assert search_mock.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# SearXNG unresponsive_engines is surfaced as per-engine warnings
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unresponsive_engines_emitted_as_warnings():
+    """Engines that CAPTCHA'd or errored at SearXNG should show up named."""
+    search_mock = AsyncMock(return_value=make_search_results(
+        URLS_A[:2],
+        unresponsive_engines=[["google", "CAPTCHA"], ["brave", "HTTP 503"]],
+    ))
+    scrape_mock = AsyncMock(return_value={"content": "# Page\n\ncontent", "title": None, "screenshot": None})
+    rerank_mock = AsyncMock(side_effect=_identity_rerank)
+
+    with (
+        patch(PATCH_SEARCH, search_mock),
+        patch(PATCH_SCRAPE, scrape_mock),
+        patch(PATCH_RERANK, rerank_mock),
+    ):
+        payload = await server_module.search_impl(query="test", num_results=2)
+
+    # Per-engine failures should NOT flip degraded — multi-engine hedge
+    # means one upstream CAPTCHAing is business as usual.
+    assert payload["meta"]["degraded"] is False
+    warnings = payload["meta"]["warnings"]
+    engine_warnings = [w for w in warnings if w["type"] == "engine_unresponsive"]
+    details = [w["detail"] for w in engine_warnings]
+    assert "google: CAPTCHA" in details
+    assert "brave: HTTP 503" in details
+
+
+def test_dedup_unresponsive_engines_handles_list_and_dict_shapes():
+    """SearXNG sometimes ships list pairs, sometimes dicts, sometimes dupes."""
+    entries = [
+        ["google", "CAPTCHA"],
+        ("brave", "HTTP 503"),
+        {"name": "duckduckgo", "error": "timeout"},
+        {"engine": "bing", "reason": "timeout"},
+        ["google", "CAPTCHA"],  # dup of first
+        [""],                    # empty engine, skip
+        "not-a-shape",           # not a list/tuple/dict, skip
+    ]
+    result = server_module._dedup_unresponsive_engines(entries)
+    assert result == [
+        ("google", "CAPTCHA"),
+        ("brave", "HTTP 503"),
+        ("duckduckgo", "timeout"),
+        ("bing", "timeout"),
+    ]

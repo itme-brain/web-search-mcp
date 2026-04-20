@@ -37,21 +37,27 @@ def _make_scrape_mock(content_map: dict[str, str | None] | None = None):
     return mock
 
 
-def _make_domain_results() -> list[dict]:
-    return [
-        {"title": "Example A", "url": "https://example.com/a", "content": "snippet a"},
-        {"title": "Docs A", "url": "https://docs.python.org/3/tutorial/", "content": "snippet docs"},
-        {"title": "Example B", "url": "https://blog.example.com/b", "content": "snippet b"},
-    ]
+def _make_domain_results() -> dict:
+    return {
+        "results": [
+            {"title": "Example A", "url": "https://example.com/a", "content": "snippet a"},
+            {"title": "Docs A", "url": "https://docs.python.org/3/tutorial/", "content": "snippet docs"},
+            {"title": "Example B", "url": "https://blog.example.com/b", "content": "snippet b"},
+        ],
+        "unresponsive_engines": [],
+    }
 
 
-def _make_diversity_results() -> list[dict]:
-    return [
-        {"title": "A1", "url": "https://alpha.com/1", "content": "alpha one"},
-        {"title": "A2", "url": "https://alpha.com/2", "content": "alpha two"},
-        {"title": "B1", "url": "https://beta.com/1", "content": "beta one"},
-        {"title": "A3", "url": "https://alpha.com/3", "content": "alpha three"},
-    ]
+def _make_diversity_results() -> dict:
+    return {
+        "results": [
+            {"title": "A1", "url": "https://alpha.com/1", "content": "alpha one"},
+            {"title": "A2", "url": "https://alpha.com/2", "content": "alpha two"},
+            {"title": "B1", "url": "https://beta.com/1", "content": "beta one"},
+            {"title": "A3", "url": "https://alpha.com/3", "content": "alpha three"},
+        ],
+        "unresponsive_engines": [],
+    }
 
 
 @pytest.fixture

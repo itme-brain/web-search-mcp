@@ -96,6 +96,34 @@ def _warning(error_type: str, source: str, detail: str) -> dict:
     return {"type": error_type, "source": source, "detail": detail}
 
 
+def _dedup_unresponsive_engines(entries: list) -> list[tuple[str, str]]:
+    """Normalize SearXNG's unresponsive_engines shapes and dedup by (engine, reason).
+
+    SearXNG ships entries as `[engine_name, error_string]` lists; some
+    integrations wrap them as dicts. Return a deduped list of
+    `(engine, reason)` tuples in insertion order, dropping empty engine names.
+    """
+    seen: set[tuple[str, str]] = set()
+    out: list[tuple[str, str]] = []
+    for entry in entries:
+        if isinstance(entry, (list, tuple)) and entry:
+            engine = str(entry[0])
+            reason = str(entry[1]) if len(entry) > 1 else ""
+        elif isinstance(entry, dict):
+            engine = str(entry.get("name") or entry.get("engine") or "")
+            reason = str(entry.get("error") or entry.get("reason") or "")
+        else:
+            continue
+        if not engine:
+            continue
+        key = (engine, reason)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
 def _normalize_url(url: str) -> str:
     normalized = url_normalize(url)
     parsed = urlparse(normalized)
@@ -327,8 +355,13 @@ async def _search(
     num_results: int = 10,
     time_range: str | None = None,
     pageno: int = 1,
-) -> list[dict]:
-    """Query SearXNG and return raw results."""
+) -> dict:
+    """Query SearXNG and return {"results": [...], "unresponsive_engines": [...]}.
+
+    `unresponsive_engines` is SearXNG's per-engine failure report — list of
+    [engine_name, error_string] pairs for engines that didn't contribute to
+    this response (CAPTCHA'd, rate-limited, timed out, etc).
+    """
     params: dict = {
         "q": query,
         "format": "json",
@@ -342,7 +375,11 @@ async def _search(
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
         resp = await client.get(f"{SEARXNG_URL}/search", params=params)
         resp.raise_for_status()
-        return resp.json().get("results", [])[:num_results]
+        data = resp.json()
+        return {
+            "results": data.get("results", [])[:num_results],
+            "unresponsive_engines": data.get("unresponsive_engines", []),
+        }
 
 
 async def _probe_dependency(url: str) -> dict[str, str]:
@@ -976,12 +1013,16 @@ async def search_impl(
 
     # --- search (page 1, with reactive page-2 fallback on underflow) ---
     search_started = time.monotonic()
+    unresponsive_engines: list = []
     try:
-        raw_results = await _search(query, num_results=num_results, time_range=time_range)
+        page1 = await _search(query, num_results=num_results, time_range=time_range)
     except Exception as exc:
         degraded = True
         warnings.append(_warning("search_failed", "searxng", str(exc)))
-        raw_results = []
+        raw_results: list[dict] = []
+    else:
+        raw_results = page1["results"]
+        unresponsive_engines.extend(page1.get("unresponsive_engines", []))
 
     results = _dedup_results(_filter_results_by_domain(raw_results, include_domains, exclude_domains))
     if raw_results and len(results) < num_results:
@@ -990,9 +1031,17 @@ async def search_impl(
         except Exception as exc:
             warnings.append(_warning("search_failed", "searxng", f"page 2: {exc}"))
         else:
-            raw_results = raw_results + page2
+            raw_results = raw_results + page2["results"]
+            unresponsive_engines.extend(page2.get("unresponsive_engines", []))
             results = _dedup_results(_filter_results_by_domain(raw_results, include_domains, exclude_domains))
     results = results[:num_results]
+
+    # Surface per-engine failures from SearXNG (e.g. "google: CAPTCHA").
+    # Does NOT flip `degraded` — the multi-engine hedge means a single
+    # upstream going down is expected, not a pipeline failure.
+    for engine, reason in _dedup_unresponsive_engines(unresponsive_engines):
+        detail = f"{engine}: {reason}" if reason else engine
+        warnings.append(_warning("engine_unresponsive", "searxng", detail))
 
     timings_ms["search"] = int((time.monotonic() - search_started) * 1000)
     if not results:

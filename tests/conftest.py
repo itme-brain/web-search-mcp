@@ -56,11 +56,19 @@ class FakeContext:
         self._state[key] = value
 
 
-def make_search_results(urls: list[str], prefix: str = "Result") -> list[dict]:
-    return [
-        {"title": f"{prefix} {i}", "url": url, "content": f"snippet for {url}"}
-        for i, url in enumerate(urls, 1)
-    ]
+def make_search_results(
+    urls: list[str],
+    prefix: str = "Result",
+    unresponsive_engines: list | None = None,
+) -> dict:
+    """Build a fake _search() response: {results, unresponsive_engines}."""
+    return {
+        "results": [
+            {"title": f"{prefix} {i}", "url": url, "content": f"snippet for {url}"}
+            for i, url in enumerate(urls, 1)
+        ],
+        "unresponsive_engines": unresponsive_engines or [],
+    }
 
 
 URLS_A = [
