@@ -6,7 +6,7 @@ from fastmcp import Client
 from tests.conftest import URLS_A, make_search_results, server_app, server_module
 
 PATCH_SEARCH = "web_search_server._search"
-PATCH_EXTRACT_URLS_IMPL = "web_search_server._extract_urls_impl"
+PATCH_EXTRACT_URLS_IMPL = "web_search_server.extract_impl"
 PATCH_RERANK = "web_search_server._rerank_scored"
 
 
@@ -57,19 +57,19 @@ async def test_extract_urls_returns_structured_result_from_tool():
 @pytest.mark.asyncio
 async def test_search_validates_time_range():
     with pytest.raises(ValueError, match="invalid time_range"):
-        await server_module._web_search_impl("test query", time_range="decade", ctx=None)
+        await server_module.search_impl("test query", time_range="decade", ctx=None)
 
 
 @pytest.mark.asyncio
 async def test_search_validates_num_results():
     with pytest.raises(ValueError, match="num_results must be <= 10"):
-        await server_module._web_search_impl("test query", num_results=50, ctx=None)
+        await server_module.search_impl("test query", num_results=50, ctx=None)
 
 
 @pytest.mark.asyncio
 async def test_search_validates_domain_filters():
     with pytest.raises(ValueError, match="bare domains"):
-        await server_module._web_search_impl("test query", include_domains=["example.com/path"], ctx=None)
+        await server_module.search_impl("test query", include_domains=["example.com/path"], ctx=None)
 
 
 @pytest.mark.asyncio
@@ -82,7 +82,7 @@ async def test_search_returns_structured_json():
         patch("web_search_server._scrape", AsyncMock(return_value={"content": "# Page\n\ncontent", "title": None, "screenshot": None})),
         patch(PATCH_RERANK, rerank_mock),
     ):
-        payload = await server_module._web_search_impl("test query", num_results=2, ctx=None)
+        payload = await server_module.search_impl("test query", num_results=2, ctx=None)
 
     assert payload["query"] == "test query"
     assert payload["meta"]["reranker"]["name"] == "flashrank"

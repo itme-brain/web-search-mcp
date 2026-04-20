@@ -43,7 +43,7 @@ async def test_extract_urls_returns_structured_results():
     ])
 
     with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
-        payload = await server_module._extract_urls_impl(
+        payload = await server_module.extract_impl(
             urls=["https://example.com/page", "https://example.com/file.pdf"],
             query="example query",
             ctx=fake_ctx,
@@ -84,7 +84,7 @@ async def test_extract_urls_reports_partial_failures():
     ])
 
     with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
-        payload = await server_module._extract_urls_impl(
+        payload = await server_module.extract_impl(
             urls=["https://example.com/page", "https://example.com/missing.pdf"],
         )
 
@@ -235,7 +235,7 @@ async def test_extract_urls_surfaces_pdf_pagination_metadata():
     })
 
     with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
-        payload = await server_module._extract_urls_impl(
+        payload = await server_module.extract_impl(
             urls=["https://example.com/manual.pdf"],
         )
 

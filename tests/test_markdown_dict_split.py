@@ -11,8 +11,8 @@ PATCH_SEARCH = "web_search_server._search"
 PATCH_SCRAPE = "web_search_server._scrape"
 PATCH_RERANK = "web_search_server._rerank_scored"
 PATCH_EXTRACT_URL_DOCUMENT = "web_search_server._extract_url_document"
-PATCH_MAP_SITE_IMPL = "web_search_server._map_site_impl"
-PATCH_EXTRACT_URLS_IMPL = "web_search_server._extract_urls_impl"
+PATCH_MAP_SITE_IMPL = "web_search_server.map_impl"
+PATCH_EXTRACT_URLS_IMPL = "web_search_server.extract_impl"
 
 # These fields may live in the Python dict for scripting access, but must
 # never appear as literal keys in the LLM-facing markdown output.
@@ -46,7 +46,7 @@ async def test_search_dict_carries_full_structured_fields():
         patch(PATCH_SCRAPE, scrape_mock),
         patch(PATCH_RERANK, rerank_mock),
     ):
-        payload = await server_module._web_search_impl("test", num_results=2, ctx=None)
+        payload = await server_module.search_impl("test", num_results=2, ctx=None)
 
     first = payload["results"][0]
     # search dict carries these for scripting access
@@ -92,7 +92,7 @@ async def test_extract_dict_carries_full_structured_fields():
     })
 
     with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
-        payload = await server_module._extract_urls_impl(
+        payload = await server_module.extract_impl(
             urls=["https://example.com/a"], query="q",
         )
 

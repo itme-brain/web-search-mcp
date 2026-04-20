@@ -878,7 +878,7 @@ async def ready(_: Request) -> JSONResponse:
 
 
 
-async def _web_search_impl(
+async def search_impl(
     query: str,
     num_results: int = 10,
     time_range: str | None = None,
@@ -1264,7 +1264,7 @@ async def search(
       dates or years in the query text.
     - `include_domains` / `exclude_domains` hard-filter results by bare domain.
     """
-    response = await _web_search_impl(
+    response = await search_impl(
         query=query,
         num_results=num_results,
         time_range=time_range,
@@ -1275,7 +1275,7 @@ async def search(
     return _format_search_results(response)
 
 
-async def _extract_urls_impl(
+async def extract_impl(
     urls: list[str],
     query: str | None = None,
     ctx: Context | None = None,
@@ -1341,7 +1341,7 @@ async def _extract_urls_impl(
             },
         },
     }
-    log.info("extract_urls requested=%d succeeded=%d failed=%d", len(urls), urls_succeeded, urls_failed)
+    log.info("extract requested=%d succeeded=%d failed=%d", len(urls), urls_succeeded, urls_failed)
     return response
 
 
@@ -1360,11 +1360,11 @@ async def extract(
     HTML, PDF, DOCX, and plain-text files natively; PDFs are fully extracted
     with per-page chunking. When `query` is provided, PDF pages are reranked so
     the most relevant pages appear first."""
-    response = await _extract_urls_impl(urls=urls, query=query, ctx=ctx)
+    response = await extract_impl(urls=urls, query=query, ctx=ctx)
     return _format_extract_results(response)
 
 
-async def _map_site_impl(
+async def map_impl(
     url: str,
     max_urls: int = 25,
     max_depth: int = 1,
@@ -1474,7 +1474,7 @@ async def _map_site_impl(
         },
     }
     log.info(
-        "map_site url=%s returned=%d visited=%d warnings=%d",
+        "map url=%s returned=%d visited=%d warnings=%d",
         root_url,
         len(results),
         len(visited_pages),
@@ -1503,7 +1503,7 @@ async def map(
     globs against the full URL (e.g. `https://docs.example.com/api/*`).
     `same_domain_only` keeps discovery within the root host and its subdomains.
     """
-    response = await _map_site_impl(
+    response = await map_impl(
         url=url,
         max_urls=max_urls,
         max_depth=max_depth,
@@ -1514,8 +1514,7 @@ async def map(
     return _format_map_results(response)
 
 
-@mcp.tool
-async def crawl(
+async def crawl_impl(
     url: str,
     query: str | None = None,
     max_urls: int = 10,
@@ -1524,17 +1523,8 @@ async def crawl(
     exclude_patterns: list[str] | None = None,
     same_domain_only: bool = True,
     ctx: Context | None = None,
-) -> str:
-    """Discover URLs on a site AND extract their content in one call.
-
-    Equivalent to `map` followed by `extract` on every discovered URL. Use this
-    when you want to explore a site and read everything relevant in one shot.
-    For discovery without content, use `map`. For web-wide search, use `search`.
-    For specific known URLs, use `extract`.
-
-    When `query` is provided, extracted pages are re-ordered by their best
-    chunk score so the most relevant pages appear first. Bounded by `max_urls`
-    and `max_depth` — this is not a full-site crawler."""
+) -> dict:
+    """Map a site then extract each discovered page. Returns a structured dict."""
     effective_max_urls = _validate_positive_int(
         "max_urls",
         max_urls,
@@ -1542,7 +1532,7 @@ async def crawl(
     )
     started = time.monotonic()
 
-    mapped = await _map_site_impl(
+    mapped = await map_impl(
         url=url,
         max_urls=effective_max_urls,
         max_depth=max_depth,
@@ -1551,7 +1541,7 @@ async def crawl(
         same_domain_only=same_domain_only,
     )
     mapped_urls = [result["url"] for result in mapped["results"]]
-    extracted = await _extract_urls_impl(urls=mapped_urls, query=query, ctx=ctx)
+    extracted = await extract_impl(urls=mapped_urls, query=query, ctx=ctx)
 
     extract_by_normalized_url = {
         result["normalized_url"]: result
@@ -1608,11 +1598,45 @@ async def crawl(
         },
     }
     log.info(
-        "crawl_site url=%s discovered=%d succeeded=%d failed=%d",
+        "crawl url=%s discovered=%d succeeded=%d failed=%d",
         url,
         mapped["meta"]["urls_returned"],
         extracted["meta"]["urls_succeeded"],
         extracted["meta"]["urls_failed"],
+    )
+    return response
+
+
+@mcp.tool
+async def crawl(
+    url: str,
+    query: str | None = None,
+    max_urls: int = 10,
+    max_depth: int = 1,
+    include_patterns: list[str] | None = None,
+    exclude_patterns: list[str] | None = None,
+    same_domain_only: bool = True,
+    ctx: Context | None = None,
+) -> str:
+    """Discover URLs on a site AND extract their content in one call.
+
+    Equivalent to `map` followed by `extract` on every discovered URL. Use this
+    when you want to explore a site and read everything relevant in one shot.
+    For discovery without content, use `map`. For web-wide search, use `search`.
+    For specific known URLs, use `extract`.
+
+    When `query` is provided, extracted pages are re-ordered by their best
+    chunk score so the most relevant pages appear first. Bounded by `max_urls`
+    and `max_depth` — this is not a full-site crawler."""
+    response = await crawl_impl(
+        url=url,
+        query=query,
+        max_urls=max_urls,
+        max_depth=max_depth,
+        include_patterns=include_patterns,
+        exclude_patterns=exclude_patterns,
+        same_domain_only=same_domain_only,
+        ctx=ctx,
     )
     return _format_crawl_results(response)
 

@@ -4,8 +4,8 @@ import pytest
 
 from tests.conftest import FakeContext, server_module
 
-PATCH_MAP_SITE_IMPL = "web_search_server._map_site_impl"
-PATCH_EXTRACT_URLS_IMPL = "web_search_server._extract_urls_impl"
+PATCH_MAP_SITE_IMPL = "web_search_server.map_impl"
+PATCH_EXTRACT_URLS_IMPL = "web_search_server.extract_impl"
 
 
 @pytest.mark.asyncio

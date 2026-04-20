@@ -66,7 +66,7 @@ async def test_page2_fetched_when_page1_underfills():
         patch(PATCH_SCRAPE, scrape_mock),
         patch(PATCH_RERANK, rerank_mock),
     ):
-        result = await server_module._web_search_impl(query="test", num_results=3)
+        result = await server_module.search_impl(query="test", num_results=3)
 
     assert search_mock.call_count == 2
     second_call = search_mock.call_args_list[1]
@@ -88,7 +88,7 @@ async def test_page2_skipped_when_page1_already_full():
         patch(PATCH_SCRAPE, scrape_mock),
         patch(PATCH_RERANK, rerank_mock),
     ):
-        await server_module._web_search_impl(query="test", num_results=3)
+        await server_module.search_impl(query="test", num_results=3)
 
     assert search_mock.call_count == 1
 
@@ -109,9 +109,9 @@ async def test_cache_key_includes_time_range():
         patch(PATCH_SCRAPE, scrape_mock),
         patch(PATCH_RERANK, rerank_mock),
     ):
-        await server_module._web_search_impl(query="test", num_results=1)
+        await server_module.search_impl(query="test", num_results=1)
         assert search_mock.call_count == 1
 
         # same query, different time_range — should NOT hit cache
-        await server_module._web_search_impl(query="test", num_results=1, time_range="week")
+        await server_module.search_impl(query="test", num_results=1, time_range="week")
         assert search_mock.call_count == 2

@@ -28,7 +28,7 @@ def _load_queries(path: Path) -> list[dict]:
 
 async def _run_query(server_module, query_spec: dict) -> dict:
     started_at = datetime.now(UTC).isoformat()
-    payload = await server_module._web_search_impl(
+    payload = await server_module.search_impl(
         query=query_spec["query"],
         num_results=query_spec.get("num_results", 5),
         time_range=query_spec.get("time_range"),
