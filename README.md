@@ -1,14 +1,18 @@
 # web-search-mcp
 
-A self-contained MCP server that gives any MCP-compatible model (Claude, local llama.cpp, etc.) the same kind of search pipeline that paid "answer engines" use — fully FOSS, fully self-hosted.
+A self-hosted MCP web-search server for LLMs that **doesn't proxy a paid API**.
 
-Pipeline:
+Most "self-hosted" MCP search servers still need a SerpAPI, Serper, Tavily, or Exa key under the hood — you save on hosting but still pay per query. This one doesn't. The search itself is free: SearXNG scrapes public search-engine interfaces across 9 upstreams in parallel, Crawl4AI handles extraction, FlashRank does local reranking. **Zero per-query cost, zero API keys, no vendor lock-in, runs entirely in `docker compose`.**
 
 ```
-query -> SearXNG -> Crawl4AI (scrape top N) -> FlashRank -> ranked JSON
+query → SearXNG (9 engines in parallel) → Crawl4AI (scrape top N) → FlashRank (rerank) → ranked markdown
 ```
 
-All services run in one `docker compose` project. Only the MCP server port is exposed on the host; SearXNG and Crawl4AI stay internal, and reranking happens inside the MCP server process via FlashRank.
+The multi-engine hedge is also a structural defense against anti-bot blocks: no single upstream going down takes the service offline — the other 8 keep working — and per-engine query volume stays below rate-limit thresholds. That's why this project doesn't need paid search fallback.
+
+The MCP tool surface is intentionally small: **`search`, `extract`, `map`, `crawl`**. Four tools that compose. See [Tools the MCP exposes](#tools-the-mcp-exposes) for what each does and when to pick which.
+
+All services run in one `docker compose` project. Only the MCP server port is exposed on the host; SearXNG and Crawl4AI stay internal.
 
 ## Requirements
 
