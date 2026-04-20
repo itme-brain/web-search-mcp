@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-SERVER_PATH = ROOT / "mcp" / "server.py"
+SERVER_PATH = ROOT / "src" / "server.py"
 
 
 def _load_server_module():

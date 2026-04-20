@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-_SERVER_PATH = Path(__file__).resolve().parent.parent / "mcp" / "server.py"
+_SERVER_PATH = Path(__file__).resolve().parent.parent / "src" / "server.py"
 _flashrank = types.ModuleType("flashrank")
 
 

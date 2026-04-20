@@ -72,8 +72,8 @@ eval-score run_file:
 smoke *args:
     nix develop -c python eval/live_smoke.py {{ args }}
 
-# Regenerate mcp/requirements.txt (hash-locked) from mcp/requirements.in via uv.
-# Run this after editing mcp/requirements.in. `nix run .#deploy` will also
+# Regenerate src/requirements.txt (hash-locked) from src/requirements.in via uv.
+# Run this after editing src/requirements.in. `nix run .#deploy` will also
 # auto-regen when .in is newer than .txt.
 lock:
-    nix develop -c uv pip compile --generate-hashes mcp/requirements.in -o mcp/requirements.txt
+    nix develop -c uv pip compile --generate-hashes src/requirements.in -o src/requirements.txt

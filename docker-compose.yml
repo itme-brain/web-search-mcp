@@ -6,7 +6,7 @@ x-healthcheck-defaults: &healthcheck-defaults
 
 services:
   web-search-mcp:
-    build: ./mcp
+    build: ./src
     container_name: web-search-mcp
     restart: unless-stopped
     ports:

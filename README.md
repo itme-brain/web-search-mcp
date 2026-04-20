@@ -104,7 +104,7 @@ When you want the raw Python dict (not markdown), import the impls directly. The
 
 ```python
 import asyncio, sys
-sys.path.insert(0, "mcp")  # or set PYTHONPATH=mcp
+sys.path.insert(0, "src")  # or set PYTHONPATH=src
 from server import search_impl
 
 async def main():
@@ -248,7 +248,7 @@ flake.nix                       # devshell + deploy/teardown apps
 justfile                        # user-facing recipes (up, down, setup, logs, ...)
 env.sample                      # copy to .env
 eval/                           # benchmark queries, runner, scorer
-mcp/                            # the MCP server (FastMCP + httpx)
+src/                            # the MCP server (FastMCP + httpx)
 searxng/config/
   settings.yml.template         # tracked; settings.yml is generated from this
 ```
