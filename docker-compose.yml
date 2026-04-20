@@ -14,7 +14,7 @@ services:
     environment:
       - SEARXNG_URL=http://searxng:8080
       - CRAWL4AI_URL=http://crawl4ai:11235
-      - RERANK_MODEL=${RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
+      - RERANK_MODEL=${RERANK_MODEL:-ms-marco-MiniLM-L-12-v2}
       - REQUEST_TIMEOUT=${REQUEST_TIMEOUT:-30}
       - MAX_RESULTS=${MAX_RESULTS:-10}
       - MAX_SCRAPE=${MAX_SCRAPE:-5}

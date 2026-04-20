@@ -106,7 +106,7 @@ asyncio.run(main())
 | `REQUEST_TIMEOUT` | `30` | Timeout budget for search and scrape requests (seconds) |
 | `MAX_RESULTS` | `10` | Max search results to return |
 | `MAX_SCRAPE` | `5` | Max results to fetch full content for |
-| `RERANK_MODEL` | `BAAI/bge-reranker-v2-m3` | FlashRank reranker model |
+| `RERANK_MODEL` | `ms-marco-MiniLM-L-12-v2` | FlashRank reranker model |
 | `LOG_LEVEL` | `INFO` | MCP log level (`DEBUG` for failure detail) |
 | `SEARXNG_IMAGE` / `CRAWL4AI_IMAGE` | pinned | Override to bump upstream image versions |
 
@@ -197,7 +197,7 @@ Crawl behavior:
     "search_backend": "searxng",
     "reranker": {
       "name": "flashrank",
-      "model": "BAAI/bge-reranker-v2-m3"
+      "model": "ms-marco-MiniLM-L-12-v2"
     },
     "degraded": false,
     "warnings": [],

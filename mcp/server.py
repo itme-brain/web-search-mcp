@@ -36,7 +36,7 @@ mcp = FastMCP("Web Search", version="0.0.1")
 class Settings(BaseSettings):
     searxng_url: str = "http://searxng:8080"
     crawl4ai_url: str = "http://crawl4ai:11235"
-    rerank_model: str = "BAAI/bge-reranker-v2-m3"
+    rerank_model: str = "ms-marco-MiniLM-L-12-v2"
     request_timeout: int = 30
     max_results: int = 10
     max_scrape: int = 5
