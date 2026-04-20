@@ -1,10 +1,35 @@
 import importlib.util
 import sys
+import types
 from pathlib import Path
 
 import pytest
 
 _SERVER_PATH = Path(__file__).resolve().parent.parent / "mcp" / "server.py"
+_flashrank = types.ModuleType("flashrank")
+
+
+class _FakeRanker:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def rerank(self, request):
+        return [
+            {"id": passage["id"], "score": 0.0}
+            for passage in request.passages
+        ]
+
+
+class _FakeRerankRequest:
+    def __init__(self, query, passages):
+        self.query = query
+        self.passages = passages
+
+
+_flashrank.Ranker = _FakeRanker
+_flashrank.RerankRequest = _FakeRerankRequest
+sys.modules["flashrank"] = _flashrank
+
 _spec = importlib.util.spec_from_file_location("web_search_server", _SERVER_PATH)
 _mod = importlib.util.module_from_spec(_spec)
 sys.modules["web_search_server"] = _mod
@@ -12,6 +37,17 @@ _spec.loader.exec_module(_mod)
 
 server_module = _mod
 server_app = _mod.mcp
+
+
+class FakeContext:
+    def __init__(self):
+        self._state = {}
+
+    def get_state(self, key):
+        return self._state.get(key)
+
+    def set_state(self, key, value):
+        self._state[key] = value
 
 
 def make_search_results(urls: list[str], prefix: str = "Result") -> list[dict]:
@@ -55,3 +91,8 @@ def search_results_b():
 @pytest.fixture
 def scrape_content():
     return dict(SCRAPE_CONTENT)
+
+
+@pytest.fixture
+def fake_ctx():
+    return FakeContext()

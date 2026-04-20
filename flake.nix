@@ -10,6 +10,43 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        python = pkgs.python312.override {
+          packageOverrides = self: super: {
+            fastmcp = super.fastmcp.overridePythonAttrs (_: {
+              doCheck = false;
+            });
+            python-docx = super.python-docx.overridePythonAttrs (_: {
+              doCheck = false;
+            });
+            flashrank = self.buildPythonPackage rec {
+              pname = "flashrank";
+              version = "0.2.9";
+              src = pkgs.fetchurl {
+                url = "https://files.pythonhosted.org/packages/0c/8c/4b44180d4be0f93bffe31db7229c727638994c74f04257f3844bca066b88/FlashRank-0.2.9.tar.gz";
+                sha256 = "475f1192e0722da1a4409812165ebc7e3eccec56e7b7853ed9dd5dd5c9c985f5";
+              };
+              pyproject = true;
+              build-system = [ self.setuptools ];
+              propagatedBuildInputs = with self; [
+                numpy
+                onnxruntime
+                requests
+                tokenizers
+                tqdm
+              ];
+              doCheck = false;
+            };
+          };
+        };
+        pythonEnv = python.withPackages (ps: with ps; [
+          fastmcp
+          flashrank
+          httpx
+          python-docx
+          pypdf
+          pytest
+          pytest-asyncio
+        ]);
 
         # Tools needed at runtime by the deploy script. Docker daemon must be
         # supplied by the host (Nix does not install a daemon on non-NixOS).
@@ -57,13 +94,13 @@
             echo ">> building + starting stack"
             docker compose up -d --build
 
-            echo ">> waiting for MCP to accept connections"
+            echo ">> waiting for MCP to become ready"
             # shellcheck disable=SC1091
             source .env
             port="''${MCP_HOST_PORT:-8002}"
             for _ in {1..60}; do
-              if curl -sf "http://localhost:$port/mcp" >/dev/null 2>&1; then
-                echo ">> MCP reachable on http://localhost:$port"
+              if curl -sf "http://localhost:$port/ready" >/dev/null 2>&1; then
+                echo ">> MCP ready on http://localhost:$port"
                 exit 0
               fi
               sleep 1
@@ -100,9 +137,9 @@
 
         devShells.default = pkgs.mkShell {
           name = "web-search-mcp-dev";
-          buildInputs = runtimeTools;
+          buildInputs = runtimeTools ++ [pythonEnv];
           shellHook = ''
-            echo "web-search-mcp devshell — try: just, just up, just logs"
+            echo "web-search-mcp devshell — try: just, just up, just test"
           '';
         };
       });

@@ -17,6 +17,8 @@ services:
       - RERANK_MODEL=${RERANK_MODEL:-ms-marco-MiniLM-L-12-v2}
       - RERANK_MAX_LENGTH=${RERANK_MAX_LENGTH:-512}
       - MAX_SCRAPE=${MAX_SCRAPE:-5}
+      - MAX_NUM_RESULTS=${MAX_NUM_RESULTS:-10}
+      - MAX_SCRAPE_TOP=${MAX_SCRAPE_TOP:-5}
       - SCRAPE_TIMEOUT=${SCRAPE_TIMEOUT:-30}
       - SCRAPE_HTTP_TIMEOUT=${SCRAPE_HTTP_TIMEOUT:-15}
       - SEARCH_TIMEOUT=${SEARCH_TIMEOUT:-10}
@@ -24,7 +26,7 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     healthcheck:
       <<: *healthcheck-defaults
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3).read()"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready', timeout=3).read()"]
     depends_on:
       searxng:
         condition: service_healthy

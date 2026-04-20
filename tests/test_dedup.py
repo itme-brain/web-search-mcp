@@ -3,6 +3,7 @@ from tests.conftest import server_module
 _normalize_url = server_module._normalize_url
 _dedup_results = server_module._dedup_results
 _dedup_chunks = server_module._dedup_chunks
+_diversify_ranked_entries = server_module._diversify_ranked_entries
 
 
 def test_normalize_url_strips_tracking_params():
@@ -30,6 +31,18 @@ def test_dedup_results_removes_url_duplicates():
     assert len(deduped) == 2
     assert deduped[0]["title"] == "First"
     assert deduped[1]["title"] == "Different"
+
+
+def test_dedup_results_removes_same_domain_same_title_duplicates():
+    results = [
+        {"url": "https://example.com/post-1", "title": "Breaking News: Launch Day"},
+        {"url": "https://example.com/post-2", "title": "Breaking News - Launch Day"},
+        {"url": "https://other.com/post-3", "title": "Breaking News Launch Day"},
+    ]
+    deduped = _dedup_results(results)
+    assert len(deduped) == 2
+    assert deduped[0]["url"] == "https://example.com/post-1"
+    assert deduped[1]["url"] == "https://other.com/post-3"
 
 
 def test_dedup_chunks_removes_near_identical():
@@ -68,3 +81,15 @@ def test_dedup_chunks_preserves_first_occurrence():
     assert len(kept) == 2
     assert entries[0] == 0
     assert entries[1] == 1
+
+
+def test_diversify_ranked_entries_interleaves_domains():
+    entries = [
+        {"url": "https://a.com/1"},
+        {"url": "https://a.com/2"},
+        {"url": "https://b.com/1"},
+        {"url": "https://a.com/3"},
+        {"url": "https://c.com/1"},
+    ]
+    diversified = _diversify_ranked_entries([0, 1, 2, 3, 4], entries)
+    assert diversified[:5] == [0, 2, 4, 1, 3]

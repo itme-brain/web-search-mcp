@@ -51,6 +51,18 @@ rebuild: setup
 restart:
     {{ compose }} restart
 
-# Check that the MCP's /health endpoint is reachable on the configured host port.
+# Check that the MCP's /ready endpoint is reachable on the configured host port.
 health:
-    @curl -fsS "http://localhost:${MCP_HOST_PORT:-8002}/health" && echo
+    @curl -fsS "http://localhost:${MCP_HOST_PORT:-8002}/ready" && echo
+
+# Run the Python test suite through the flake devshell.
+test:
+    nix develop -c pytest -q
+
+# Run the benchmark query set and write a JSONL run under eval/runs/.
+eval:
+    nix develop -c python eval/run_eval.py
+
+# Score a saved eval run, e.g. `just eval-score eval/runs/20260420T000000Z.jsonl`.
+eval-score run_file:
+    nix develop -c python eval/score.py {{ run_file }}

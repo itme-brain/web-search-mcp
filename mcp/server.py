@@ -1,15 +1,22 @@
 import asyncio
+import fnmatch
 import hashlib
+import io
 import json
 import logging
+import mimetypes
 import os
 import re
-from collections import defaultdict
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+import time
+from inspect import isawaitable
+from collections import defaultdict, deque
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 
 import httpx
 from fastmcp import Context, FastMCP
 from flashrank import Ranker, RerankRequest
+from docx import Document as DocxDocument
+from pypdf import PdfReader
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -35,10 +42,19 @@ CHUNK_MAX_CHARS = int(os.environ.get("CHUNK_MAX_CHARS", "500"))
 MAX_CHUNKS_PER_PAGE = int(os.environ.get("MAX_CHUNKS_PER_PAGE", "10"))
 TOP_CHUNKS_PER_PAGE = int(os.environ.get("TOP_CHUNKS_PER_PAGE", "3"))
 DEDUP_SIMILARITY = float(os.environ.get("DEDUP_SIMILARITY", "0.85"))
+MAX_NUM_RESULTS = int(os.environ.get("MAX_NUM_RESULTS", "10"))
+MAX_SCRAPE_TOP = int(os.environ.get("MAX_SCRAPE_TOP", str(MAX_SCRAPE)))
+MAX_EXTRACT_URLS = int(os.environ.get("MAX_EXTRACT_URLS", "20"))
+MAX_MAP_URLS = int(os.environ.get("MAX_MAP_URLS", "50"))
+MAX_MAP_DEPTH = int(os.environ.get("MAX_MAP_DEPTH", "2"))
 
 STATE_SCRAPE_CACHE = "scrape_cache"
 STATE_QUERY_CACHE = "query_cache"
 STATE_SEEN_URLS = "seen_urls"
+STATE_EXTRACT_CACHE = "extract_cache"
+
+VALID_TIME_RANGES = frozenset({"day", "week", "month", "year"})
+VALID_MODES = frozenset({"balanced", "deep"})
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 _TRACKING_PARAMS = frozenset({
@@ -46,6 +62,7 @@ _TRACKING_PARAMS = frozenset({
     "ref", "fbclid", "gclid", "dclid", "msclkid", "mc_cid", "mc_eid",
 })
 _WORD_SPLIT = re.compile(r"\W+")
+_WHITESPACE = re.compile(r"\s+")
 
 
 def _normalize_url(url: str) -> str:
@@ -58,14 +75,30 @@ def _normalize_url(url: str) -> str:
 
 
 def _dedup_results(results: list[dict]) -> list[dict]:
-    seen: set[str] = set()
+    seen_urls: set[str] = set()
+    seen_titles: set[tuple[str, str]] = set()
     deduped: list[dict] = []
     for r in results:
         norm = _normalize_url(r.get("url", ""))
-        if norm not in seen:
-            seen.add(norm)
-            deduped.append(r)
+        domain = _domain_from_url(r.get("url", "")).lower()
+        title = _normalize_title(r.get("title", ""))
+        title_key = (domain, title)
+        if norm in seen_urls:
+            continue
+        if title and title_key in seen_titles:
+            continue
+        seen_urls.add(norm)
+        if title:
+            seen_titles.add(title_key)
+        deduped.append(r)
     return deduped
+
+
+def _normalize_title(title: str) -> str:
+    normalized = _WHITESPACE.sub(" ", title.strip().lower())
+    normalized = re.sub(r"[^a-z0-9 ]+", "", normalized)
+    normalized = _WHITESPACE.sub(" ", normalized)
+    return normalized.strip()
 
 
 def _word_set(text: str) -> set[str]:
@@ -97,6 +130,154 @@ def _dedup_chunks(chunks: list[str], entry_map: list[int]) -> tuple[list[str], l
 def _query_cache_key(query: str, num_results: int, scrape_top: int, time_range: str | None) -> str:
     raw = json.dumps([query.lower().strip(), num_results, scrape_top, time_range], sort_keys=True)
     return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _response_cache_key(query: str, num_results: int, scrape_top: int, time_range: str | None) -> str:
+    return _query_cache_key(query, num_results, scrape_top, time_range)
+
+
+def _normalize_time_range(time_range: str | None) -> str | None:
+    if time_range in (None, "null", "none", "None", ""):
+        return None
+    normalized = time_range.strip().strip('"').lower()
+    if normalized not in VALID_TIME_RANGES:
+        raise ValueError(f"invalid time_range: {time_range!r}. Expected one of {sorted(VALID_TIME_RANGES)}")
+    return normalized
+
+
+def _validate_query(query: str) -> str:
+    normalized = query.strip()
+    if not normalized:
+        raise ValueError("query must not be empty")
+    return normalized
+
+
+def _validate_positive_int(name: str, value: int, *, maximum: int) -> int:
+    if value < 1:
+        raise ValueError(f"{name} must be >= 1")
+    if value > maximum:
+        raise ValueError(f"{name} must be <= {maximum}")
+    return value
+
+
+def _domain_from_url(url: str) -> str:
+    return urlparse(url).hostname or ""
+
+
+def _validate_urls(urls: list[str], *, maximum: int) -> list[str]:
+    if not urls:
+        raise ValueError("urls must not be empty")
+    if len(urls) > maximum:
+        raise ValueError(f"urls must contain at most {maximum} entries")
+    normalized: list[str] = []
+    for url in urls:
+        value = url.strip()
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError(f"invalid URL: {url!r}")
+        normalized.append(value)
+    return normalized
+
+
+async def _maybe_await(value):
+    if isawaitable(value):
+        return await value
+    return value
+
+
+async def _ctx_get_state(ctx: Context, key: str):
+    return await _maybe_await(ctx.get_state(key))
+
+
+async def _ctx_set_state(ctx: Context, key: str, value) -> None:
+    await _maybe_await(ctx.set_state(key, value))
+
+
+def _normalize_domains(domains: list[str] | None, *, field_name: str) -> list[str]:
+    if not domains:
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for domain in domains:
+        value = domain.strip().lower()
+        if not value:
+            continue
+        if value.startswith("www."):
+            value = value[4:]
+        if "/" in value:
+            raise ValueError(f"{field_name} entries must be bare domains, got {domain!r}")
+        if value not in seen:
+            seen.add(value)
+            normalized.append(value)
+    return normalized
+
+
+def _normalize_glob_patterns(patterns: list[str] | None, *, field_name: str) -> list[str]:
+    if not patterns:
+        return []
+    normalized: list[str] = []
+    for pattern in patterns:
+        value = pattern.strip()
+        if not value:
+            continue
+        normalized.append(value)
+    if not normalized:
+        raise ValueError(f"{field_name} must not be empty when provided")
+    return normalized
+
+
+def _normalize_mode(mode: str | None) -> str:
+    normalized = (mode or "balanced").strip().lower()
+    if normalized not in VALID_MODES:
+        raise ValueError(f"invalid mode: {mode!r}. Expected one of {sorted(VALID_MODES)}")
+    return normalized
+
+
+def _match_domain(domain: str, patterns: list[str]) -> bool:
+    return any(domain == pattern or domain.endswith(f".{pattern}") for pattern in patterns)
+
+
+def _filter_results_by_domain(
+    results: list[dict],
+    include_domains: list[str],
+    exclude_domains: list[str],
+) -> list[dict]:
+    filtered: list[dict] = []
+    for result in results:
+        domain = _domain_from_url(result.get("url", "")).lower()
+        bare_domain = domain[4:] if domain.startswith("www.") else domain
+        if include_domains and not _match_domain(bare_domain, include_domains):
+            continue
+        if exclude_domains and _match_domain(bare_domain, exclude_domains):
+            continue
+        filtered.append(result)
+    return filtered
+
+
+def _diversify_ranked_entries(ranked_entry_idxs: list[int], entries: list[dict]) -> list[int]:
+    """Interleave domains so the top results are not monopolized by one source."""
+    by_domain: dict[str, list[int]] = defaultdict(list)
+    domain_order: list[str] = []
+    for eidx in ranked_entry_idxs:
+        domain = _domain_from_url(entries[eidx]["url"]).lower() or entries[eidx]["url"]
+        if domain not in by_domain:
+            domain_order.append(domain)
+        by_domain[domain].append(eidx)
+
+    diversified: list[int] = []
+    while by_domain:
+        next_round: list[str] = []
+        for domain in domain_order:
+            queue = by_domain.get(domain)
+            if not queue:
+                continue
+            diversified.append(queue.pop(0))
+            if queue:
+                next_round.append(domain)
+            else:
+                by_domain.pop(domain, None)
+        domain_order = next_round
+    return diversified
 
 
 def _chunk_text(text: str) -> list[str]:
@@ -138,6 +319,24 @@ async def _search(query: str, num_results: int = 10, time_range: str | None = No
         return resp.json().get("results", [])[:num_results]
 
 
+def _mode_settings(mode: str, num_results: int, scrape_top: int) -> tuple[int, int]:
+    if mode == "deep":
+        candidate_count = max(num_results * 2, 20)
+        deep_scrape_top = max(scrape_top, min(num_results, MAX_SCRAPE_TOP))
+        return candidate_count, min(deep_scrape_top, MAX_SCRAPE_TOP)
+    return num_results, scrape_top
+
+
+async def _probe_dependency(url: str) -> dict[str, str]:
+    try:
+        async with httpx.AsyncClient(timeout=3) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+        return {"status": "ok"}
+    except httpx.HTTPError as exc:
+        return {"status": "error", "detail": str(exc)}
+
+
 def _extract_markdown(result: dict) -> str | None:
     md = result.get("markdown")
     if isinstance(md, dict):
@@ -145,6 +344,90 @@ def _extract_markdown(result: dict) -> str | None:
     if isinstance(md, str):
         return md
     return result.get("cleaned_html")
+
+
+def _content_type_without_charset(content_type: str | None) -> str | None:
+    if not content_type:
+        return None
+    return content_type.split(";", 1)[0].strip().lower() or None
+
+
+def _guess_file_type(url: str, content_type: str | None) -> str:
+    normalized_content_type = _content_type_without_charset(content_type)
+    suffix = (urlparse(url).path.rsplit(".", 1)[-1].lower() if "." in urlparse(url).path else "")
+
+    if normalized_content_type == "application/pdf" or suffix == "pdf":
+        return "pdf"
+    if (
+        normalized_content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        or suffix == "docx"
+    ):
+        return "docx"
+    if normalized_content_type in {"text/html", "application/xhtml+xml"} or suffix in {"html", "htm", "xhtml"}:
+        return "html"
+    if normalized_content_type in {"text/markdown", "text/x-markdown"} or suffix == "md":
+        return "markdown"
+    if normalized_content_type == "application/json" or suffix == "json":
+        return "json"
+    if normalized_content_type in {"application/xml", "text/xml"} or suffix in {"xml", "rss", "atom"}:
+        return "xml"
+    if normalized_content_type in {"text/csv", "application/csv", "application/vnd.ms-excel"} or suffix == "csv":
+        return "csv"
+    if normalized_content_type and normalized_content_type.startswith("text/"):
+        return "text"
+    guessed_type, _ = mimetypes.guess_type(url)
+    guessed_type = _content_type_without_charset(guessed_type)
+    if guessed_type and guessed_type.startswith("text/"):
+        return "text"
+    return "unknown"
+
+
+def _extract_crawl_result(data: dict) -> dict:
+    results = data.get("results")
+    if results and isinstance(results, list):
+        return results[0]
+    return data.get("result", data)
+
+
+def _extract_crawl_title(result: dict) -> str | None:
+    metadata = result.get("metadata")
+    if isinstance(metadata, dict):
+        title = metadata.get("title")
+        if title:
+            return title
+    title = result.get("title")
+    if isinstance(title, str) and title.strip():
+        return title.strip()
+    return None
+
+
+def _extract_crawl_links(result: dict, base_url: str) -> list[dict]:
+    link_groups = result.get("links")
+    if not isinstance(link_groups, dict):
+        return []
+
+    links: list[dict] = []
+    for link_type in ("internal", "external"):
+        bucket = link_groups.get(link_type) or []
+        if not isinstance(bucket, list):
+            continue
+        for link in bucket:
+            if not isinstance(link, dict):
+                continue
+            href = link.get("href")
+            if not isinstance(href, str) or not href.strip():
+                continue
+            absolute_url = urljoin(base_url, href.strip())
+            parsed = urlparse(absolute_url)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                continue
+            links.append({
+                "url": absolute_url,
+                "title": (link.get("title") or "").strip() or None,
+                "text": (link.get("text") or "").strip() or None,
+                "link_type": link_type,
+            })
+    return links
 
 
 _CRAWL_CONFIG = {
@@ -191,10 +474,7 @@ async def _scrape_impl(url: str) -> str | None:
                 if status == "failed":
                     return None
 
-        results = data.get("results")
-        if results and isinstance(results, list):
-            return _extract_markdown(results[0])
-        result = data.get("result", data)
+        result = _extract_crawl_result(data)
         return _extract_markdown(result)
 
 
@@ -221,6 +501,249 @@ async def _scrape_cached(url: str, cache: dict[str, str | None]) -> str | None:
     return content
 
 
+async def _head_content_type(url: str) -> str | None:
+    try:
+        async with httpx.AsyncClient(timeout=SCRAPE_HTTP_TIMEOUT, follow_redirects=True) as client:
+            resp = await client.head(url)
+            resp.raise_for_status()
+            return resp.headers.get("content-type")
+    except httpx.HTTPError:
+        return None
+
+
+async def _looks_like_pdf(url: str) -> bool:
+    if urlparse(url).path.lower().endswith(".pdf"):
+        return True
+    content_type = await _head_content_type(url)
+    return bool(content_type and "application/pdf" in content_type.lower())
+
+
+async def _detect_file_type(url: str) -> tuple[str, str | None]:
+    content_type = await _head_content_type(url)
+    return _guess_file_type(url, content_type), _content_type_without_charset(content_type)
+
+
+def _pdf_bytes_to_markdown(data: bytes) -> tuple[str, str | None]:
+    reader = PdfReader(io.BytesIO(data))
+    title = None
+    if reader.metadata:
+        title = reader.metadata.title
+    sections: list[str] = []
+    for page_number, page in enumerate(reader.pages, start=1):
+        text = (page.extract_text() or "").strip()
+        if text:
+            sections.append(f"## Page {page_number}\n\n{text}")
+    return "\n\n".join(sections)[:MAX_CONTENT_CHARS], title
+
+
+def _docx_bytes_to_markdown(data: bytes) -> tuple[str, str | None]:
+    document = DocxDocument(io.BytesIO(data))
+    title = document.core_properties.title or None
+    sections: list[str] = []
+
+    for paragraph in document.paragraphs:
+        text = paragraph.text.strip()
+        if text:
+            sections.append(text)
+
+    for table_number, table in enumerate(document.tables, start=1):
+        rows: list[str] = []
+        for row in table.rows:
+            cells = [cell.text.strip() for cell in row.cells]
+            if any(cells):
+                rows.append("| " + " | ".join(cells) + " |")
+        if rows:
+            sections.append(f"## Table {table_number}\n\n" + "\n".join(rows))
+
+    return "\n\n".join(sections)[:MAX_CONTENT_CHARS], title
+
+
+async def _extract_pdf_document(url: str) -> dict:
+    async with httpx.AsyncClient(timeout=SCRAPE_TIMEOUT, follow_redirects=True) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        content, title = _pdf_bytes_to_markdown(resp.content)
+        return {
+            "status": "ok",
+            "url": url,
+            "content_type": "application/pdf",
+            "file_type": "pdf",
+            "title": title,
+            "content": content,
+        }
+
+
+async def _extract_web_document(url: str) -> dict:
+    content = await _scrape(url)
+    if not content:
+        return {
+            "status": "error",
+            "url": url,
+            "content_type": "text/html",
+            "file_type": "html",
+            "title": None,
+            "content": "",
+            "error": "extraction failed",
+        }
+    return {
+        "status": "ok",
+        "url": url,
+        "content_type": "text/html",
+        "file_type": "html",
+        "title": None,
+        "content": content[:MAX_CONTENT_CHARS],
+    }
+
+
+async def _extract_docx_document(url: str) -> dict:
+    async with httpx.AsyncClient(timeout=SCRAPE_TIMEOUT, follow_redirects=True) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        content, title = _docx_bytes_to_markdown(resp.content)
+        return {
+            "status": "ok",
+            "url": url,
+            "content_type": _content_type_without_charset(resp.headers.get("content-type"))
+            or "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "file_type": "docx",
+            "title": title,
+            "content": content,
+        }
+
+
+async def _extract_text_document(url: str, file_type: str) -> dict:
+    async with httpx.AsyncClient(timeout=SCRAPE_TIMEOUT, follow_redirects=True) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        return {
+            "status": "ok",
+            "url": url,
+            "content_type": _content_type_without_charset(resp.headers.get("content-type"))
+            or mimetypes.guess_type(url)[0]
+            or "text/plain",
+            "file_type": file_type,
+            "title": None,
+            "content": resp.text[:MAX_CONTENT_CHARS],
+        }
+
+
+async def _discover_page_links(url: str) -> dict:
+    async with httpx.AsyncClient(timeout=SCRAPE_HTTP_TIMEOUT) as client:
+        resp = await client.post(
+            f"{CRAWL4AI_URL}/crawl",
+            json={"urls": [url], "priority": 6, "crawler_config": _CRAWL_CONFIG},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        task_id = data.get("task_id")
+        if task_id:
+            while True:
+                await asyncio.sleep(1)
+                status_resp = await client.get(f"{CRAWL4AI_URL}/task/{task_id}")
+                status_resp.raise_for_status()
+                status_data = status_resp.json()
+                status = status_data.get("status")
+                if status == "completed":
+                    result = _extract_crawl_result(status_data.get("result", {}))
+                    return {
+                        "status": "ok",
+                        "url": url,
+                        "title": _extract_crawl_title(result),
+                        "links": _extract_crawl_links(result, url),
+                    }
+                if status == "failed":
+                    return {
+                        "status": "error",
+                        "url": url,
+                        "title": None,
+                        "links": [],
+                        "error": "link discovery failed",
+                    }
+
+        result = _extract_crawl_result(data)
+        return {
+            "status": "ok",
+            "url": url,
+            "title": _extract_crawl_title(result),
+            "links": _extract_crawl_links(result, url),
+        }
+
+
+def _url_matches_patterns(url: str, patterns: list[str]) -> bool:
+    return any(fnmatch.fnmatch(url, pattern) for pattern in patterns)
+
+
+def _rank_document_content(query: str | None, content: str) -> tuple[str, list[dict]]:
+    if not query or not content:
+        return content[:MAX_CONTENT_CHARS], []
+    chunks = _chunk_text(content[:MAX_CONTENT_CHARS])
+    if not chunks:
+        return content[:MAX_CONTENT_CHARS], []
+    scored = _rerank_scored(query, chunks)
+    top = [{"text": chunks[idx], "score": score} for idx, score in scored[:TOP_CHUNKS_PER_PAGE]]
+    if not top:
+        return content[:MAX_CONTENT_CHARS], []
+    return "\n\n".join(item["text"] for item in top), top
+
+
+async def _extract_url_document(
+    url: str,
+    query: str | None,
+    cache: dict[str, dict],
+) -> dict:
+    if url in cache:
+        cached = cache[url]
+        content, top_chunks = _rank_document_content(query, cached.get("content", ""))
+        return {
+            **cached,
+            "content": content,
+            "top_chunks": top_chunks,
+            "cached": True,
+        }
+
+    file_type = "unknown"
+    content_type = None
+    try:
+        file_type, content_type = await _detect_file_type(url)
+        if file_type == "pdf":
+            extracted = await _extract_pdf_document(url)
+        elif file_type == "docx":
+            extracted = await _extract_docx_document(url)
+        elif file_type in {"text", "markdown", "json", "xml", "csv"}:
+            extracted = await _extract_text_document(url, file_type)
+        else:
+            extracted = await _extract_web_document(url)
+    except Exception as exc:
+        extracted = {
+            "status": "error",
+            "url": url,
+            "content_type": content_type,
+            "file_type": file_type,
+            "title": None,
+            "content": "",
+            "error": str(exc),
+        }
+
+    if extracted["status"] == "ok":
+        cache[url] = {
+            "status": extracted["status"],
+            "url": url,
+            "content_type": extracted.get("content_type"),
+            "title": extracted.get("title"),
+            "content": extracted.get("content", ""),
+        }
+        content, top_chunks = _rank_document_content(query, extracted.get("content", ""))
+        extracted["content"] = content
+        extracted["top_chunks"] = top_chunks
+        extracted["cached"] = False
+        return extracted
+
+    extracted["top_chunks"] = []
+    extracted["cached"] = False
+    return extracted
+
+
 log.info("loading reranker model=%s max_length=%d", RERANK_MODEL, RERANK_MAX_LENGTH)
 _ranker = Ranker(model_name=RERANK_MODEL, max_length=RERANK_MAX_LENGTH)
 log.info("reranker ready")
@@ -238,19 +761,37 @@ def _rerank_scored(query: str, documents: list[str]) -> list[tuple[int, float]]:
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health(_: Request) -> JSONResponse:
-    return JSONResponse({"status": "ok"})
+    return JSONResponse({"status": "ok", "reranker": {"name": "flashrank", "model": RERANK_MODEL}})
+
+
+@mcp.custom_route("/ready", methods=["GET"])
+async def ready(_: Request) -> JSONResponse:
+    searxng = await _probe_dependency(f"{SEARXNG_URL}/healthz")
+    crawl4ai = await _probe_dependency(f"{CRAWL4AI_URL}/health")
+    ready_ok = searxng["status"] == "ok" and crawl4ai["status"] == "ok"
+    payload = {
+        "status": "ok" if ready_ok else "degraded",
+        "dependencies": {
+            "searxng": searxng,
+            "crawl4ai": crawl4ai,
+            "reranker": {"status": "ok", "name": "flashrank", "model": RERANK_MODEL},
+        },
+    }
+    return JSONResponse(payload, status_code=200 if ready_ok else 503)
 
 
 
-@mcp.tool
-async def web_search(
+async def _web_search_impl(
     query: str,
     num_results: int = 10,
     scrape_top: int = MAX_SCRAPE,
     time_range: str | None = None,
+    mode: str = "balanced",
+    include_domains: list[str] | None = None,
+    exclude_domains: list[str] | None = None,
     ctx: Context | None = None,
-) -> str:
-    """Search the web, scrape top results, and return content ranked by relevance.
+) -> dict:
+    """Search the web, scrape top results, and return structured JSON ranked by relevance.
 
     Pipeline: SearXNG search -> Crawl4AI scrape -> chunk -> FlashRank reranker -> formatted output.
     Scraped pages are split into paragraphs and reranked at the chunk level, so only
@@ -263,34 +804,98 @@ async def web_search(
         scrape_top: Number of top results to scrape for full content (default 5).
         time_range: Time filter for recency: 'day', 'week', 'month', or 'year'. Use this instead of adding dates to the query. Omit or pass null for no filter.
     """
-    if time_range in (None, "null", "none", "None", ""):
-        time_range = None
+    query = _validate_query(query)
+    num_results = _validate_positive_int("num_results", num_results, maximum=MAX_NUM_RESULTS)
+    scrape_top = _validate_positive_int("scrape_top", scrape_top, maximum=MAX_SCRAPE_TOP)
+    time_range = _normalize_time_range(time_range)
+    mode = _normalize_mode(mode)
+    include_domains = _normalize_domains(include_domains, field_name="include_domains")
+    exclude_domains = _normalize_domains(exclude_domains, field_name="exclude_domains")
+    candidate_count, scrape_top = _mode_settings(mode, num_results, scrape_top)
+    started = time.monotonic()
+    warnings: list[str] = []
+    degraded = False
+    timings_ms = {"search": 0, "scrape": 0, "rerank": 0, "total": 0}
 
     # --- session state ---
     scrape_cache: dict[str, str | None] = {}
-    query_cache: dict[str, str] = {}
+    query_cache: dict[str, dict] = {}
     seen_urls: set[str] = set()
     if ctx:
-        scrape_cache = await ctx.get_state(STATE_SCRAPE_CACHE) or {}
-        query_cache = await ctx.get_state(STATE_QUERY_CACHE) or {}
-        seen_urls = set(await ctx.get_state(STATE_SEEN_URLS) or [])
+        scrape_cache = await _ctx_get_state(ctx, STATE_SCRAPE_CACHE) or {}
+        query_cache = await _ctx_get_state(ctx, STATE_QUERY_CACHE) or {}
+        seen_urls = set(await _ctx_get_state(ctx, STATE_SEEN_URLS) or [])
 
     # --- exact query cache ---
-    qkey = _query_cache_key(query, num_results, scrape_top, time_range)
+    qkey = hashlib.sha256(
+        json.dumps(
+            [
+                query.lower().strip(),
+                num_results,
+                scrape_top,
+                time_range,
+                mode,
+                include_domains,
+                exclude_domains,
+            ],
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
     if qkey in query_cache:
         log.info("query cache hit query=%r", query)
         return query_cache[qkey]
 
     # --- search ---
-    results = await _search(query, num_results=num_results, time_range=time_range)
+    search_started = time.monotonic()
+    try:
+        results = await _search(query, num_results=candidate_count, time_range=time_range)
+    except Exception as exc:
+        degraded = True
+        warnings.append(f"search failed: {exc}")
+        results = []
+    timings_ms["search"] = int((time.monotonic() - search_started) * 1000)
+    if results:
+        results = _filter_results_by_domain(results, include_domains, exclude_domains)
     if not results:
-        return f"No results found for: {query}"
+        response = {
+            "query": query,
+            "time_range": time_range,
+            "mode": mode,
+            "include_domains": include_domains,
+            "exclude_domains": exclude_domains,
+            "results": [],
+            "meta": {
+                "num_results_requested": num_results,
+                "num_results_returned": 0,
+                "scrape_top": min(scrape_top, num_results),
+                "candidate_count": candidate_count,
+                "search_backend": "searxng",
+                "reranker": {"name": "flashrank", "model": RERANK_MODEL},
+                "degraded": degraded,
+                "warnings": warnings or [f"no results found for query: {query}"],
+                "timings_ms": {
+                    **timings_ms,
+                    "total": int((time.monotonic() - started) * 1000),
+                },
+            },
+        }
+        query_cache[qkey] = response
+        if ctx:
+            await _ctx_set_state(ctx, STATE_QUERY_CACHE, query_cache)
+        return response
     results = _dedup_results(results)
+    results = results[:candidate_count]
 
     # --- scrape (cache-aware) ---
     to_scrape = min(scrape_top, len(results))
+    scrape_started = time.monotonic()
     scrape_tasks = [_scrape_cached(r["url"], scrape_cache) for r in results[:to_scrape]]
     scraped = await asyncio.gather(*scrape_tasks)
+    timings_ms["scrape"] = int((time.monotonic() - scrape_started) * 1000)
+    scrape_failures = sum(1 for content in scraped if content is None)
+    if scrape_failures:
+        degraded = True
+        warnings.append(f"scrape failed for {scrape_failures} of {to_scrape} pages")
 
     # --- build entries ---
     entries: list[dict] = []
@@ -327,7 +932,17 @@ async def web_search(
     all_chunks, chunk_to_entry = _dedup_chunks(all_chunks, chunk_to_entry)
 
     # --- rerank at the chunk level ---
-    scored = _rerank_scored(query, all_chunks)
+    rerank_started = time.monotonic()
+    rerank_failed = False
+    try:
+        scored = _rerank_scored(query, all_chunks)
+    except Exception as exc:
+        log.warning("rerank failed query=%r err=%s", query, exc)
+        warnings.append(f"rerank failed: {exc}")
+        degraded = True
+        rerank_failed = True
+        scored = []
+    timings_ms["rerank"] = int((time.monotonic() - rerank_started) * 1000)
 
     # --- group scores by entry, select top-K chunks per page ---
     entry_chunks: dict[int, list[tuple[str, float]]] = defaultdict(list)
@@ -340,90 +955,444 @@ async def web_search(
         entry_chunks[eidx] = entry_chunks[eidx][:TOP_CHUNKS_PER_PAGE]
 
     # --- rank pages by best chunk score ---
-    entry_best: dict[int, float] = {
+    entry_best: dict[int, float | None] = {
         eidx: chunks[0][1] for eidx, chunks in entry_chunks.items() if chunks
     }
-    ranked_entry_idxs = sorted(entry_best, key=entry_best.get, reverse=True)
-    for i in range(len(entries)):
-        if i not in entry_best:
-            ranked_entry_idxs.append(i)
+    if rerank_failed:
+        ranked_entry_idxs = list(range(len(entries)))
+    else:
+        ranked_entry_idxs = sorted(entry_best, key=entry_best.get, reverse=True)
+        for i in range(len(entries)):
+            if i not in entry_best:
+                ranked_entry_idxs.append(i)
+    ranked_entry_idxs = _diversify_ranked_entries(ranked_entry_idxs, entries)
 
-    # --- format with novelty annotations ---
-    sections: list[str] = []
+    # --- format structured output ---
+    structured_results: list[dict] = []
     new_urls: list[str] = []
     for rank, eidx in enumerate(ranked_entry_idxs, 1):
         entry = entries[eidx]
         url = entry["url"]
-        seen_tag = " *(previously seen)*" if url in seen_urls else ""
-
+        normalized_url = _normalize_url(url)
         top = entry_chunks.get(eidx, [])
         if top:
-            body = "\n\n".join(chunk for chunk, _ in top)
+            content = "\n\n".join(chunk for chunk, _ in top)
         else:
-            body = entry["content"]
+            content = entry["content"]
 
-        section = f"## {rank}. [{entry['title']}]({url}){seen_tag}\n\n{body}\n"
-        sections.append(section)
-        new_urls.append(url)
+        structured_results.append({
+            "rank": rank,
+            "search_rank": eidx + 1,
+            "title": entry["title"],
+            "url": url,
+            "normalized_url": normalized_url,
+            "domain": _domain_from_url(url),
+            "snippet": results[eidx].get("content", ""),
+            "content": content,
+            "top_chunks": [{"text": chunk, "score": score} for chunk, score in top],
+            "score": entry_best.get(eidx),
+            "scraped": entry["scraped"],
+            "previously_seen": normalized_url in seen_urls,
+        })
+        new_urls.append(normalized_url)
 
-    header = f"# Search results for: {query}\n\n"
-    output = header + "\n---\n\n".join(sections)
+    response = {
+        "query": query,
+        "time_range": time_range,
+        "mode": mode,
+        "include_domains": include_domains,
+        "exclude_domains": exclude_domains,
+        "results": structured_results,
+        "meta": {
+            "num_results_requested": num_results,
+            "num_results_returned": len(structured_results),
+            "scrape_top": to_scrape,
+            "candidate_count": candidate_count,
+            "search_backend": "searxng",
+            "reranker": {"name": "flashrank", "model": RERANK_MODEL},
+            "degraded": degraded,
+            "warnings": warnings,
+            "timings_ms": {
+                **timings_ms,
+                "total": int((time.monotonic() - started) * 1000),
+            },
+        },
+    }
 
     # --- persist session state ---
     seen_urls.update(new_urls)
-    query_cache[qkey] = output
+    query_cache[qkey] = response
     if ctx:
-        await ctx.set_state(STATE_SCRAPE_CACHE, scrape_cache)
-        await ctx.set_state(STATE_QUERY_CACHE, query_cache)
-        await ctx.set_state(STATE_SEEN_URLS, list(seen_urls))
+        await _ctx_set_state(ctx, STATE_SCRAPE_CACHE, scrape_cache)
+        await _ctx_set_state(ctx, STATE_QUERY_CACHE, query_cache)
+        await _ctx_set_state(ctx, STATE_SEEN_URLS, list(seen_urls))
 
     log.info(
         "query=%r chunks=%d pages=%d scrape_cache=%d query_cache=%d seen=%d",
         query, len(all_chunks), len(entries), len(scrape_cache), len(query_cache), len(seen_urls),
     )
 
-    return output
+    return response
 
 
 @mcp.tool
-async def fetch_page(
-    url: str,
+async def web_search(
+    query: str,
+    num_results: int = 10,
+    scrape_top: int = MAX_SCRAPE,
+    time_range: str | None = None,
+    mode: str = "balanced",
+    include_domains: list[str] | None = None,
+    exclude_domains: list[str] | None = None,
     ctx: Context | None = None,
-) -> str:
-    """Fetch a single web page and return its content as markdown.
+) -> dict:
+    return await _web_search_impl(
+        query=query,
+        num_results=num_results,
+        scrape_top=scrape_top,
+        time_range=time_range,
+        mode=mode,
+        include_domains=include_domains,
+        exclude_domains=exclude_domains,
+        ctx=ctx,
+    )
 
-    Scrapes the URL via Crawl4AI, splits into chunks, and returns the full text.
-    Uses the session scrape cache — previously fetched pages are returned instantly.
 
-    Args:
-        url: The URL to fetch.
+async def _extract_urls_impl(
+    urls: list[str],
+    query: str | None = None,
+    ctx: Context | None = None,
+) -> dict:
+    """Extract a batch of URLs with per-URL status reporting.
+
+    Uses Crawl4AI for web pages and pypdf for PDF documents.
+    Returns markdown content only in v1.
     """
-    scrape_cache: dict[str, str | None] = {}
+    urls = _validate_urls(urls, maximum=MAX_EXTRACT_URLS)
+    normalized_query = query.strip() if query else None
+    started = time.monotonic()
+
+    extract_cache: dict[str, dict] = {}
     if ctx:
-        scrape_cache = await ctx.get_state(STATE_SCRAPE_CACHE) or {}
+        extract_cache = await _ctx_get_state(ctx, STATE_EXTRACT_CACHE) or {}
 
-    content = await _scrape_cached(url, scrape_cache)
+    documents = await asyncio.gather(*[
+        _extract_url_document(url, normalized_query, extract_cache)
+        for url in urls
+    ])
+
+    results: list[dict] = []
+    urls_succeeded = 0
+    urls_failed = 0
+    for document in documents:
+        if document["status"] == "ok":
+            urls_succeeded += 1
+        else:
+            urls_failed += 1
+        url = document["url"]
+        results.append({
+            "url": url,
+            "normalized_url": _normalize_url(url),
+            "domain": _domain_from_url(url),
+            "status": document["status"],
+            "content_type": document.get("content_type"),
+            "file_type": document.get("file_type"),
+            "title": document.get("title"),
+            "content": document.get("content", ""),
+            "top_chunks": document.get("top_chunks", []),
+            "cached": document.get("cached", False),
+            "error": document.get("error"),
+        })
 
     if ctx:
-        await ctx.set_state(STATE_SCRAPE_CACHE, scrape_cache)
+        await _ctx_set_state(ctx, STATE_EXTRACT_CACHE, extract_cache)
 
-    if not content:
-        return f"Failed to fetch: {url}"
-
-    truncated = content[:MAX_CONTENT_CHARS]
-    log.info("fetch_page url=%s chars=%d cached=%d", url, len(truncated), len(scrape_cache))
-    return f"# Content from {url}\n\n{truncated}"
-
+    response = {
+        "query": normalized_query,
+        "results": results,
+        "meta": {
+            "urls_requested": len(urls),
+            "urls_succeeded": urls_succeeded,
+            "urls_failed": urls_failed,
+            "timings_ms": {
+                "total": int((time.monotonic() - started) * 1000),
+            },
+        },
+    }
+    log.info("extract_urls requested=%d succeeded=%d failed=%d", len(urls), urls_succeeded, urls_failed)
+    return response
 
 
 @mcp.tool
-async def site_search(
+async def extract_url(
+    url: str,
+    query: str | None = None,
+    ctx: Context | None = None,
+) -> dict:
+    """Extract a single URL with the same structured schema as extract_urls."""
+    response = await _extract_urls_impl(urls=[url], query=query, ctx=ctx)
+    result = response["results"][0]
+    return {
+        "query": response["query"],
+        "result": result,
+        "meta": {
+            **response["meta"],
+            "url": result["url"],
+        },
+    }
+
+
+@mcp.tool
+async def extract_urls(
+    urls: list[str],
+    query: str | None = None,
+    ctx: Context | None = None,
+) -> dict:
+    return await _extract_urls_impl(urls=urls, query=query, ctx=ctx)
+
+
+async def _map_site_impl(
+    url: str,
+    max_urls: int = 25,
+    max_depth: int = 1,
+    include_patterns: list[str] | None = None,
+    exclude_patterns: list[str] | None = None,
+    same_domain_only: bool = True,
+) -> dict:
+    """Discover in-scope URLs from a site using Crawl4AI link extraction."""
+    root_url = _validate_urls([url], maximum=1)[0]
+    max_urls = _validate_positive_int("max_urls", max_urls, maximum=MAX_MAP_URLS)
+    max_depth = _validate_positive_int("max_depth", max_depth, maximum=MAX_MAP_DEPTH)
+    include_patterns = _normalize_glob_patterns(include_patterns, field_name="include_patterns")
+    exclude_patterns = _normalize_glob_patterns(exclude_patterns, field_name="exclude_patterns")
+
+    started = time.monotonic()
+    root_domain = _domain_from_url(root_url).lower()
+    bare_root_domain = root_domain[4:] if root_domain.startswith("www.") else root_domain
+
+    queue = deque([(root_url, 0, None)])
+    visited_pages: set[str] = set()
+    discovered: dict[str, dict] = {}
+    warnings: list[str] = []
+
+    while queue and len(discovered) < max_urls:
+        current_url, depth, discovered_from = queue.popleft()
+        normalized_current = _normalize_url(current_url)
+        if normalized_current in visited_pages:
+            continue
+        visited_pages.add(normalized_current)
+
+        current_entry = discovered.setdefault(normalized_current, {
+            "url": current_url,
+            "normalized_url": normalized_current,
+            "domain": _domain_from_url(current_url),
+            "title": None,
+            "link_text": None,
+            "depth": depth,
+            "discovered_from": discovered_from,
+            "link_type": "seed" if depth == 0 else "internal",
+        })
+
+        if depth >= max_depth:
+            continue
+
+        try:
+            page = await asyncio.wait_for(_discover_page_links(current_url), timeout=SCRAPE_TIMEOUT)
+        except asyncio.TimeoutError:
+            warnings.append(f"link discovery timed out for {current_url}")
+            continue
+        except httpx.HTTPError as exc:
+            warnings.append(f"link discovery failed for {current_url}: {exc}")
+            continue
+
+        if page["status"] != "ok":
+            warnings.append(page.get("error") or f"link discovery failed for {current_url}")
+            continue
+
+        current_entry["title"] = page.get("title") or current_entry["title"]
+
+        for link in page.get("links", []):
+            link_url = link["url"]
+            normalized_link = _normalize_url(link_url)
+            domain = _domain_from_url(link_url).lower()
+            bare_domain = domain[4:] if domain.startswith("www.") else domain
+
+            if same_domain_only and not _match_domain(bare_domain, [bare_root_domain]):
+                continue
+            if include_patterns and not _url_matches_patterns(link_url, include_patterns):
+                continue
+            if exclude_patterns and _url_matches_patterns(link_url, exclude_patterns):
+                continue
+
+            if normalized_link not in discovered:
+                if len(discovered) >= max_urls:
+                    break
+                discovered[normalized_link] = {
+                    "url": link_url,
+                    "normalized_url": normalized_link,
+                    "domain": _domain_from_url(link_url),
+                    "title": link.get("title"),
+                    "link_text": link.get("text"),
+                    "depth": depth + 1,
+                    "discovered_from": current_url,
+                    "link_type": link.get("link_type", "internal"),
+                }
+
+            if depth + 1 <= max_depth and normalized_link not in visited_pages:
+                queue.append((link_url, depth + 1, current_url))
+
+    results = list(discovered.values())
+    for rank, entry in enumerate(results, start=1):
+        entry["rank"] = rank
+
+    response = {
+        "url": root_url,
+        "results": results,
+        "meta": {
+            "max_urls_requested": max_urls,
+            "max_depth": max_depth,
+            "urls_returned": len(results),
+            "pages_visited": len(visited_pages),
+            "same_domain_only": same_domain_only,
+            "warnings": warnings,
+            "timings_ms": {
+                "total": int((time.monotonic() - started) * 1000),
+            },
+        },
+    }
+    log.info(
+        "map_site url=%s returned=%d visited=%d warnings=%d",
+        root_url,
+        len(results),
+        len(visited_pages),
+        len(warnings),
+    )
+    return response
+
+
+@mcp.tool
+async def map_site(
+    url: str,
+    max_urls: int = 25,
+    max_depth: int = 1,
+    include_patterns: list[str] | None = None,
+    exclude_patterns: list[str] | None = None,
+    same_domain_only: bool = True,
+) -> dict:
+    return await _map_site_impl(
+        url=url,
+        max_urls=max_urls,
+        max_depth=max_depth,
+        include_patterns=include_patterns,
+        exclude_patterns=exclude_patterns,
+        same_domain_only=same_domain_only,
+    )
+
+
+@mcp.tool
+async def crawl_site(
+    url: str,
+    query: str | None = None,
+    max_urls: int = 10,
+    max_depth: int = 1,
+    include_patterns: list[str] | None = None,
+    exclude_patterns: list[str] | None = None,
+    same_domain_only: bool = True,
+    ctx: Context | None = None,
+) -> dict:
+    """Discover and extract a bounded set of in-scope pages from a site."""
+    effective_max_urls = _validate_positive_int(
+        "max_urls",
+        max_urls,
+        maximum=min(MAX_MAP_URLS, MAX_EXTRACT_URLS),
+    )
+    started = time.monotonic()
+
+    mapped = await _map_site_impl(
+        url=url,
+        max_urls=effective_max_urls,
+        max_depth=max_depth,
+        include_patterns=include_patterns,
+        exclude_patterns=exclude_patterns,
+        same_domain_only=same_domain_only,
+    )
+    mapped_urls = [result["url"] for result in mapped["results"]]
+    extracted = await _extract_urls_impl(urls=mapped_urls, query=query, ctx=ctx)
+
+    extract_by_normalized_url = {
+        result["normalized_url"]: result
+        for result in extracted["results"]
+    }
+
+    results: list[dict] = []
+    for mapped_result in mapped["results"]:
+        extracted_result = extract_by_normalized_url.get(mapped_result["normalized_url"])
+        if not extracted_result:
+            continue
+        combined = {
+            **mapped_result,
+            "status": extracted_result["status"],
+            "content_type": extracted_result.get("content_type"),
+            "content": extracted_result.get("content", ""),
+            "top_chunks": extracted_result.get("top_chunks", []),
+            "cached": extracted_result.get("cached", False),
+            "error": extracted_result.get("error"),
+        }
+        if extracted_result.get("title"):
+            combined["title"] = extracted_result["title"]
+        results.append(combined)
+
+    if query:
+        results.sort(
+            key=lambda result: max(
+                (chunk.get("score") or 0.0) for chunk in result.get("top_chunks", [])
+            ) if result.get("top_chunks") else float("-inf"),
+            reverse=True,
+        )
+        for rank, result in enumerate(results, start=1):
+            result["rank"] = rank
+
+    response = {
+        "url": mapped["url"],
+        "query": query.strip() if query else None,
+        "results": results,
+        "meta": {
+            "max_urls_requested": effective_max_urls,
+            "max_depth": max_depth,
+            "urls_discovered": mapped["meta"]["urls_returned"],
+            "urls_succeeded": extracted["meta"]["urls_succeeded"],
+            "urls_failed": extracted["meta"]["urls_failed"],
+            "same_domain_only": same_domain_only,
+            "warnings": [
+                *mapped["meta"].get("warnings", []),
+            ],
+            "timings_ms": {
+                "map": mapped["meta"]["timings_ms"]["total"],
+                "extract": extracted["meta"]["timings_ms"]["total"],
+                "total": int((time.monotonic() - started) * 1000),
+            },
+        },
+    }
+    log.info(
+        "crawl_site url=%s discovered=%d succeeded=%d failed=%d",
+        url,
+        mapped["meta"]["urls_returned"],
+        extracted["meta"]["urls_succeeded"],
+        extracted["meta"]["urls_failed"],
+    )
+    return response
+
+
+async def _site_search_impl(
     query: str,
     site: str,
     num_results: int = 10,
     scrape_top: int = MAX_SCRAPE,
+    mode: str = "balanced",
+    include_domains: list[str] | None = None,
+    exclude_domains: list[str] | None = None,
     ctx: Context | None = None,
-) -> str:
+) -> dict:
     """Search within a specific website or domain.
 
     Prepends 'site:<domain>' to the query and runs the full search pipeline.
@@ -435,11 +1404,40 @@ async def site_search(
         num_results: Number of search results to fetch (default 10).
         scrape_top: Number of top results to scrape for full content (default 5).
     """
-    scoped_query = f"site:{site} {query}"
-    return await web_search(
+    normalized_site = site.strip()
+    if not normalized_site:
+        raise ValueError("site must not be empty")
+    scoped_query = f"site:{normalized_site} {query}"
+    return await _web_search_impl(
         query=scoped_query,
         num_results=num_results,
         scrape_top=scrape_top,
+        mode=mode,
+        include_domains=include_domains,
+        exclude_domains=exclude_domains,
+        ctx=ctx,
+    )
+
+
+@mcp.tool
+async def site_search(
+    query: str,
+    site: str,
+    num_results: int = 10,
+    scrape_top: int = MAX_SCRAPE,
+    mode: str = "balanced",
+    include_domains: list[str] | None = None,
+    exclude_domains: list[str] | None = None,
+    ctx: Context | None = None,
+) -> dict:
+    return await _site_search_impl(
+        query=query,
+        site=site,
+        num_results=num_results,
+        scrape_top=scrape_top,
+        mode=mode,
+        include_domains=include_domains,
+        exclude_domains=exclude_domains,
         ctx=ctx,
     )
 
