@@ -674,7 +674,7 @@ def _pdf_extract_all_pages(data: bytes) -> tuple[list[dict], str | None, int]:
     doc = pymupdf.Document(stream=data, filetype="pdf")
     title = doc.metadata.get("title") or None
     total_pages = doc.page_count
-    chunks = pymupdf4llm.to_markdown(doc, page_chunks=True, header=False, footer=False)
+    chunks = pymupdf4llm.to_markdown(doc, page_chunks=True, hdr_info=False)
     pages: list[dict] = []
     for chunk in chunks:
         text = chunk.get("text", "").strip()
