@@ -756,6 +756,7 @@ async def crawl_impl(
     for result in results:
         result.pop("crawl_score", None)
 
+    urls_truncated = len(entries) - len(results)
     response = {
         "url": root_url,
         "query": query.strip() if query else None,
@@ -764,6 +765,8 @@ async def crawl_impl(
             "max_urls_requested": effective_max_urls,
             "max_depth": max_depth,
             "urls_discovered": len(entries),
+            "urls_returned": len(results),
+            "urls_truncated_by_limit": urls_truncated,
             "urls_succeeded": sum(1 for result in results if result["status"] == "ok"),
             "urls_failed": sum(1 for result in results if result["status"] != "ok"),
             "same_domain_only": same_domain_only,

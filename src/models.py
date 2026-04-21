@@ -157,6 +157,8 @@ class CrawlMetaModel(StrictModel):
     max_urls_requested: int
     max_depth: int
     urls_discovered: int
+    urls_returned: int
+    urls_truncated_by_limit: int
     urls_succeeded: int
     urls_failed: int
     same_domain_only: bool

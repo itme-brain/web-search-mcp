@@ -128,7 +128,11 @@ def _format_crawl_results(response: dict) -> str:
     if response.get("query"):
         parts.append(f"query: {response['query']}")
     meta = response.get("meta", {})
-    parts.append(f"succeeded: {meta.get('urls_succeeded', 0)}")
+    discovered = meta.get("urls_discovered", 0)
+    returned = meta.get("urls_returned", meta.get("urls_succeeded", 0))
+    parts.append(f"pages: {returned} returned of {discovered} discovered")
+    if meta.get("urls_truncated_by_limit"):
+        parts.append(f"note: {meta['urls_truncated_by_limit']} additional page(s) available — increase max_urls to see more")
     if meta.get("urls_failed"):
         parts.append(f"failed: {meta['urls_failed']}")
     warnings = meta.get("warnings", [])
