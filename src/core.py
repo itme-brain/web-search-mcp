@@ -605,6 +605,20 @@ def _extract_crawl_links(result: dict, base_url: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Crawl4AI configs + HTTP layer (retry, poll, scrape, discover)
 # ---------------------------------------------------------------------------
+
+# Tor proxy for Crawl4AI (Playwright/Chromium).  Chromium doesn't reliably
+# handle socks5h://, so we route through the Privoxy HTTP bridge that
+# dperson/torproxy exposes on port 8118 alongside the SOCKS port.
+# SearXNG uses socks5h://tor:9050 directly (configured in settings.yml).
+_CRAWL_BROWSER_CONFIG = {
+    "type": "BrowserConfig",
+    "params": {
+        "proxy_config": {
+            "server": "http://tor:8118",
+        },
+    },
+}
+
 _DEFAULT_CRAWL_CONFIG = {
     "type": "CrawlerRunConfig",
     "params": {
@@ -749,6 +763,7 @@ async def _crawl_post(
         json={
             "urls": [url],
             "priority": priority,
+            "browser_config": _CRAWL_BROWSER_CONFIG,
             "crawler_config": crawler_config or _DEFAULT_CRAWL_CONFIG,
         },
     )
