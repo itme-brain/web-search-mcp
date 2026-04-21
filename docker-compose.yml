@@ -38,6 +38,9 @@ services:
     healthcheck:
       <<: *healthcheck-defaults
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz', timeout=3).read()"]
+    depends_on:
+      tor:
+        condition: service_healthy
 
   crawl4ai:
     image: ${CRAWL4AI_IMAGE:-unclecode/crawl4ai:0.8.6}
