@@ -152,18 +152,17 @@ async def map(
 @mcp.tool(output_schema=models.CrawlResponseModel.model_json_schema())
 async def crawl(
     url: str,
-    query: str | None = None,
     max_urls: int = 10,
     max_depth: int = 2,
     include_patterns: list[str] | None = None,
     same_domain_only: bool = True,
-    ctx: Context | None = None,
 ) -> ToolResult:
     """Discover URLs on a site and fetch their content.
 
+    Pure discovery + extraction. For query-based relevance ranking use `search` with `include_domains` instead.
+
     Args:
         url: Root URL to start crawl from.
-        query: Optional. Reranks discovered pages by best-chunk relevance so the most useful pages appear first.
         max_urls: Maximum pages to crawl (1-20).
         max_depth: How many link hops to follow from the root (1-3).
         include_patterns: Shell-glob patterns against the full URL; keep only matches.
@@ -171,12 +170,10 @@ async def crawl(
     """
     response = await impls.crawl_impl(
         url=url,
-        query=query,
         max_urls=max_urls,
         max_depth=max_depth,
         include_patterns=include_patterns,
         same_domain_only=same_domain_only,
-        ctx=ctx,
     )
     return _tool_result(response, _format_crawl_results)
 

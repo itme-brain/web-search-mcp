@@ -165,51 +165,17 @@ async def test_map_markdown_does_not_leak_metadata_fields():
 
 @pytest.mark.asyncio
 async def test_crawl_markdown_does_not_leak_metadata_fields():
-    map_mock = AsyncMock(return_value={
-        "url": "https://docs.example.com",
-        "results": [
-            {
-                "rank": 1,
-                "url": "https://docs.example.com",
-                "normalized_url": "https://docs.example.com",
-                "domain": "docs.example.com",
-                "title": "Home",
-                "link_text": None,
-                "depth": 0,
-                "discovered_from": None,
-                "link_type": "seed",
-            },
-        ],
-        "meta": {"urls_returned": 1, "warnings": [], "timings_ms": {"total": 1}},
-    })
-    extract_mock = AsyncMock(return_value={
-        "query": "q",
-        "results": [
-            {
-                "url": "https://docs.example.com",
-                "normalized_url": "https://docs.example.com",
-                "domain": "docs.example.com",
-                "status": "ok",
-                "content_type": "text/html",
-                "title": "Home",
-                "content": "# Home",
-                "top_chunks": [{"text": "home", "score": 0.9}],
-                "cached": True,
-                "error": None,
-            },
-        ],
-        "meta": {
-            "urls_requested": 1, "urls_succeeded": 1, "urls_failed": 0,
-            "timings_ms": {"total": 1},
+    deep_crawl_mock = AsyncMock(return_value=[
+        {
+            "url": "https://docs.example.com",
+            "metadata": {"title": "Home", "depth": 0},
+            "markdown": {"raw_markdown": "# Home\n\nWelcome to the docs."},
         },
-    })
+    ])
 
-    with (
-        patch(PATCH_MAP_IMPL, map_mock),
-        patch(PATCH_EXTRACT_IMPL, extract_mock),
-    ):
+    with patch("core._deep_crawl", deep_crawl_mock):
         markdown = await server_module.crawl.fn(
-            "https://docs.example.com", query="q", max_urls=1,
+            "https://docs.example.com", max_urls=1,
         )
 
     for field in _LEAKY_FIELDS:

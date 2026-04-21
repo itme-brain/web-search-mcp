@@ -125,8 +125,6 @@ def _format_map_results(response: dict) -> str:
 def _format_crawl_results(response: dict) -> str:
     """Format crawl response as markdown."""
     parts = [f"url: {response['url']}"]
-    if response.get("query"):
-        parts.append(f"query: {response['query']}")
     meta = response.get("meta", {})
     discovered = meta.get("urls_discovered", 0)
     returned = meta.get("urls_returned", meta.get("urls_succeeded", 0))

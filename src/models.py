@@ -147,10 +147,8 @@ class CrawlResultModel(StrictModel):
     chars_shown: int
     offset: int
     total_chars: int
-    top_chunks: list[ChunkModel]
     cached: bool
     error: str | None = None
-    score: float | None = None
 
 
 class CrawlMetaModel(StrictModel):
@@ -168,7 +166,6 @@ class CrawlMetaModel(StrictModel):
 
 class CrawlResponseModel(StrictModel):
     url: str
-    query: str | None = None
     results: list[CrawlResultModel]
     meta: CrawlMetaModel
 

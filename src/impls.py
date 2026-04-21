@@ -11,7 +11,6 @@ import json
 import logging
 import time
 from collections import defaultdict
-from urllib.parse import urlparse
 
 from fastmcp import Context
 
@@ -42,23 +41,6 @@ from core import (
 log = logging.getLogger("web-search-mcp")
 
 
-def _url_path_depth(url: str) -> int:
-    path = urlparse(url).path
-    return sum(1 for segment in path.split("/") if segment)
-
-
-def _crawl_result_rank_key(result: dict) -> tuple:
-    """Prefer Crawl4AI deep-crawl ordering, then our chunk reranker."""
-    crawl_score = result.get("crawl_score")
-    top_score = result.get("score")
-    return (
-        crawl_score is not None,
-        crawl_score if crawl_score is not None else float("-inf"),
-        top_score if top_score is not None else float("-inf"),
-        result.get("depth", 0),
-        _url_path_depth(result.get("url", "")),
-        -(result.get("search_rank") or result.get("rank") or 0),
-    )
 
 
 def _validated_response(model_cls, response: dict) -> dict:
@@ -541,14 +523,16 @@ async def map_impl(
 
 async def crawl_impl(
     url: str,
-    query: str | None = None,
     max_urls: int = 10,
     max_depth: int = 2,
     include_patterns: list[str] | None = None,
     same_domain_only: bool = True,
-    ctx: Context | None = None,
 ) -> dict:
-    """Deep-crawl a site through Crawl4AI and return a structured dict."""
+    """Deep-crawl a site through Crawl4AI and return a structured dict.
+
+    Pure discovery + extraction — no query-based reranking.  For relevance
+    ranking use search_impl with include_domains instead.
+    """
     effective_max_urls = core._validate_positive_int(
         "max_urls",
         max_urls,
@@ -559,19 +543,13 @@ async def crawl_impl(
     include_patterns = core._normalize_glob_patterns(include_patterns, field_name="include_patterns")
     warnings: list[dict] = []
 
-    crawl_budget = effective_max_urls
-    if query:
-        # Explore a wider candidate set, then trim after chunk reranking.
-        crawl_budget = min(effective_max_urls * 3, _MAX_EXTRACT_URLS)
-
     try:
         crawled_pages = await core._deep_crawl(
             root_url,
             max_depth=max_depth,
-            max_pages=crawl_budget,
+            max_pages=effective_max_urls,
             same_domain_only=same_domain_only,
             include_patterns=include_patterns,
-            query=query,
         )
     except Exception as exc:
         warnings.append(core._warning("crawl_failed", "crawl4ai", str(exc)))
@@ -612,21 +590,17 @@ async def crawl_impl(
             "chars_shown": len(raw_content),
             "offset": 0,
             "total_chars": len(raw_content),
-            "top_chunks": [],
             "cached": False,
             "error": None if status == "ok" else "extraction failed",
-            "crawl_score": metadata.get("score"),
-            "score": None,
         }
         entries.append(entry)
 
     # ----- Fallback: discover + scrape when deep crawl finds too few pages -----
-    if len(entries) <= 1 and len(entries) < crawl_budget:
+    if len(entries) <= 1 and len(entries) < effective_max_urls:
         try:
             discovery = await core._discover_page_links(root_url)
             domain_patterns = core._domain_filter_patterns(root_url, same_domain_only)
 
-            # Collect candidate URLs from discovered links
             candidates: list[dict] = []
             for link in discovery.get("links", []):
                 link_url = link.get("url")
@@ -644,21 +618,7 @@ async def crawl_impl(
                 candidates.append({"url": link_url, "normalized_url": normalized_url, "link": link})
                 seen_normalized_urls.add(normalized_url)
 
-            # If there's a query, rough-rank candidates by keyword overlap in
-            # the link URL and anchor text so we scrape the most promising first.
-            if query and candidates:
-                keywords = core._query_keywords(query)
-                def _link_keyword_score(cand: dict) -> int:
-                    haystack = (
-                        cand["url"].lower() + " " +
-                        (cand["link"].get("text") or "").lower() + " " +
-                        (cand["link"].get("title") or "").lower()
-                    )
-                    return sum(1 for kw in keywords if kw in haystack)
-                candidates.sort(key=_link_keyword_score, reverse=True)
-
-            # Scrape top candidates concurrently
-            scrape_limit = crawl_budget - len(entries)
+            scrape_limit = effective_max_urls - len(entries)
             to_scrape = candidates[:scrape_limit]
 
             if to_scrape:
@@ -688,78 +648,18 @@ async def crawl_impl(
                         "chars_shown": len(raw_content),
                         "offset": 0,
                         "total_chars": len(raw_content),
-                        "top_chunks": [],
                         "cached": False,
                         "error": None if status == "ok" else "extraction failed",
-                        "crawl_score": None,
-                        "score": None,
                     }
                     entries.append(entry)
         except Exception as exc:
             warnings.append(core._warning("fallback_discovery_failed", "crawl4ai", str(exc)))
 
-    if query and entries:
-        all_chunks: list[str] = []
-        chunk_to_entry: list[int] = []
-        for i, entry in enumerate(entries):
-            chunks = core._chunk_text(entry["content"]) if entry["content"] else []
-            for chunk in chunks:
-                all_chunks.append(chunk)
-                chunk_to_entry.append(i)
-
-        all_chunks, chunk_to_entry = core._dedup_chunks(all_chunks, chunk_to_entry)
-
-        rerank_failed = False
-        try:
-            scored = await core._rerank_scored(query, all_chunks)
-        except Exception as exc:
-            warnings.append(core._warning("rerank_failed", "flashrank", str(exc)))
-            rerank_failed = True
-            scored = []
-
-        entry_chunks: dict[int, list[tuple[str, float]]] = defaultdict(list)
-        for chunk_idx, score in scored:
-            eidx = chunk_to_entry[chunk_idx]
-            entry_chunks[eidx].append((all_chunks[chunk_idx], score))
-
-        for eidx in entry_chunks:
-            entry_chunks[eidx].sort(key=lambda item: item[1], reverse=True)
-            entry_chunks[eidx] = entry_chunks[eidx][:_TOP_CHUNKS]
-
-        for eidx, entry in enumerate(entries):
-            top = entry_chunks.get(eidx, [])
-            entry["top_chunks"] = [{"text": chunk, "score": score} for chunk, score in top]
-            entry["score"] = top[0][1] if top else None
-            if top:
-                entry["content"] = _CHUNK_GAP.join(chunk for chunk, _ in top)
-                entry["chars_shown"] = len(entry["content"])
-                entry["total_chars"] = len(entry["content"])
-
-        if not rerank_failed:
-            entries.sort(key=_crawl_result_rank_key, reverse=True)
-            # Drop entries whose best chunk scored below the noise threshold.
-            noise_count = len(entries)
-            entries = [
-                e for e in entries
-                if e.get("score") is None or e["score"] >= _MIN_RELEVANCE_SCORE
-            ]
-            noise_count -= len(entries)
-            if noise_count:
-                warnings.append(core._warning(
-                    "low_relevance_filtered", "flashrank",
-                    f"{noise_count} page(s) dropped below relevance threshold",
-                ))
-        for rank, result in enumerate(entries, start=1):
-            result["rank"] = rank
-
     results = entries[:effective_max_urls]
-    for result in results:
-        result.pop("crawl_score", None)
 
     urls_truncated = len(entries) - len(results)
     response = {
         "url": root_url,
-        "query": query.strip() if query else None,
         "results": results,
         "meta": {
             "max_urls_requested": effective_max_urls,

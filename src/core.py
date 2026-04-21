@@ -639,10 +639,6 @@ _MAP_CRAWL_CONFIG = {
 }
 
 
-def _query_keywords(query: str) -> list[str]:
-    return sorted({term for term in _WORD_SPLIT.split(query.lower()) if len(term) >= 2})
-
-
 def _domain_filter_patterns(root_url: str, same_domain_only: bool) -> list[str]:
     if not same_domain_only:
         return []
@@ -694,12 +690,10 @@ def _deep_crawl_config(
     max_pages: int,
     same_domain_only: bool,
     include_patterns: list[str] | None = None,
-    query: str | None = None,
     prefetch: bool = False,
 ) -> dict:
     base_config = _MAP_CRAWL_CONFIG if prefetch else _DEFAULT_CRAWL_CONFIG
     params = dict(base_config["params"])
-    strategy_type = "BFSDeepCrawlStrategy"
     strategy_params: dict = {
         "max_depth": max_depth,
         "include_external": not same_domain_only,
@@ -713,18 +707,8 @@ def _deep_crawl_config(
     if filter_chain:
         strategy_params["filter_chain"] = filter_chain
 
-    if query:
-        strategy_type = "BestFirstCrawlingStrategy"
-        strategy_params["url_scorer"] = {
-            "type": "KeywordRelevanceScorer",
-            "params": {
-                "keywords": _query_keywords(query),
-                "weight": 1.0,
-            },
-        }
-
     params["deep_crawl_strategy"] = {
-        "type": strategy_type,
+        "type": "BFSDeepCrawlStrategy",
         "params": strategy_params,
     }
     if prefetch:
@@ -942,7 +926,6 @@ async def _deep_crawl(
     max_pages: int,
     same_domain_only: bool,
     include_patterns: list[str] | None = None,
-    query: str | None = None,
     prefetch: bool = False,
 ) -> list[dict]:
     crawler_config = _deep_crawl_config(
@@ -951,7 +934,6 @@ async def _deep_crawl(
         max_pages=max_pages,
         same_domain_only=same_domain_only,
         include_patterns=include_patterns,
-        query=query,
         prefetch=prefetch,
     )
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
