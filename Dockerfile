@@ -10,6 +10,10 @@ COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /usr/local/bin/uv
 
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libmagic1 \
+    && rm -rf /var/lib/apt/lists/*
+
 # --require-hashes forces pip/uv to verify every wheel's sha256 against
 # requirements.txt before install; any tampered or swapped wheel fails
 # the build instead of landing silently in the image.
