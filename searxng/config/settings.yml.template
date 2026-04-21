@@ -10,6 +10,8 @@ use_default_settings:
       - duckduckgo
       - duckduckgo news
       - startpage
+      - mojeek
+      - stackoverflow
       - wikipedia
       - github
       - arxiv
@@ -33,6 +35,10 @@ engines:
     weight: 1.5
   - name: startpage
     weight: 1.3
+  - name: mojeek
+    weight: 1.3
+  - name: stackoverflow
+    weight: 1.2
   - name: wikipedia
     weight: 1.3
   - name: github
