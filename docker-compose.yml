@@ -38,6 +38,9 @@ services:
     healthcheck:
       <<: *healthcheck-defaults
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz', timeout=3).read()"]
+    depends_on:
+      tor:
+        condition: service_healthy
 
   crawl4ai:
     image: ${CRAWL4AI_IMAGE:-unclecode/crawl4ai:0.8.6}
@@ -49,13 +52,12 @@ services:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:11235/health', timeout=3).read()"]
 
   tor:
-    image: dperson/torproxy:latest
+    image: avpnusr/torprivoxy:latest
     container_name: tor
     restart: unless-stopped
-    environment:
-      - TORUSER=nobody
     healthcheck:
       <<: *healthcheck-defaults
+      start_period: 120s
       test: ["CMD", "curl", "-sf", "--socks5-hostname", "localhost:9050", "https://check.torproject.org/api/ip"]
 
 volumes:
