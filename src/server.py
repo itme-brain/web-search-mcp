@@ -77,6 +77,7 @@ async def search(
     query: str,
     num_results: int = 10,
     time_range: str | None = None,
+    language: str | None = "en",
     include_domains: list[str] | None = None,
     exclude_domains: list[str] | None = None,
     ctx: Context | None = None,
@@ -87,6 +88,7 @@ async def search(
         query: Search query. Prefix with `site:<domain>` to scope to one site.
         num_results: How many results to return (1-10).
         time_range: Recency filter — `day` / `week` / `month` / `year`. Omit for no filter. Do NOT put dates or years in the query text; use this instead.
+        language: Language code for results (e.g. `en`, `de`, `fr`). Defaults to `en`. Pass `None` or empty string for no language filter.
         include_domains: Keep only results from these bare domains (e.g. `["docs.python.org"]`).
         exclude_domains: Drop results from these bare domains.
     """
@@ -94,6 +96,7 @@ async def search(
         query=query,
         num_results=num_results,
         time_range=time_range,
+        language=language or None,
         include_domains=include_domains,
         exclude_domains=exclude_domains,
         ctx=ctx,
@@ -123,7 +126,7 @@ async def extract(
 async def map(
     url: str,
     max_urls: int = 25,
-    max_depth: int = 1,
+    max_depth: int = 2,
     include_patterns: list[str] | None = None,
     same_domain_only: bool = True,
 ) -> ToolResult:
@@ -132,7 +135,7 @@ async def map(
     Args:
         url: Root URL to start discovery from.
         max_urls: Maximum URLs to discover (1-50).
-        max_depth: How many link hops to follow from the root (1-2).
+        max_depth: How many link hops to follow from the root (1-3).
         include_patterns: Shell-glob patterns against the full URL; keep only matches (e.g. `["https://docs.example.com/api/*"]`).
         same_domain_only: If True, restrict to the root's registrable domain (e.g. `docs.pydantic.dev` and `pydantic.dev` count as same). If False, follow every in-scope link.
     """
@@ -151,7 +154,7 @@ async def crawl(
     url: str,
     query: str | None = None,
     max_urls: int = 10,
-    max_depth: int = 1,
+    max_depth: int = 2,
     include_patterns: list[str] | None = None,
     same_domain_only: bool = True,
     ctx: Context | None = None,
@@ -162,7 +165,7 @@ async def crawl(
         url: Root URL to start crawl from.
         query: Optional. Reranks discovered pages by best-chunk relevance so the most useful pages appear first.
         max_urls: Maximum pages to crawl (1-20).
-        max_depth: How many link hops to follow from the root (1-2).
+        max_depth: How many link hops to follow from the root (1-3).
         include_patterns: Shell-glob patterns against the full URL; keep only matches.
         same_domain_only: If True, restrict to the root's registrable domain. If False, follow every in-scope link.
     """

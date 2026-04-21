@@ -35,6 +35,7 @@ from core import (
     _MAX_EXTRACT_URLS,
     _MAX_MAP_DEPTH,
     _MAX_MAP_URLS,
+    _MIN_RELEVANCE_SCORE,
     _TOP_CHUNKS,
 )
 
@@ -69,6 +70,7 @@ async def search_impl(
     query: str,
     num_results: int = 10,
     time_range: str | None = None,
+    language: str | None = "en",
     include_domains: list[str] | None = None,
     exclude_domains: list[str] | None = None,
     ctx: Context | None = None,
@@ -106,6 +108,7 @@ async def search_impl(
                 query.lower().strip(),
                 num_results,
                 time_range,
+                language,
                 include_domains,
                 exclude_domains,
             ],
@@ -120,7 +123,7 @@ async def search_impl(
     search_started = time.monotonic()
     unresponsive_engines: list = []
     try:
-        page1 = await core._search(query, num_results=num_results, time_range=time_range)
+        page1 = await core._search(query, num_results=num_results, time_range=time_range, language=language)
     except Exception as exc:
         degraded = True
         warnings.append(core._warning("search_failed", "searxng", str(exc)))
@@ -132,7 +135,7 @@ async def search_impl(
     results = core._dedup_results(core._filter_results_by_domain(raw_results, include_domains, exclude_domains))
     if raw_results and len(results) < num_results:
         try:
-            page2 = await core._search(query, num_results=num_results, time_range=time_range, pageno=2)
+            page2 = await core._search(query, num_results=num_results, time_range=time_range, language=language, pageno=2)
         except Exception as exc:
             warnings.append(core._warning("search_failed", "searxng", f"page 2: {exc}"))
         else:
@@ -243,7 +246,7 @@ async def search_impl(
         entry_chunks[eidx].sort(key=lambda x: x[1], reverse=True)
         entry_chunks[eidx] = entry_chunks[eidx][:_TOP_CHUNKS]
 
-    # --- rank pages by best chunk score ---
+    # --- rank pages by best chunk score, drop noise below threshold ---
     entry_best: dict[int, float | None] = {
         eidx: chunks[0][1] for eidx, chunks in entry_chunks.items() if chunks
     }
@@ -254,6 +257,23 @@ async def search_impl(
         for i in range(len(entries)):
             if i not in entry_best:
                 ranked_entry_idxs.append(i)
+        # Filter out entries whose best chunk scored below the noise
+        # threshold — CAPTCHA walls, wrong-language pages, auto-generated
+        # spam.  Only applied when reranking succeeded (scores are meaningful).
+        noise_count = 0
+        filtered_idxs = []
+        for eidx in ranked_entry_idxs:
+            score = entry_best.get(eidx)
+            if score is not None and score < _MIN_RELEVANCE_SCORE:
+                noise_count += 1
+                continue
+            filtered_idxs.append(eidx)
+        ranked_entry_idxs = filtered_idxs
+        if noise_count:
+            warnings.append(core._warning(
+                "low_relevance_filtered", "flashrank",
+                f"{noise_count} result(s) dropped below relevance threshold",
+            ))
     ranked_entry_idxs = core._diversify_ranked_entries(ranked_entry_idxs, entries)
 
     # --- format structured output ---
@@ -403,7 +423,7 @@ async def extract_impl(
 async def map_impl(
     url: str,
     max_urls: int = 25,
-    max_depth: int = 1,
+    max_depth: int = 2,
     include_patterns: list[str] | None = None,
     same_domain_only: bool = True,
 ) -> dict:
@@ -453,6 +473,44 @@ async def map_impl(
         if len(results) >= max_urls:
             break
 
+    # ----- Fallback: explicit link extraction when deep crawl finds too few -----
+    # Crawl4AI's BFS deep crawl can silently return only the seed page on
+    # many documentation sites (JS-rendered nav, non-standard link structures).
+    # When that happens, fall back to single-page link extraction which
+    # parses the rendered DOM directly.
+    if len(results) <= 1 and len(results) < max_urls:
+        try:
+            discovery = await core._discover_page_links(root_url)
+            domain_patterns = core._domain_filter_patterns(root_url, same_domain_only)
+            for link in discovery.get("links", []):
+                if len(results) >= max_urls:
+                    break
+                link_url = link.get("url")
+                if not isinstance(link_url, str) or not link_url:
+                    continue
+                normalized_url = core._normalize_url(link_url)
+                if normalized_url in visited_pages:
+                    continue
+                if same_domain_only and domain_patterns:
+                    if not core._url_matches_patterns(link_url, domain_patterns):
+                        continue
+                if include_patterns:
+                    if not core._url_matches_patterns(link_url, include_patterns):
+                        continue
+                visited_pages.add(normalized_url)
+                results.append({
+                    "url": link_url,
+                    "normalized_url": normalized_url,
+                    "domain": core._domain_from_url(link_url),
+                    "title": link.get("title"),
+                    "link_text": link.get("text"),
+                    "depth": 1,
+                    "discovered_from": root_url,
+                    "link_type": link.get("link_type", "internal"),
+                })
+        except Exception as exc:
+            warnings.append(core._warning("fallback_discovery_failed", "crawl4ai", str(exc)))
+
     for rank, entry in enumerate(results, start=1):
         entry["rank"] = rank
 
@@ -485,7 +543,7 @@ async def crawl_impl(
     url: str,
     query: str | None = None,
     max_urls: int = 10,
-    max_depth: int = 1,
+    max_depth: int = 2,
     include_patterns: list[str] | None = None,
     same_domain_only: bool = True,
     ctx: Context | None = None,
@@ -504,7 +562,7 @@ async def crawl_impl(
     crawl_budget = effective_max_urls
     if query:
         # Explore a wider candidate set, then trim after chunk reranking.
-        crawl_budget = min(max(effective_max_urls * 3, effective_max_urls), _MAX_EXTRACT_URLS)
+        crawl_budget = min(effective_max_urls * 3, _MAX_EXTRACT_URLS)
 
     try:
         crawled_pages = await core._deep_crawl(
@@ -562,6 +620,84 @@ async def crawl_impl(
         }
         entries.append(entry)
 
+    # ----- Fallback: discover + scrape when deep crawl finds too few pages -----
+    if len(entries) <= 1 and len(entries) < crawl_budget:
+        try:
+            discovery = await core._discover_page_links(root_url)
+            domain_patterns = core._domain_filter_patterns(root_url, same_domain_only)
+
+            # Collect candidate URLs from discovered links
+            candidates: list[dict] = []
+            for link in discovery.get("links", []):
+                link_url = link.get("url")
+                if not isinstance(link_url, str) or not link_url:
+                    continue
+                normalized_url = core._normalize_url(link_url)
+                if normalized_url in seen_normalized_urls:
+                    continue
+                if same_domain_only and domain_patterns:
+                    if not core._url_matches_patterns(link_url, domain_patterns):
+                        continue
+                if include_patterns:
+                    if not core._url_matches_patterns(link_url, include_patterns):
+                        continue
+                candidates.append({"url": link_url, "normalized_url": normalized_url, "link": link})
+                seen_normalized_urls.add(normalized_url)
+
+            # If there's a query, rough-rank candidates by keyword overlap in
+            # the link URL and anchor text so we scrape the most promising first.
+            if query and candidates:
+                keywords = core._query_keywords(query)
+                def _link_keyword_score(cand: dict) -> int:
+                    haystack = (
+                        cand["url"].lower() + " " +
+                        (cand["link"].get("text") or "").lower() + " " +
+                        (cand["link"].get("title") or "").lower()
+                    )
+                    return sum(1 for kw in keywords if kw in haystack)
+                candidates.sort(key=_link_keyword_score, reverse=True)
+
+            # Scrape top candidates concurrently
+            scrape_limit = crawl_budget - len(entries)
+            to_scrape = candidates[:scrape_limit]
+
+            if to_scrape:
+                scrape_results = await asyncio.gather(
+                    *(core._scrape(c["url"]) for c in to_scrape),
+                    return_exceptions=True,
+                )
+                for cand, scrape_result in zip(to_scrape, scrape_results):
+                    if isinstance(scrape_result, BaseException):
+                        continue
+                    raw_content = (scrape_result.get("content") or "").strip()
+                    status = "ok" if raw_content else "error"
+                    link = cand["link"]
+                    entry = {
+                        "rank": len(entries) + 1,
+                        "url": cand["url"],
+                        "normalized_url": cand["normalized_url"],
+                        "domain": core._domain_from_url(cand["url"]),
+                        "title": scrape_result.get("title") or link.get("title"),
+                        "link_text": link.get("text"),
+                        "depth": 1,
+                        "discovered_from": root_url,
+                        "link_type": link.get("link_type", "internal"),
+                        "status": status,
+                        "content_type": "text/html",
+                        "content": raw_content,
+                        "chars_shown": len(raw_content),
+                        "offset": 0,
+                        "total_chars": len(raw_content),
+                        "top_chunks": [],
+                        "cached": False,
+                        "error": None if status == "ok" else "extraction failed",
+                        "crawl_score": None,
+                        "score": None,
+                    }
+                    entries.append(entry)
+        except Exception as exc:
+            warnings.append(core._warning("fallback_discovery_failed", "crawl4ai", str(exc)))
+
     if query and entries:
         all_chunks: list[str] = []
         chunk_to_entry: list[int] = []
@@ -601,6 +737,18 @@ async def crawl_impl(
 
         if not rerank_failed:
             entries.sort(key=_crawl_result_rank_key, reverse=True)
+            # Drop entries whose best chunk scored below the noise threshold.
+            noise_count = len(entries)
+            entries = [
+                e for e in entries
+                if e.get("score") is None or e["score"] >= _MIN_RELEVANCE_SCORE
+            ]
+            noise_count -= len(entries)
+            if noise_count:
+                warnings.append(core._warning(
+                    "low_relevance_filtered", "flashrank",
+                    f"{noise_count} page(s) dropped below relevance threshold",
+                ))
         for rank, result in enumerate(entries, start=1):
             result["rank"] = rank
 

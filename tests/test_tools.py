@@ -11,7 +11,7 @@ PATCH_RERANK = "core._rerank_scored"
 
 
 def _identity_rerank(_query: str, documents: list[str]) -> list[tuple[int, float]]:
-    return [(i, 0.0) for i in range(len(documents))]
+    return [(i, 0.5) for i in range(len(documents))]
 
 
 @pytest.mark.asyncio

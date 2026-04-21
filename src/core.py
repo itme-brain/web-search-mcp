@@ -82,7 +82,13 @@ _MAX_CHUNKS_PER_PAGE = 10
 _CHUNK_GAP = "\n\n[…]\n\n"
 _MAX_EXTRACT_URLS = 20
 _MAX_MAP_URLS = 50
-_MAX_MAP_DEPTH = 2
+_MAX_MAP_DEPTH = 3
+# Minimum FlashRank relevance score for a result's best chunk.  Entries
+# scoring below this are CAPTCHA walls, wrong-language pages, or
+# auto-generated spam — noise the reranker confidently identifies as
+# irrelevant.  0.05 is conservative: real content almost always exceeds
+# it, while garbage rarely reaches it.
+_MIN_RELEVANCE_SCORE = 0.05
 
 # Session cache bounds — prevent unbounded growth in long-lived sessions.
 _CACHE_MAXSIZE = 1000
@@ -432,6 +438,7 @@ async def _search(
     num_results: int = 10,
     time_range: str | None = None,
     pageno: int = 1,
+    language: str | None = "en",
 ) -> dict:
     """Query SearXNG and return {"results": [...], "unresponsive_engines": [...]}.
 
@@ -448,6 +455,8 @@ async def _search(
         params["time_range"] = time_range.strip('"')
     if pageno > 1:
         params["pageno"] = pageno
+    if language:
+        params["language"] = language
 
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
         resp = await client.get(f"{SEARXNG_URL}/search", params=params)
@@ -653,7 +662,6 @@ def _crawl_filter_chain(
     root_url: str,
     same_domain_only: bool,
     include_patterns: list[str] | None,
-    query: str | None = None,
 ) -> list[dict]:
     filters: list[dict] = []
     domain_patterns = _domain_filter_patterns(root_url, same_domain_only)
@@ -671,12 +679,11 @@ def _crawl_filter_chain(
         "type": "ContentTypeFilter",
         "params": {"allowed_types": ["text/html"]},
     })
-    if query:
-        filters.append({
-            "type": "ContentRelevanceFilter",
-            "query": query,
-            "threshold": 0.15,
-        })
+    # NOTE: We intentionally do NOT add a ContentRelevanceFilter here.
+    # Filtering by query relevance during BFS exploration prematurely
+    # rejects pages that link to relevant content but don't themselves
+    # contain the query terms.  Relevance filtering happens post-crawl
+    # via the FlashRank chunk reranker in crawl_impl instead.
     return filters
 
 
@@ -702,7 +709,6 @@ def _deep_crawl_config(
         root_url=root_url,
         same_domain_only=same_domain_only,
         include_patterns=include_patterns,
-        query=query,
     )
     if filter_chain:
         strategy_params["filter_chain"] = filter_chain

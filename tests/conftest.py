@@ -20,7 +20,7 @@ class _FakeRanker:
 
     def rerank(self, request):
         return [
-            {"id": passage["id"], "score": 0.0}
+            {"id": passage["id"], "score": 0.5}
             for passage in request.passages
         ]
 
