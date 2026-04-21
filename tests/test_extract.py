@@ -1,8 +1,6 @@
 from unittest.mock import AsyncMock, patch
-from io import BytesIO
 
 import pytest
-from docx import Document as DocxDocument
 
 from tests.conftest import FakeContext, server_module
 
@@ -32,13 +30,18 @@ async def test_extract_urls_returns_structured_results():
             "cached": False,
         },
         {
-            "status": "ok",
+            "status": "handoff",
             "url": "https://example.com/file.pdf",
             "content_type": "application/pdf",
-            "title": "Example PDF",
-            "content": "## Page 1\n\nUseful PDF content.",
+            "file_type": "pdf",
+            "title": None,
+            "content": "",
             "top_chunks": [],
             "cached": True,
+            "handoff": {
+                "handler": "files",
+                "reason": "pdf extraction is delegated to the files MCP",
+            },
         },
     ])
 
@@ -55,6 +58,7 @@ async def test_extract_urls_returns_structured_results():
     assert payload["meta"]["urls_failed"] == 0
     assert payload["results"][0]["status"] == "ok"
     assert payload["results"][0]["content_type"] == "text/html"
+    assert payload["results"][1]["status"] == "handoff"
     assert payload["results"][1]["content_type"] == "application/pdf"
     assert payload["results"][1]["cached"] is True
 
@@ -98,14 +102,18 @@ async def test_extract_urls_reports_partial_failures():
 async def test_extract_urls_single_url_returns_markdown():
     fake_ctx = FakeContext()
     extract_mock = AsyncMock(return_value={
-        "status": "ok",
+        "status": "handoff",
         "url": "https://example.com/file.docx",
         "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "file_type": "docx",
-        "title": "Example Doc",
-        "content": "Example content",
+        "title": None,
+        "content": "",
         "top_chunks": [],
         "cached": False,
+        "handoff": {
+            "handler": "files",
+            "reason": "docx extraction is delegated to the files MCP",
+        },
     })
 
     with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
@@ -114,120 +122,44 @@ async def test_extract_urls_single_url_returns_markdown():
             query="example query",
             ctx=fake_ctx,
         )
+    payload_text = payload.content[0].text
 
-    assert "example query" in payload
-    assert "https://example.com/file.docx" in payload
-    assert "Example Doc" in payload
-
-
-def test_docx_bytes_to_markdown_extracts_paragraphs_and_tables():
-    document = DocxDocument()
-    document.core_properties.title = "Quarterly Report"
-    document.add_paragraph("Executive summary")
-    table = document.add_table(rows=2, cols=2)
-    table.cell(0, 0).text = "Quarter"
-    table.cell(0, 1).text = "Revenue"
-    table.cell(1, 0).text = "Q1"
-    table.cell(1, 1).text = "$1M"
-
-    buffer = BytesIO()
-    document.save(buffer)
-
-    content, title = server_module._docx_bytes_to_markdown(buffer.getvalue())
-
-    assert title == "Quarterly Report"
-    assert "Executive summary" in content
-    assert "| Quarter | Revenue |" in content
-
-
-def test_pdf_extract_all_pages_returns_per_page_chunks():
-    import pymupdf
-    doc = pymupdf.Document()
-    for _ in range(5):
-        doc.new_page(width=72, height=72)
-    pdf_bytes = doc.tobytes()
-    # Blank pages have no extractable text
-    pages, title, total_pages = server_module._pdf_extract_all_pages(pdf_bytes)
-    assert isinstance(pages, list)
-    assert len(pages) == 0
-    assert total_pages == 5
+    assert "example query" in payload_text
+    assert "https://example.com/file.docx" in payload_text
+    assert "`files` MCP" in payload_text
+    assert "docx extraction is delegated" in payload_text
 
 
 @pytest.mark.asyncio
-async def test_extract_pdf_returns_joined_content_and_metadata():
-    """PDF extractor now returns flattened content (no per-page headers).
-    Reranking happens centrally in _rank_document_content, same as HTML."""
-    fake_pages = [
-        {"page": i, "content": f"Page {i} content body paragraph"}
-        for i in range(1, 11)
-    ]
-
-    fake_resp = AsyncMock()
-    fake_resp.content = b"fake pdf bytes"
-    fake_resp.raise_for_status = lambda: None
-    fake_client = AsyncMock()
-    fake_client.get = AsyncMock(return_value=fake_resp)
-    fake_client.__aenter__ = AsyncMock(return_value=fake_client)
-    fake_client.__aexit__ = AsyncMock(return_value=None)
-
-    with (
-        patch("core._pdf_extract_all_pages", return_value=(fake_pages, "Test PDF", 10)),
-        patch("core.httpx.AsyncClient", return_value=fake_client),
-    ):
-        result = await server_module._extract_pdf_document("https://example.com/manual.pdf")
-
-    assert result["title"] == "Test PDF"
-    assert result["total_pages"] == 10
-    # Total chars = sum of page content lengths plus the "\n\n" joiners.
-    assert result["total_chars"] == len(result["content"]) > 0
-    # Content is joined page bodies — NO "## Page N" page headers anymore.
-    assert "## Page" not in result["content"]
-    assert "Page 1 content body paragraph" in result["content"]
-    # pages_returned is gone — page-level selection is no longer the unit.
-    assert "pages_returned" not in result
-
-
-@pytest.mark.asyncio
-async def test_extract_urls_surfaces_pdf_total_pages_metadata():
-    """total_pages stays as informational PDF metadata ('this doc has N
-    pages'); pages_returned no longer exists since pages aren't the
-    selection unit anymore — chars are."""
-    extract_mock = AsyncMock(return_value={
-        "status": "ok",
-        "url": "https://example.com/manual.pdf",
-        "content_type": "application/pdf",
-        "file_type": "pdf",
-        "title": "Manual",
-        "content": "paragraph one\n\nparagraph two",
-        "total_chars": 28,
-        "total_pages": 50,
-        "top_chunks": [],
-        "cached": False,
-    })
-
-    with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
-        payload = await server_module.extract_impl(
-            urls=["https://example.com/manual.pdf"],
+async def test_extract_url_document_handoffs_binary_file_types():
+    with patch("core._detect_file_type", AsyncMock(return_value=("pdf", "application/pdf"))):
+        result = await server_module._extract_url_document(
+            "https://example.com/manual.pdf",
+            query=None,
+            cache=server_module._new_cache(),
         )
 
-    result = payload["results"][0]
-    assert result["total_pages"] == 50
-    assert result["total_chars"] == 28
+    assert result["status"] == "handoff"
+    assert result["file_type"] == "pdf"
+    assert result["handoff"]["handler"] == "files"
+    assert result["content"] == ""
 
 
 @pytest.mark.asyncio
-async def test_extract_cache_hit_preserves_pdf_metadata():
-    """Cache hits must carry total_pages + file_type through."""
+async def test_extract_cache_hit_preserves_handoff_metadata():
     cache = server_module._new_cache()
     cache["https://example.com/manual.pdf"] = {
-        "status": "ok",
+        "status": "handoff",
         "url": "https://example.com/manual.pdf",
         "content_type": "application/pdf",
         "file_type": "pdf",
-        "title": "Manual",
-        "content": "Body paragraph from the cached PDF.",
-        "total_chars": 36,
-        "total_pages": 50,
+        "title": None,
+        "content": "",
+        "total_chars": 0,
+        "handoff": {
+            "handler": "files",
+            "reason": "pdf extraction is delegated to the files MCP",
+        },
     }
 
     result = await server_module._extract_url_document(
@@ -235,17 +167,65 @@ async def test_extract_cache_hit_preserves_pdf_metadata():
     )
 
     assert result["cached"] is True
+    assert result["status"] == "handoff"
     assert result["file_type"] == "pdf"
-    assert result["total_pages"] == 50
+    assert result["handoff"]["handler"] == "files"
 
 
-def test_guess_file_type_supports_docx_and_text_formats():
+def test_guess_file_type_supports_handoff_and_text_formats():
     assert server_module._guess_file_type(
         "https://example.com/file.docx",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ) == "docx"
+    assert server_module._guess_file_type(
+        "https://example.com/slides.pptx",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ) == "pptx"
+    assert server_module._guess_file_type(
+        "https://example.com/sheet.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ) == "xlsx"
     assert server_module._guess_file_type("https://example.com/data.json", "application/json") == "json"
+    assert server_module._guess_file_type("https://example.com/config.yaml", "application/yaml") == "yaml"
     assert server_module._guess_file_type("https://example.com/notes.txt", "text/plain; charset=utf-8") == "text"
+
+
+@pytest.mark.asyncio
+async def test_detect_file_type_prefers_magic_sniffing():
+    with (
+        patch("core._sniff_content_type", AsyncMock(return_value="application/pdf")),
+        patch("core._head_content_type", AsyncMock(return_value="text/html")),
+    ):
+        file_type, content_type = await server_module._detect_file_type("https://example.com/download")
+
+    assert file_type == "pdf"
+    assert content_type == "application/pdf"
+
+
+@pytest.mark.asyncio
+async def test_detect_file_type_falls_back_to_head_content_type():
+    with (
+        patch("core._sniff_content_type", AsyncMock(return_value=None)),
+        patch("core._head_content_type", AsyncMock(return_value="text/plain; charset=utf-8")),
+    ):
+        file_type, content_type = await server_module._detect_file_type("https://example.com/notes")
+
+    assert file_type == "text"
+    assert content_type == "text/plain"
+
+
+@pytest.mark.asyncio
+async def test_extract_url_document_handoffs_unknown_types_by_default():
+    with patch("core._detect_file_type", AsyncMock(return_value=("unknown", "application/octet-stream"))):
+        result = await server_module._extract_url_document(
+            "https://example.com/blob.bin",
+            query=None,
+            cache=server_module._new_cache(),
+        )
+
+    assert result["status"] == "handoff"
+    assert result["file_type"] == "unknown"
+    assert result["handoff"]["handler"] == "files"
 
 
 # ---------------------------------------------------------------------------
@@ -275,9 +255,10 @@ async def test_extract_markdown_signals_truncation_with_next_offset():
 
     with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
         markdown = await server_module.extract.fn(["https://example.com/long"])
+    markdown_text = markdown.content[0].text
 
-    assert "chars shown" in markdown
-    assert "offset=8000" in markdown, f"truncation footer missing offset hint:\n{markdown}"
+    assert "chars shown" in markdown_text
+    assert "offset=8000" in markdown_text, f"truncation footer missing offset hint:\n{markdown_text}"
 
 
 @pytest.mark.asyncio
@@ -296,9 +277,10 @@ async def test_extract_no_signal_when_content_fits():
 
     with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
         markdown = await server_module.extract.fn(["https://example.com/short"])
+    markdown_text = markdown.content[0].text
 
-    assert "chars shown" not in markdown
-    assert "end of document" not in markdown
+    assert "chars shown" not in markdown_text
+    assert "end of document" not in markdown_text
 
 
 @pytest.mark.asyncio
@@ -352,6 +334,7 @@ async def test_extract_offset_reaching_end_shows_end_marker():
         markdown = await server_module.extract.fn(
             ["https://example.com/page"], offset=8000,
         )
+    markdown_text = markdown.content[0].text
 
-    assert "end of document" in markdown
-    assert "12,000 chars total" in markdown
+    assert "end of document" in markdown_text
+    assert "12,000 chars total" in markdown_text

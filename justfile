@@ -7,6 +7,14 @@ compose := "docker compose"
 default:
     @just --list
 
+# Create/sync the local Python virtualenv from requirements.txt via uv.
+setup-python:
+    @echo ">> syncing .venv from requirements.txt"
+    @if [ ! -x .venv/bin/python ]; then \
+        uv venv --python "$(command -v python)" .venv; \
+    fi
+    @uv pip sync --python .venv/bin/python requirements.txt
+
 # Generate .env from env.sample and searxng settings.yml from the template (idempotent).
 setup:
     @if [ ! -f .env ]; then \
@@ -55,25 +63,25 @@ restart:
 health:
     @curl -fsS "http://localhost:${MCP_HOST_PORT:-8002}/ready" && echo
 
-# Run the Python test suite through the flake devshell.
-test:
-    nix develop -c pytest -q
+# Run the Python test suite through the uv-managed virtualenv.
+test: setup-python
+    .venv/bin/pytest -q
 
 # Run the benchmark query set and write a JSONL run under eval/runs/.
-eval:
-    nix develop -c python eval/run_eval.py
+eval: setup-python
+    .venv/bin/python eval/run_eval.py
 
 # Score a saved eval run, e.g. `just eval-score eval/runs/20260420T000000Z.jsonl`.
-eval-score run_file:
-    nix develop -c python eval/score.py {{ run_file }}
+eval-score run_file: setup-python
+    .venv/bin/python eval/score.py {{ run_file }}
 
 # Live end-to-end smoke: one call per tool against the running stack.
 # Pass --full to include PDF extraction and a degraded-mode engine spike.
-smoke *args:
-    nix develop -c python eval/live_smoke.py {{ args }}
+smoke *args: setup-python
+    .venv/bin/python eval/live_smoke.py {{ args }}
 
 # Regenerate requirements.txt (hash-locked) from requirements.in via uv.
 # Run this after editing requirements.in. `nix run .#deploy` will also
 # auto-regen when .in is newer than .txt.
 lock:
-    nix develop -c uv pip compile --generate-hashes requirements.in -o requirements.txt
+    uv pip compile --generate-hashes requirements.in -o requirements.txt

@@ -6,6 +6,13 @@ the impls so the dict shape is independently testable and the Python
 scripting layer (`from impls import search_impl`) gets untouched dicts.
 """
 
+import mdformat
+
+
+def _render_markdown(sections: list[str]) -> str:
+    raw = "\n\n".join(section for section in sections if section)
+    return mdformat.text(raw).rstrip()
+
 
 def _format_search_results(response: dict) -> str:
     """Format search response as markdown for LLM consumption."""
@@ -29,7 +36,7 @@ def _format_search_results(response: dict) -> str:
         section = f"## [{title}]({url})\n\n{content}" if content else f"## [{title}]({url})"
         sections.append(section)
 
-    return "\n\n".join(sections)
+    return _render_markdown(sections)
 
 
 def _format_extract_results(response: dict) -> str:
@@ -50,7 +57,7 @@ def _format_extract_results(response: dict) -> str:
     for r in results:
         sections.append(_format_document_section(r))
 
-    return "\n\n".join(sections)
+    return _render_markdown(sections)
 
 
 def _format_document_section(r: dict) -> str:
@@ -65,6 +72,16 @@ def _format_document_section(r: dict) -> str:
     if status == "error":
         error = r.get("error", "extraction failed")
         section = f"## [{title}]({url})\n\n**Error:** {error}"
+    elif status == "handoff":
+        handoff = r.get("handoff") or {}
+        handler = handoff.get("handler", "files")
+        reason = handoff.get("reason", "delegated to another MCP")
+        file_type = r.get("file_type") or "file"
+        section = (
+            f"## [{title}]({url})\n\n"
+            f"**Handoff:** `{file_type}` content should be handled by the `{handler}` MCP.\n\n"
+            f"{reason}"
+        )
     elif content:
         section = f"## [{title}]({url})\n\n{content}"
     else:
@@ -102,7 +119,7 @@ def _format_map_results(response: dict) -> str:
         indent = "  " * depth
         sections.append(f"{indent}- [{title}]({url})")
 
-    return "\n\n".join(sections)
+    return _render_markdown(sections)
 
 
 def _format_crawl_results(response: dict) -> str:
@@ -123,4 +140,4 @@ def _format_crawl_results(response: dict) -> str:
     for r in response.get("results", []):
         sections.append(_format_document_section(r))
 
-    return "\n\n".join(sections)
+    return _render_markdown(sections)

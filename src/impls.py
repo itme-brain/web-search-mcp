@@ -9,9 +9,8 @@ import asyncio
 import hashlib
 import json
 import logging
-import re
 import time
-from collections import defaultdict, deque
+from collections import defaultdict
 from urllib.parse import urlparse
 
 from fastmcp import Context
@@ -22,6 +21,7 @@ from fastmcp import Context
 # target we'd have to mock separately.) Constants are safe to import
 # by-name since they're not patched.
 import core
+import models
 from core import (
     MAX_RESULTS,
     MAX_SCRAPE,
@@ -39,21 +39,6 @@ from core import (
 )
 
 log = logging.getLogger("web-search-mcp")
-_QUERY_TERM_RE = re.compile(r"[a-z0-9]+")
-
-
-def _crawl_query_terms(query: str) -> tuple[str, set[str]]:
-    """Normalize a crawl query into a phrase + token set for page ranking."""
-    phrase = " ".join(query.lower().split())
-    terms = {term for term in _QUERY_TERM_RE.findall(phrase) if len(term) >= 2}
-    return phrase, terms
-
-
-def _count_matching_terms(text: str, terms: set[str]) -> int:
-    if not text or not terms:
-        return 0
-    haystack_terms = set(_QUERY_TERM_RE.findall(text.lower()))
-    return len(haystack_terms & terms)
 
 
 def _url_path_depth(url: str) -> int:
@@ -61,48 +46,23 @@ def _url_path_depth(url: str) -> int:
     return sum(1 for segment in path.split("/") if segment)
 
 
-def _crawl_result_rank_key(result: dict, query: str) -> tuple:
-    """Build a stable sort key for crawl query ranking.
-
-    Pure reranker score is often too weak for documentation sites where the
-    homepage has broad navigation text. Prefer pages whose title / URL / best
-    chunk actually cover the query terms, then break ties with reranker score
-    and depth so specific pages beat site roots on equal evidence.
-    """
-    phrase, terms = _crawl_query_terms(query)
-    top_chunks = result.get("top_chunks", [])
-    top_chunk_texts = [chunk.get("text", "") for chunk in top_chunks if chunk.get("text")]
-    top_score = max((chunk.get("score") or 0.0) for chunk in top_chunks) if top_chunks else float("-inf")
-
-    title = result.get("title") or ""
-    url = result.get("url") or ""
-    best_chunk_text = top_chunk_texts[0] if top_chunk_texts else result.get("content", "")
-    path = urlparse(url).path.replace("/", " ")
-
-    title_hits = _count_matching_terms(title, terms)
-    url_hits = _count_matching_terms(path, terms)
-    chunk_hits = _count_matching_terms(best_chunk_text, terms)
-    coverage = len({
-        term for term in terms
-        if term in set(_QUERY_TERM_RE.findall(f"{title} {path} {best_chunk_text}".lower()))
-    })
-
-    phrase_in_title = int(bool(phrase) and phrase in title.lower())
-    phrase_in_url = int(bool(phrase) and phrase in path.lower())
-    phrase_in_chunk = int(bool(phrase) and phrase in best_chunk_text.lower())
-    lexical_total = title_hits + url_hits + chunk_hits
-
+def _crawl_result_rank_key(result: dict) -> tuple:
+    """Prefer Crawl4AI deep-crawl ordering, then our chunk reranker."""
+    crawl_score = result.get("crawl_score")
+    top_score = result.get("score")
     return (
-        coverage > 0,
-        phrase_in_title or phrase_in_url or phrase_in_chunk,
-        title_hits + url_hits,
-        coverage,
-        lexical_total,
-        top_score,
+        crawl_score is not None,
+        crawl_score if crawl_score is not None else float("-inf"),
+        top_score if top_score is not None else float("-inf"),
         result.get("depth", 0),
-        _url_path_depth(url),
+        _url_path_depth(result.get("url", "")),
         -(result.get("search_rank") or result.get("rank") or 0),
     )
+
+
+def _validated_response(model_cls, response: dict) -> dict:
+    """Return a model-validated payload without inventing unset keys."""
+    return models.dump_response(model_cls, response)
 
 
 async def search_impl(
@@ -210,6 +170,7 @@ async def search_impl(
                 },
             },
         }
+        response = _validated_response(models.SearchResponseModel, response)
         query_cache[qkey] = response
         await core._save_cache(ctx, STATE_QUERY_CACHE, query_cache)
         return response
@@ -358,7 +319,7 @@ async def search_impl(
         query, len(all_chunks), len(entries), len(scrape_cache), len(query_cache), len(seen_urls),
     )
 
-    return response
+    return _validated_response(models.SearchResponseModel, response)
 
 
 async def extract_impl(
@@ -369,9 +330,9 @@ async def extract_impl(
 ) -> dict:
     """Extract a batch of URLs with per-URL status reporting.
 
-    Uses Crawl4AI for web pages and pymupdf4llm for PDF documents.
-    PDFs are fully extracted with per-page chunking and optional
-    query-based reranking.
+    Uses Crawl4AI for web pages and local fetch for text-like resources.
+    Binary document formats are classified here and handed off to the
+    `files` MCP via structured metadata rather than parsed locally.
 
     `offset` slides the return window N chars into the full extracted
     content — pair with the per-result `total_chars` / `chars_shown`
@@ -395,7 +356,7 @@ async def extract_impl(
     urls_succeeded = 0
     urls_failed = 0
     for document in documents:
-        if document["status"] == "ok":
+        if document["status"] in {"ok", "handoff"}:
             urls_succeeded += 1
         else:
             urls_failed += 1
@@ -417,9 +378,8 @@ async def extract_impl(
             "top_chunks": document.get("top_chunks", []),
             "cached": document.get("cached", False),
             "error": document.get("error"),
+            "handoff": document.get("handoff"),
         }
-        if document.get("total_pages") is not None:
-            entry["total_pages"] = document["total_pages"]
         results.append(entry)
 
     await core._save_cache(ctx, STATE_EXTRACT_CACHE, extract_cache)
@@ -437,7 +397,7 @@ async def extract_impl(
         },
     }
     log.info("extract requested=%d succeeded=%d failed=%d", len(urls), urls_succeeded, urls_failed)
-    return response
+    return _validated_response(models.ExtractResponseModel, response)
 
 
 async def map_impl(
@@ -445,91 +405,54 @@ async def map_impl(
     max_urls: int = 25,
     max_depth: int = 1,
     include_patterns: list[str] | None = None,
-    exclude_patterns: list[str] | None = None,
     same_domain_only: bool = True,
 ) -> dict:
-    """Discover in-scope URLs from a site using Crawl4AI link extraction."""
+    """Discover in-scope URLs from a site using Crawl4AI deep crawl + prefetch."""
     root_url = core._validate_urls([url], maximum=1)[0]
     max_urls = core._validate_positive_int("max_urls", max_urls, maximum=_MAX_MAP_URLS)
     max_depth = core._validate_positive_int("max_depth", max_depth, maximum=_MAX_MAP_DEPTH)
     include_patterns = core._normalize_glob_patterns(include_patterns, field_name="include_patterns")
-    exclude_patterns = core._normalize_glob_patterns(exclude_patterns, field_name="exclude_patterns")
 
     started = time.monotonic()
-    root_domain = core._domain_from_url(root_url).lower()
-    root_registrable = core._registrable_domain(root_domain)
-
-    queue = deque([(root_url, 0, None)])
-    visited_pages: set[str] = set()
-    discovered: dict[str, dict] = {}
     warnings: list[dict] = []
+    try:
+        crawled_pages = await core._deep_crawl(
+            root_url,
+            max_depth=max_depth,
+            max_pages=max_urls,
+            same_domain_only=same_domain_only,
+            include_patterns=include_patterns,
+            prefetch=True,
+        )
+    except Exception as exc:
+        warnings.append(core._warning("link_discovery_failed", "crawl4ai", str(exc)))
+        crawled_pages = []
 
-    while queue and len(discovered) < max_urls:
-        current_url, depth, discovered_from = queue.popleft()
-        normalized_current = core._normalize_url(current_url)
-        if normalized_current in visited_pages:
+    results: list[dict] = []
+    visited_pages: set[str] = set()
+    for page in crawled_pages:
+        page_url = page.get("url")
+        if not isinstance(page_url, str) or not page_url:
             continue
-        visited_pages.add(normalized_current)
-
-        current_entry = discovered.setdefault(normalized_current, {
-            "url": current_url,
-            "normalized_url": normalized_current,
-            "domain": core._domain_from_url(current_url),
-            "title": None,
+        normalized_url = core._normalize_url(page_url)
+        if normalized_url in visited_pages:
+            continue
+        visited_pages.add(normalized_url)
+        metadata = page.get("metadata") if isinstance(page.get("metadata"), dict) else {}
+        depth = metadata.get("depth", 0) or 0
+        results.append({
+            "url": page_url,
+            "normalized_url": normalized_url,
+            "domain": core._domain_from_url(page_url),
+            "title": core._extract_crawl_title(page),
             "link_text": None,
             "depth": depth,
-            "discovered_from": discovered_from,
+            "discovered_from": metadata.get("parent_url"),
             "link_type": "seed" if depth == 0 else "internal",
         })
+        if len(results) >= max_urls:
+            break
 
-        if depth >= max_depth:
-            continue
-
-        try:
-            page = await asyncio.wait_for(core._discover_page_links(current_url), timeout=core.REQUEST_TIMEOUT)
-        except asyncio.TimeoutError:
-            warnings.append(core._warning("link_discovery_timeout", "crawl4ai", current_url))
-            continue
-        except core.httpx.HTTPError as exc:
-            warnings.append(core._warning("link_discovery_failed", "crawl4ai", f"{current_url}: {exc}"))
-            continue
-
-        if page["status"] != "ok":
-            warnings.append(core._warning("link_discovery_failed", "crawl4ai", page.get("error") or current_url))
-            continue
-
-        current_entry["title"] = page.get("title") or current_entry["title"]
-
-        for link in page.get("links", []):
-            link_url = link["url"]
-            normalized_link = core._normalize_url(link_url)
-            domain = core._domain_from_url(link_url).lower()
-
-            if same_domain_only and core._registrable_domain(domain) != root_registrable:
-                continue
-            if include_patterns and not core._url_matches_patterns(link_url, include_patterns):
-                continue
-            if exclude_patterns and core._url_matches_patterns(link_url, exclude_patterns):
-                continue
-
-            if normalized_link not in discovered:
-                if len(discovered) >= max_urls:
-                    break
-                discovered[normalized_link] = {
-                    "url": link_url,
-                    "normalized_url": normalized_link,
-                    "domain": core._domain_from_url(link_url),
-                    "title": link.get("title"),
-                    "link_text": link.get("text"),
-                    "depth": depth + 1,
-                    "discovered_from": current_url,
-                    "link_type": link.get("link_type", "internal"),
-                }
-
-            if depth + 1 <= max_depth and normalized_link not in visited_pages:
-                queue.append((link_url, depth + 1, current_url))
-
-    results = list(discovered.values())
     for rank, entry in enumerate(results, start=1):
         entry["rank"] = rank
 
@@ -555,7 +478,7 @@ async def map_impl(
         len(visited_pages),
         len(warnings),
     )
-    return response
+    return _validated_response(models.MapResponseModel, response)
 
 
 async def crawl_impl(
@@ -564,88 +487,150 @@ async def crawl_impl(
     max_urls: int = 10,
     max_depth: int = 1,
     include_patterns: list[str] | None = None,
-    exclude_patterns: list[str] | None = None,
     same_domain_only: bool = True,
     ctx: Context | None = None,
 ) -> dict:
-    """Map a site then extract each discovered page. Returns a structured dict."""
+    """Deep-crawl a site through Crawl4AI and return a structured dict."""
     effective_max_urls = core._validate_positive_int(
         "max_urls",
         max_urls,
         maximum=min(_MAX_MAP_URLS, _MAX_EXTRACT_URLS),
     )
     started = time.monotonic()
+    root_url = core._validate_urls([url], maximum=1)[0]
+    include_patterns = core._normalize_glob_patterns(include_patterns, field_name="include_patterns")
+    warnings: list[dict] = []
 
-    mapped = await map_impl(
-        url=url,
-        max_urls=effective_max_urls,
-        max_depth=max_depth,
-        include_patterns=include_patterns,
-        exclude_patterns=exclude_patterns,
-        same_domain_only=same_domain_only,
-    )
-    mapped_urls = [result["url"] for result in mapped["results"]]
-    extracted = await extract_impl(urls=mapped_urls, query=query, ctx=ctx)
-
-    extract_by_normalized_url = {
-        result["normalized_url"]: result
-        for result in extracted["results"]
-    }
-
-    results: list[dict] = []
-    for mapped_result in mapped["results"]:
-        extracted_result = extract_by_normalized_url.get(mapped_result["normalized_url"])
-        if not extracted_result:
-            continue
-        combined = {
-            **mapped_result,
-            "status": extracted_result["status"],
-            "content_type": extracted_result.get("content_type"),
-            "content": extracted_result.get("content", ""),
-            "chars_shown": extracted_result.get("chars_shown"),
-            "offset": extracted_result.get("offset", 0),
-            "total_chars": extracted_result.get("total_chars"),
-            "top_chunks": extracted_result.get("top_chunks", []),
-            "cached": extracted_result.get("cached", False),
-            "error": extracted_result.get("error"),
-        }
-        if extracted_result.get("total_pages") is not None:
-            combined["total_pages"] = extracted_result["total_pages"]
-        if extracted_result.get("title"):
-            combined["title"] = extracted_result["title"]
-        results.append(combined)
-
+    crawl_budget = effective_max_urls
     if query:
-        results.sort(key=lambda result: _crawl_result_rank_key(result, query), reverse=True)
-        for rank, result in enumerate(results, start=1):
+        # Explore a wider candidate set, then trim after chunk reranking.
+        crawl_budget = min(max(effective_max_urls * 3, effective_max_urls), _MAX_EXTRACT_URLS)
+
+    try:
+        crawled_pages = await core._deep_crawl(
+            root_url,
+            max_depth=max_depth,
+            max_pages=crawl_budget,
+            same_domain_only=same_domain_only,
+            include_patterns=include_patterns,
+            query=query,
+        )
+    except Exception as exc:
+        warnings.append(core._warning("crawl_failed", "crawl4ai", str(exc)))
+        crawled_pages = []
+
+    entries: list[dict] = []
+    seen_normalized_urls: set[str] = set()
+    for page in crawled_pages:
+        page_url = page.get("url")
+        if not isinstance(page_url, str) or not page_url:
+            continue
+
+        normalized_url = core._normalize_url(page_url)
+        if normalized_url in seen_normalized_urls:
+            continue
+
+        seen_normalized_urls.add(normalized_url)
+        raw_content = (core._extract_markdown(page) or "").strip()
+        status_code = page.get("status_code")
+        status = "ok" if raw_content else "error"
+        if isinstance(status_code, int) and status_code >= 400:
+            status = "error"
+
+        metadata = page.get("metadata") if isinstance(page.get("metadata"), dict) else {}
+        entry = {
+            "rank": len(entries) + 1,
+            "url": page_url,
+            "normalized_url": normalized_url,
+            "domain": core._domain_from_url(page_url),
+            "title": core._extract_crawl_title(page),
+            "link_text": None,
+            "depth": metadata.get("depth", 0) or 0,
+            "discovered_from": metadata.get("parent_url"),
+            "link_type": "seed" if (metadata.get("depth", 0) or 0) == 0 else "internal",
+            "status": status,
+            "content_type": "text/html",
+            "content": raw_content,
+            "chars_shown": len(raw_content),
+            "offset": 0,
+            "total_chars": len(raw_content),
+            "top_chunks": [],
+            "cached": False,
+            "error": None if status == "ok" else "extraction failed",
+            "crawl_score": metadata.get("score"),
+            "score": None,
+        }
+        entries.append(entry)
+
+    if query and entries:
+        all_chunks: list[str] = []
+        chunk_to_entry: list[int] = []
+        for i, entry in enumerate(entries):
+            chunks = core._chunk_text(entry["content"]) if entry["content"] else []
+            for chunk in chunks:
+                all_chunks.append(chunk)
+                chunk_to_entry.append(i)
+
+        all_chunks, chunk_to_entry = core._dedup_chunks(all_chunks, chunk_to_entry)
+
+        rerank_failed = False
+        try:
+            scored = await core._rerank_scored(query, all_chunks)
+        except Exception as exc:
+            warnings.append(core._warning("rerank_failed", "flashrank", str(exc)))
+            rerank_failed = True
+            scored = []
+
+        entry_chunks: dict[int, list[tuple[str, float]]] = defaultdict(list)
+        for chunk_idx, score in scored:
+            eidx = chunk_to_entry[chunk_idx]
+            entry_chunks[eidx].append((all_chunks[chunk_idx], score))
+
+        for eidx in entry_chunks:
+            entry_chunks[eidx].sort(key=lambda item: item[1], reverse=True)
+            entry_chunks[eidx] = entry_chunks[eidx][:_TOP_CHUNKS]
+
+        for eidx, entry in enumerate(entries):
+            top = entry_chunks.get(eidx, [])
+            entry["top_chunks"] = [{"text": chunk, "score": score} for chunk, score in top]
+            entry["score"] = top[0][1] if top else None
+            if top:
+                entry["content"] = _CHUNK_GAP.join(chunk for chunk, _ in top)
+                entry["chars_shown"] = len(entry["content"])
+                entry["total_chars"] = len(entry["content"])
+
+        if not rerank_failed:
+            entries.sort(key=_crawl_result_rank_key, reverse=True)
+        for rank, result in enumerate(entries, start=1):
             result["rank"] = rank
 
+    results = entries[:effective_max_urls]
+    for result in results:
+        result.pop("crawl_score", None)
+
     response = {
-        "url": mapped["url"],
+        "url": root_url,
         "query": query.strip() if query else None,
         "results": results,
         "meta": {
             "max_urls_requested": effective_max_urls,
             "max_depth": max_depth,
-            "urls_discovered": mapped["meta"]["urls_returned"],
-            "urls_succeeded": extracted["meta"]["urls_succeeded"],
-            "urls_failed": extracted["meta"]["urls_failed"],
+            "urls_discovered": len(entries),
+            "urls_succeeded": sum(1 for result in results if result["status"] == "ok"),
+            "urls_failed": sum(1 for result in results if result["status"] != "ok"),
             "same_domain_only": same_domain_only,
-            "warnings": [
-                *mapped["meta"].get("warnings", []),
-            ],
+            "warnings": warnings,
             "timings_ms": {
-                "map": mapped["meta"]["timings_ms"]["total"],
-                "extract": extracted["meta"]["timings_ms"]["total"],
                 "total": int((time.monotonic() - started) * 1000),
             },
         },
     }
     log.info(
-        "crawl url=%s discovered=%d succeeded=%d failed=%d",
-        url,
-        mapped["meta"]["urls_returned"],
-        extracted["meta"]["urls_succeeded"],
-        extracted["meta"]["urls_failed"],
+        "crawl url=%s discovered=%d returned=%d succeeded=%d failed=%d",
+        root_url,
+        len(entries),
+        len(results),
+        response["meta"]["urls_succeeded"],
+        response["meta"]["urls_failed"],
     )
-    return response
+    return _validated_response(models.CrawlResponseModel, response)

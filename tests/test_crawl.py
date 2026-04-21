@@ -2,11 +2,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-import impls
 from tests.conftest import FakeContext, server_module
 
-PATCH_MAP_IMPL = "impls.map_impl"
-PATCH_EXTRACT_IMPL = "impls.extract_impl"
+PATCH_DEEP_CRAWL = "core._deep_crawl"
 
 
 @pytest.mark.asyncio
@@ -18,253 +16,118 @@ async def test_crawl_validates_max_urls():
 @pytest.mark.asyncio
 async def test_crawl_combines_map_and_extract_results():
     fake_ctx = FakeContext()
-    map_mock = AsyncMock(return_value={
-        "url": "https://docs.example.com",
-        "results": [
-            {
-                "rank": 1,
-                "url": "https://docs.example.com",
-                "normalized_url": "https://docs.example.com",
-                "domain": "docs.example.com",
-                "title": "Docs Home",
-                "link_text": None,
-                "depth": 0,
-                "discovered_from": None,
-                "link_type": "seed",
-            },
-            {
-                "rank": 2,
-                "url": "https://docs.example.com/guide",
-                "normalized_url": "https://docs.example.com/guide",
-                "domain": "docs.example.com",
-                "title": "Guide",
-                "link_text": "Guide",
-                "depth": 1,
-                "discovered_from": "https://docs.example.com",
-                "link_type": "internal",
-            },
-        ],
-        "meta": {
-            "urls_returned": 2,
-            "warnings": [],
-            "timings_ms": {"total": 5},
+    deep_crawl_mock = AsyncMock(return_value=[
+        {
+            "url": "https://docs.example.com",
+            "metadata": {"title": "Docs Home", "depth": 0},
+            "markdown": {"raw_markdown": "# Docs\n\nhome chunk"},
         },
-    })
-    extract_mock = AsyncMock(return_value={
-        "query": "installation guide",
-        "results": [
-            {
-                "url": "https://docs.example.com",
-                "normalized_url": "https://docs.example.com",
-                "domain": "docs.example.com",
-                "status": "ok",
-                "content_type": "text/html",
-                "title": "Docs Home",
-                "content": "# Docs",
-                "top_chunks": [{"text": "home chunk", "score": 0.3}],
-                "cached": False,
-                "error": None,
-            },
-            {
-                "url": "https://docs.example.com/guide",
-                "normalized_url": "https://docs.example.com/guide",
-                "domain": "docs.example.com",
-                "status": "ok",
-                "content_type": "text/html",
-                "title": "Install Guide",
-                "content": "# Guide",
-                "top_chunks": [{"text": "guide chunk", "score": 0.9}],
-                "cached": True,
-                "error": None,
-            },
-        ],
-        "meta": {
-            "urls_requested": 2,
-            "urls_succeeded": 2,
-            "urls_failed": 0,
-            "timings_ms": {"total": 7},
+        {
+            "url": "https://docs.example.com/guide",
+            "metadata": {"title": "Install Guide", "depth": 1, "parent_url": "https://docs.example.com"},
+            "markdown": {"raw_markdown": "# Guide\n\ninstallation guide chunk"},
         },
-    })
+    ])
 
-    with (
-        patch(PATCH_MAP_IMPL, map_mock),
-        patch(PATCH_EXTRACT_IMPL, extract_mock),
-    ):
+    with patch(PATCH_DEEP_CRAWL, deep_crawl_mock):
         payload = await server_module.crawl.fn(
             "https://docs.example.com",
             query="installation guide",
             max_urls=2,
             ctx=fake_ctx,
         )
+    payload_text = payload.content[0].text
 
-    assert "https://docs.example.com" in payload
-    assert "installation guide" in payload
-    assert "Install Guide" in payload
-    assert "https://docs.example.com/guide" in payload
+    assert "https://docs.example.com" in payload_text
+    assert "installation guide" in payload_text
+    assert "Install Guide" in payload_text
+    assert "https://docs.example.com/guide" in payload_text
 
 
 @pytest.mark.asyncio
 async def test_crawl_preserves_map_order_without_query():
-    map_mock = AsyncMock(return_value={
-        "url": "https://docs.example.com",
-        "results": [
-            {
-                "rank": 1,
-                "url": "https://docs.example.com",
-                "normalized_url": "https://docs.example.com",
-                "domain": "docs.example.com",
-                "title": "Docs Home",
-                "link_text": None,
-                "depth": 0,
-                "discovered_from": None,
-                "link_type": "seed",
-            },
-            {
-                "rank": 2,
-                "url": "https://docs.example.com/guide",
-                "normalized_url": "https://docs.example.com/guide",
-                "domain": "docs.example.com",
-                "title": "Guide",
-                "link_text": "Guide",
-                "depth": 1,
-                "discovered_from": "https://docs.example.com",
-                "link_type": "internal",
-            },
-        ],
-        "meta": {
-            "urls_returned": 2,
-            "warnings": [{"type": "link_discovery_failed", "source": "crawl4ai", "detail": "test"}],
-            "timings_ms": {"total": 5},
+    deep_crawl_mock = AsyncMock(return_value=[
+        {
+            "url": "https://docs.example.com",
+            "metadata": {"title": "Docs Home", "depth": 0},
+            "markdown": {"raw_markdown": "# Docs"},
         },
-    })
-    extract_mock = AsyncMock(return_value={
-        "query": None,
-        "results": [
-            {
-                "url": "https://docs.example.com",
-                "normalized_url": "https://docs.example.com",
-                "domain": "docs.example.com",
-                "status": "ok",
-                "content_type": "text/html",
-                "title": None,
-                "content": "# Docs",
-                "top_chunks": [],
-                "cached": False,
-                "error": None,
-            },
-            {
-                "url": "https://docs.example.com/guide",
-                "normalized_url": "https://docs.example.com/guide",
-                "domain": "docs.example.com",
-                "status": "error",
-                "content_type": "text/html",
-                "title": None,
-                "content": "",
-                "top_chunks": [],
-                "cached": False,
-                "error": "extraction failed",
-            },
-        ],
-        "meta": {
-            "urls_requested": 2,
-            "urls_succeeded": 1,
-            "urls_failed": 1,
-            "timings_ms": {"total": 7},
+        {
+            "url": "https://docs.example.com/guide",
+            "metadata": {"title": "Guide", "depth": 1, "parent_url": "https://docs.example.com"},
+            "markdown": {"raw_markdown": "# Guide"},
         },
-    })
+    ])
 
-    with (
-        patch(PATCH_MAP_IMPL, map_mock),
-        patch(PATCH_EXTRACT_IMPL, extract_mock),
-    ):
+    with patch(PATCH_DEEP_CRAWL, deep_crawl_mock):
         payload = await server_module.crawl.fn(
             "https://docs.example.com",
             max_urls=2,
-        )
+    )
+    payload_text = payload.content[0].text
 
-    assert "https://docs.example.com" in payload
-    assert "https://docs.example.com/guide" in payload
-    assert "warnings:" in payload
+    assert "https://docs.example.com" in payload_text
+    assert "https://docs.example.com/guide" in payload_text
+    assert "warnings:" not in payload_text
 
 
 @pytest.mark.asyncio
 async def test_crawl_query_ranking_prefers_specific_docs_page_over_site_root():
-    map_mock = AsyncMock(return_value={
-        "url": "https://docs.djangoproject.com",
-        "results": [
-            {
-                "rank": 1,
-                "url": "https://docs.djangoproject.com",
-                "normalized_url": "https://docs.djangoproject.com",
-                "domain": "docs.djangoproject.com",
-                "title": "Django documentation",
-                "link_text": None,
-                "depth": 0,
-                "discovered_from": None,
-                "link_type": "seed",
-            },
-            {
-                "rank": 2,
-                "url": "https://docs.djangoproject.com/en/5.2/topics/db/models/",
-                "normalized_url": "https://docs.djangoproject.com/en/5.2/topics/db/models/",
-                "domain": "docs.djangoproject.com",
-                "title": "Models",
-                "link_text": "Models",
-                "depth": 1,
-                "discovered_from": "https://docs.djangoproject.com",
-                "link_type": "internal",
-            },
-        ],
-        "meta": {
-            "urls_returned": 2,
-            "warnings": [],
-            "timings_ms": {"total": 5},
+    deep_crawl_mock = AsyncMock(return_value=[
+        {
+            "url": "https://docs.djangoproject.com",
+            "metadata": {"title": "Django documentation", "depth": 0, "score": 0.35},
+            "markdown": {"raw_markdown": "# Django documentation\n\nDatabase docs and navigation links."},
         },
-    })
-    extract_mock = AsyncMock(return_value={
-        "query": "ORM",
-        "results": [
-            {
-                "url": "https://docs.djangoproject.com",
-                "normalized_url": "https://docs.djangoproject.com",
-                "domain": "docs.djangoproject.com",
-                "status": "ok",
-                "content_type": "text/html",
-                "title": "Django documentation",
-                "content": "# Docs Home",
-                "top_chunks": [{"text": "Database docs and navigation links.", "score": 0.92}],
-                "cached": False,
-                "error": None,
-            },
-            {
-                "url": "https://docs.djangoproject.com/en/5.2/topics/db/models/",
-                "normalized_url": "https://docs.djangoproject.com/en/5.2/topics/db/models/",
-                "domain": "docs.djangoproject.com",
-                "status": "ok",
-                "content_type": "text/html",
+        {
+            "url": "https://docs.djangoproject.com/en/5.2/topics/db/models/",
+            "metadata": {
                 "title": "Django ORM models",
-                "content": "# Models",
-                "top_chunks": [{"text": "The Django ORM maps models to database tables.", "score": 0.91}],
-                "cached": False,
-                "error": None,
+                "depth": 1,
+                "parent_url": "https://docs.djangoproject.com",
+                "score": 0.93,
             },
-        ],
-        "meta": {
-            "urls_requested": 2,
-            "urls_succeeded": 2,
-            "urls_failed": 0,
-            "timings_ms": {"total": 7},
+            "markdown": {"raw_markdown": "# Models\n\nThe Django ORM maps models to database tables."},
         },
-    })
+    ])
 
-    with (
-        patch(PATCH_MAP_IMPL, map_mock),
-        patch(PATCH_EXTRACT_IMPL, extract_mock),
-    ):
-        payload = await impls.crawl_impl(
+    with patch(PATCH_DEEP_CRAWL, deep_crawl_mock):
+        payload = await server_module.crawl_impl(
             "https://docs.djangoproject.com",
             query="ORM",
         )
 
     assert payload["results"][0]["url"] == "https://docs.djangoproject.com/en/5.2/topics/db/models/"
     assert payload["results"][1]["url"] == "https://docs.djangoproject.com"
+
+
+@pytest.mark.asyncio
+async def test_crawl_passes_include_patterns_to_deep_crawl():
+    deep_crawl_mock = AsyncMock(return_value=[
+        {
+            "url": "https://docs.example.com",
+            "metadata": {"title": "Docs Home", "depth": 0},
+            "markdown": {"raw_markdown": "# Docs"},
+        },
+        {
+            "url": "https://blog.example.com/post",
+            "metadata": {"title": "Blog", "depth": 1},
+            "markdown": {"raw_markdown": "# Blog"},
+        },
+        {
+            "url": "https://docs.example.com/api/auth",
+            "metadata": {"title": "Auth", "depth": 1},
+            "markdown": {"raw_markdown": "# Auth"},
+        },
+    ])
+
+    with patch(PATCH_DEEP_CRAWL, deep_crawl_mock):
+        await server_module.crawl_impl(
+            "https://docs.example.com",
+            include_patterns=["https://docs.example.com/api/*"],
+            same_domain_only=True,
+            max_urls=5,
+        )
+
+    assert deep_crawl_mock.call_args.kwargs["include_patterns"] == ["https://docs.example.com/api/*"]
+    assert deep_crawl_mock.call_args.kwargs["same_domain_only"] is True

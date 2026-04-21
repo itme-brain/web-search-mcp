@@ -26,7 +26,7 @@ def _fake_5xx_response() -> httpx.Response:
 def _fake_success_response() -> MagicMock:
     resp = MagicMock()
     resp.raise_for_status = MagicMock()
-    resp.json = MagicMock(return_value={"results": [{"markdown": "content"}]})
+    resp.aread = AsyncMock(return_value=b'{"markdown":"content"}\n{"status":"completed"}\n')
     return resp
 
 
@@ -75,33 +75,6 @@ async def test_crawl_post_retries_on_5xx_then_succeeds():
 
 
 @pytest.mark.asyncio
-async def test_poll_crawl_task_stops_after_max_iterations():
-    """Broken status endpoint returning 'running' forever must not hang."""
-    stuck_resp = MagicMock()
-    stuck_resp.raise_for_status = MagicMock()
-    stuck_resp.json = MagicMock(return_value={"status": "running"})
-
-    mock_client = MagicMock()
-    mock_client.get = AsyncMock(return_value=stuck_resp)
-
-    # Swap asyncio.sleep for a no-op so the test doesn't wait real seconds.
-    import core
-    original_sleep = core.asyncio.sleep
-
-    async def _fake_sleep(_secs):
-        return None
-
-    core.asyncio.sleep = _fake_sleep
-    try:
-        result = await core._poll_crawl_task(mock_client, "task-123")
-    finally:
-        core.asyncio.sleep = original_sleep
-
-    assert result is None
-    assert mock_client.get.call_count == core._MAX_TASK_POLLS
-
-
-@pytest.mark.asyncio
 async def test_crawl_post_does_not_retry_on_4xx():
     """4xx errors are caller bugs, not transient — fail fast."""
     req = httpx.Request("POST", "http://crawl4ai:11235/crawl")
@@ -119,3 +92,16 @@ async def test_crawl_post_does_not_retry_on_4xx():
         await server_module._crawl_post(mock_client, "https://example.com", priority=8)
 
     assert mock_client.post.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_crawl_post_raises_on_failed_stream_status():
+    fail_resp = MagicMock()
+    fail_resp.raise_for_status = MagicMock()
+    fail_resp.aread = AsyncMock(return_value=b'{"status":"failed","error":"boom"}\n')
+
+    mock_client = MagicMock()
+    mock_client.post = AsyncMock(return_value=fail_resp)
+
+    with pytest.raises(ValueError, match="boom"):
+        await server_module._crawl_post(mock_client, "https://example.com", priority=8)

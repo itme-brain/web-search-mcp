@@ -10,6 +10,7 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        libPath = pkgs.lib.makeLibraryPath [pkgs.stdenv.cc.cc pkgs.file];
         python = pkgs.python312.override {
           packageOverrides = self: super: {
             fastmcp = super.fastmcp.overridePythonAttrs (_: {
@@ -38,26 +39,11 @@
             };
           };
         };
-        pythonEnv = python.withPackages (ps: with ps; [
-          cachetools
-          fastmcp
-          flashrank
-          httpx
-          pydantic-settings
-          pymupdf
-          pymupdf4llm
-          pysbd
-          python-docx
-          tenacity
-          trafilatura
-          url-normalize
-          pytest
-          pytest-asyncio
-        ]);
 
         # Tools needed at runtime by the deploy script. Docker daemon must be
         # supplied by the host (Nix does not install a daemon on non-NixOS).
         runtimeTools = [
+          python
           pkgs.docker-client
           pkgs.docker-compose
           pkgs.just
@@ -67,6 +53,7 @@
           pkgs.openssl
           pkgs.gnused
           pkgs.uv
+          pkgs.file
         ];
 
         deploy = pkgs.writeShellApplication {
@@ -153,9 +140,14 @@
 
         devShells.default = pkgs.mkShell {
           name = "web-search-mcp-dev";
-          buildInputs = runtimeTools ++ [pythonEnv];
+          buildInputs = runtimeTools;
           shellHook = ''
-            echo "web-search-mcp devshell — try: just, just up, just test"
+            export LD_LIBRARY_PATH="${libPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            export UV_PROJECT_ENVIRONMENT=.venv
+            if [[ -x .venv/bin/python ]]; then
+              export VIRTUAL_ENV="$PWD/.venv"
+              export PATH="$VIRTUAL_ENV/bin:$PATH"
+            fi
           '';
         };
       });

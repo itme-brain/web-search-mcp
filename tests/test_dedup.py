@@ -4,6 +4,9 @@ _normalize_url = server_module._normalize_url
 _dedup_results = server_module._dedup_results
 _dedup_chunks = server_module._dedup_chunks
 _diversify_ranked_entries = server_module._diversify_ranked_entries
+_chunk_text = server_module._chunk_text
+_match_domain = server_module._match_domain
+_filter_results_by_domain = server_module._filter_results_by_domain
 
 
 def test_normalize_url_strips_tracking_params():
@@ -45,6 +48,44 @@ def test_dedup_results_removes_same_domain_same_title_duplicates():
     assert deduped[1]["url"] == "https://other.com/post-3"
 
 
+def test_dedup_results_removes_same_domain_fuzzy_title_duplicates():
+    results = [
+        {"url": "https://example.com/post-1", "title": "Django ORM Guide (2026 Edition)"},
+        {"url": "https://example.com/post-2", "title": "Django ORM Guide 2026 Edition"},
+        {"url": "https://example.com/post-3", "title": "Django ORM Guide for Beginners"},
+    ]
+    deduped = _dedup_results(results)
+    assert len(deduped) == 2
+    assert deduped[0]["url"] == "https://example.com/post-1"
+    assert deduped[1]["url"] == "https://example.com/post-3"
+
+
+def test_dedup_results_keeps_same_domain_distinct_titles():
+    results = [
+        {"url": "https://example.com/models", "title": "Django ORM Models Guide"},
+        {"url": "https://example.com/querysets", "title": "Django ORM QuerySets Guide"},
+    ]
+    deduped = _dedup_results(results)
+    assert len(deduped) == 2
+    assert deduped[0]["url"] == "https://example.com/models"
+    assert deduped[1]["url"] == "https://example.com/querysets"
+
+
+def test_match_domain_matches_subdomains_and_strips_www():
+    assert _match_domain("www.docs.python.org", ["python.org"])
+    assert _match_domain("docs.python.org", ["docs.python.org"])
+    assert not _match_domain("python.org", ["docs.python.org"])
+
+
+def test_filter_results_by_domain_handles_public_suffix_domains():
+    results = [
+        {"url": "https://www.docs.service.example.co.uk/guide", "title": "Guide"},
+        {"url": "https://other.example.com/page", "title": "Other"},
+    ]
+    filtered = _filter_results_by_domain(results, ["example.co.uk"], [])
+    assert [item["url"] for item in filtered] == ["https://www.docs.service.example.co.uk/guide"]
+
+
 def test_dedup_chunks_removes_near_identical():
     base = "Large language models have transformed natural language processing with advanced attention mechanisms and deep learning techniques."
     chunks = [
@@ -81,6 +122,20 @@ def test_dedup_chunks_preserves_first_occurrence():
     assert len(kept) == 2
     assert entries[0] == 0
     assert entries[1] == 1
+
+
+def test_chunk_text_preserves_markdown_structure_and_bounds_chunks():
+    text = (
+        "# Title\n\n"
+        "Opening paragraph.\n\n"
+        "## Section\n\n"
+        + ("Sentence. " * 250)
+    )
+    chunks = _chunk_text(text)
+    assert chunks[0].startswith("# Title")
+    assert any("## Section" in chunk for chunk in chunks)
+    assert len(chunks) > 1
+    assert max(len(chunk) for chunk in chunks) <= 1000
 
 
 def test_diversify_ranked_entries_interleaves_domains():

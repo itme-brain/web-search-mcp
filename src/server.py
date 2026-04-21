@@ -1,12 +1,12 @@
 """MCP entry point: FastMCP instance, /health + /ready routes, and the
-four @mcp.tool wrappers. Each wrapper just calls its impl (impls.py)
-then pushes the result through a formatter (formatters.py).
+four @mcp.tool wrappers.
 
 Run with `python server.py` inside the container (WORKDIR /app, where
 the sibling modules live).
 """
 
 from fastmcp import Context, FastMCP
+from fastmcp.tools.tool import ToolResult
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -14,6 +14,7 @@ from starlette.responses import JSONResponse
 # the calls made here — `from impls import X` would bind X locally and
 # require a second patch target.
 import impls
+import models
 from core import (
     CRAWL4AI_URL,
     RERANK_MODEL,
@@ -34,6 +35,14 @@ from impls import crawl_impl, extract_impl, map_impl, search_impl  # noqa: F401
 mcp = FastMCP("Web Search", version="0.1.0")
 
 __all__ = ["mcp", "search_impl", "extract_impl", "map_impl", "crawl_impl"]
+
+
+def _tool_result(response: dict, formatter) -> ToolResult:
+    """Return curated markdown plus the structured dict payload."""
+    return ToolResult(
+        content=formatter(response),
+        structured_content=response,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -61,9 +70,9 @@ async def ready(_: Request) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
-# MCP tools (thin wrappers: call impl → format → return markdown)
+# MCP tools (thin wrappers: call impl → format → return ToolResult)
 # ---------------------------------------------------------------------------
-@mcp.tool
+@mcp.tool(output_schema=models.SearchResponseModel.model_json_schema())
 async def search(
     query: str,
     num_results: int = 10,
@@ -71,7 +80,7 @@ async def search(
     include_domains: list[str] | None = None,
     exclude_domains: list[str] | None = None,
     ctx: Context | None = None,
-) -> str:
+ ) -> ToolResult:
     """Search the web, scrape and rerank the top results.
 
     Args:
@@ -89,16 +98,16 @@ async def search(
         exclude_domains=exclude_domains,
         ctx=ctx,
     )
-    return _format_search_results(response)
+    return _tool_result(response, _format_search_results)
 
 
-@mcp.tool
+@mcp.tool(output_schema=models.ExtractResponseModel.model_json_schema())
 async def extract(
     urls: list[str],
     query: str | None = None,
     offset: int = 0,
     ctx: Context | None = None,
-) -> str:
+) -> ToolResult:
     """Fetch full content for one or more URLs.
 
     Args:
@@ -107,18 +116,17 @@ async def extract(
         offset: Byte offset into the document. When the output footer says `N of M chars shown — pass offset=N to continue`, call again with that `offset` to read the next slice. `offset > 0` bypasses `query` reranking in favor of raw continuation.
     """
     response = await impls.extract_impl(urls=urls, query=query, offset=offset, ctx=ctx)
-    return _format_extract_results(response)
+    return _tool_result(response, _format_extract_results)
 
 
-@mcp.tool
+@mcp.tool(output_schema=models.MapResponseModel.model_json_schema())
 async def map(
     url: str,
     max_urls: int = 25,
     max_depth: int = 1,
     include_patterns: list[str] | None = None,
-    exclude_patterns: list[str] | None = None,
     same_domain_only: bool = True,
-) -> str:
+) -> ToolResult:
     """Discover URLs on a site — link graph, no body content.
 
     Args:
@@ -126,7 +134,6 @@ async def map(
         max_urls: Maximum URLs to discover (1-50).
         max_depth: How many link hops to follow from the root (1-2).
         include_patterns: Shell-glob patterns against the full URL; keep only matches (e.g. `["https://docs.example.com/api/*"]`).
-        exclude_patterns: Shell-glob patterns against the full URL; drop matches.
         same_domain_only: If True, restrict to the root's registrable domain (e.g. `docs.pydantic.dev` and `pydantic.dev` count as same). If False, follow every in-scope link.
     """
     response = await impls.map_impl(
@@ -134,23 +141,21 @@ async def map(
         max_urls=max_urls,
         max_depth=max_depth,
         include_patterns=include_patterns,
-        exclude_patterns=exclude_patterns,
         same_domain_only=same_domain_only,
     )
-    return _format_map_results(response)
+    return _tool_result(response, _format_map_results)
 
 
-@mcp.tool
+@mcp.tool(output_schema=models.CrawlResponseModel.model_json_schema())
 async def crawl(
     url: str,
     query: str | None = None,
     max_urls: int = 10,
     max_depth: int = 1,
     include_patterns: list[str] | None = None,
-    exclude_patterns: list[str] | None = None,
     same_domain_only: bool = True,
     ctx: Context | None = None,
-) -> str:
+) -> ToolResult:
     """Discover URLs on a site and fetch their content.
 
     Args:
@@ -159,7 +164,6 @@ async def crawl(
         max_urls: Maximum pages to crawl (1-20).
         max_depth: How many link hops to follow from the root (1-2).
         include_patterns: Shell-glob patterns against the full URL; keep only matches.
-        exclude_patterns: Shell-glob patterns against the full URL; drop matches.
         same_domain_only: If True, restrict to the root's registrable domain. If False, follow every in-scope link.
     """
     response = await impls.crawl_impl(
@@ -168,11 +172,15 @@ async def crawl(
         max_urls=max_urls,
         max_depth=max_depth,
         include_patterns=include_patterns,
-        exclude_patterns=exclude_patterns,
         same_domain_only=same_domain_only,
         ctx=ctx,
     )
-    return _format_crawl_results(response)
+    return _tool_result(response, _format_crawl_results)
+
+
+for _tool in (search, extract, map, crawl):
+    if not hasattr(_tool, "fn"):
+        _tool.fn = _tool
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ All services run in one `docker compose` project. Only the MCP server port is ex
 ## Requirements
 
 - Docker (daemon must be running on the host — Nix cannot provide this on non-NixOS)
-- Either Nix (recommended — gives you the full toolchain with one command) or host-installed `docker compose`, `just`, `openssl`
+- Either Nix + direnv (recommended) or host-installed `docker compose`, `just`, `openssl`, `python`, `uv`
 - First boot downloads the FlashRank model into the MCP container image cache. Allow extra startup time the first time the MCP server initializes the reranker.
 
 ## Quick start with Nix (works on NixOS and non-NixOS Linux/macOS)
@@ -30,8 +30,11 @@ cd web-search-mcp
 # starts the stack, and waits for the MCP /ready probe to succeed.
 nix run .#deploy
 
-# Or drop into a devshell and use just recipes.
-nix develop
+# Or use direnv + the flake-backed devshell.
+direnv allow
+
+# This creates/syncs .venv from requirements.txt through uv.
+just setup-python
 just up
 just test
 just eval
@@ -50,9 +53,11 @@ nix run .#teardown -- -v    # also wipe volumes (reranker cache, searxng cache)
 ```sh
 git clone <this-repo> web-search-mcp
 cd web-search-mcp
+uv venv .venv
+uv pip sync --python .venv/bin/python requirements.txt
 just setup                  # renders .env + searxng/config/settings.yml with a random secret
 docker compose up -d --build
-nix develop -c pytest -q    # or `just test`
+.venv/bin/pytest -q         # or `just test`
 ```
 
 ## Hooking your MCP client into it
@@ -168,26 +173,27 @@ Examples:
 
 Fetch full content for the URLs you pass in. Always takes a list — `["https://..."]` for a single URL.
 
-- HTML, PDF, DOCX, and plain-text files are all handled natively.
+- HTML and text-like formats are handled here (`text`, `markdown`, `json`, `yaml`, `xml`, `csv`).
+- Non-text and unknown file types are classified here, then returned as a structured `handoff` to a future `files` MCP instead of being parsed locally.
 - Each result is capped at ~8000 chars; when more is available the footer shows `N of M chars shown — pass offset=N to continue` so you can paginate with `offset`.
-- PDFs carry `total_pages` metadata (informational). Pass `query` to chunk-rerank the content and return the most-relevant excerpts first; omit to get raw content from the top of the document.
-- Partial success: one failed URL does not fail the whole call. Results include per-URL `status`, `content_type`, `file_type`, `title`, `content`, and `error`.
+- Pass `query` to chunk-rerank text/HTML content and return the most-relevant excerpts first; omit to get raw content from the top of the document.
+- Partial success: one failed URL does not fail the whole call. Results include per-URL `status`, `content_type`, `file_type`, `title`, `content`, `error`, and `handoff` when applicable.
 
 Examples:
 
 ```json
 {"urls": ["https://docs.python.org/3/library/asyncio-task.html"]}
-{"urls": ["https://arxiv.org/pdf/2301.00001.pdf"], "query": "attention mechanism"}
+{"urls": ["https://example.com/config.yaml"]}
 {"urls": ["https://a.example/doc.html", "https://b.example/paper.pdf"]}
 ```
 
-### `map(url, max_urls=25, max_depth=1, include_patterns=None, exclude_patterns=None, same_domain_only=True)`
+### `map(url, max_urls=25, max_depth=1, include_patterns=None, same_domain_only=True)`
 
 Cheap discovery of URLs on a site — no body content, just the link graph.
 
 - Returns normalized candidate URLs with titles, discovery depth, and the source URL each page was found from.
 - `same_domain_only=True` keeps discovery within the same registrable domain (e.g. mapping `docs.pydantic.dev` also follows `pydantic.dev/...`, `logfire.pydantic.dev/...`, etc. — "same org," not just "same host"). Set `False` to follow every link the page points at.
-- `include_patterns` / `exclude_patterns` accept shell-style globs against the full URL.
+- `include_patterns` accepts shell-style globs against the full URL.
 - This is a bounded survey tool, not a full-content crawler.
 
 Examples:
@@ -198,7 +204,7 @@ Examples:
 {"url": "https://example.com", "max_depth": 2, "max_urls": 50}
 ```
 
-### `crawl(url, query=None, max_urls=10, max_depth=1, include_patterns=None, exclude_patterns=None, same_domain_only=True)`
+### `crawl(url, query=None, max_urls=10, max_depth=1, include_patterns=None, same_domain_only=True)`
 
 `map` + `extract` composed — discover the URL set, then fetch each page's content in one response.
 
@@ -233,6 +239,19 @@ results: 5
 Most relevant extracted page content.
 
 ---
+
+For `extract`, non-text files return a structured handoff in addition to markdown, e.g.:
+
+```json
+{
+  "status": "handoff",
+  "file_type": "pdf",
+  "handoff": {
+    "handler": "files",
+    "reason": "pdf extraction is delegated to the files MCP"
+  }
+}
+```
 
 ## [Another Result](https://example.com/other)
 

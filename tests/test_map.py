@@ -4,7 +4,7 @@ import pytest
 
 from tests.conftest import server_module
 
-PATCH_DISCOVER_PAGE_LINKS = "core._discover_page_links"
+PATCH_DEEP_CRAWL = "core._deep_crawl"
 
 
 @pytest.mark.asyncio
@@ -15,44 +15,26 @@ async def test_map_validates_url():
 
 @pytest.mark.asyncio
 async def test_map_discovers_same_org_links():
-    """same_domain_only=True uses registrable-domain match ("same org"):
-    docs.example.com, blog.example.com, api.example.com all pass; an
-    entirely different TLD/site does not."""
-    discover_mock = AsyncMock(side_effect=[
+    deep_crawl_mock = AsyncMock(return_value=[
         {
-            "status": "ok",
             "url": "https://docs.example.com",
-            "title": "Docs Home",
-            "links": [
-                {
-                    "url": "https://docs.example.com/guide",
-                    "title": "Guide",
-                    "text": "Guide",
-                    "link_type": "internal",
-                },
-                {
-                    "url": "https://blog.example.com/post",
-                    "title": "Blog",
-                    "text": "Blog",
-                    "link_type": "external",
-                },
-                {
-                    "url": "https://example.com/about",
-                    "title": "About",
-                    "text": "About (parent domain)",
-                    "link_type": "external",
-                },
-                {
-                    "url": "https://other.example.net/page",
-                    "title": "Other",
-                    "text": "Other",
-                    "link_type": "external",
-                },
-            ],
+            "metadata": {"title": "Docs Home", "depth": 0},
+        },
+        {
+            "url": "https://docs.example.com/guide",
+            "metadata": {"title": "Guide", "depth": 1, "parent_url": "https://docs.example.com"},
+        },
+        {
+            "url": "https://blog.example.com/post",
+            "metadata": {"title": "Blog", "depth": 1, "parent_url": "https://docs.example.com"},
+        },
+        {
+            "url": "https://example.com/about",
+            "metadata": {"title": "About", "depth": 1, "parent_url": "https://docs.example.com"},
         },
     ])
 
-    with patch(PATCH_DISCOVER_PAGE_LINKS, discover_mock):
+    with patch(PATCH_DEEP_CRAWL, deep_crawl_mock):
         payload = await server_module.map_impl(
             "https://docs.example.com",
             max_urls=10,
@@ -65,13 +47,12 @@ async def test_map_discovers_same_org_links():
     assert "https://docs.example.com/guide" in returned_urls
     assert "https://blog.example.com/post" in returned_urls
     assert "https://example.com/about" in returned_urls
-    # different registrable domain (example.net), excluded
-    assert "https://other.example.net/page" not in returned_urls
     assert payload["meta"]["same_domain_only"] is True
+    assert deep_crawl_mock.call_args.kwargs["same_domain_only"] is True
 
 
 def test_registrable_domain_basic():
-    """Last two labels win for common TLDs."""
+    """Registrable domains should follow the public suffix list."""
     rd = server_module._registrable_domain
     assert rd("docs.pydantic.dev") == "pydantic.dev"
     assert rd("pydantic.dev") == "pydantic.dev"
@@ -79,86 +60,62 @@ def test_registrable_domain_basic():
     assert rd("a.b.c.example.com") == "example.com"
     assert rd("example.com") == "example.com"
     assert rd("www.example.com") == "example.com"
+    assert rd("docs.service.example.co.uk") == "example.co.uk"
 
 
 @pytest.mark.asyncio
 async def test_map_applies_depth_and_patterns():
-    discover_mock = AsyncMock(side_effect=[
+    deep_crawl_mock = AsyncMock(return_value=[
         {
-            "status": "ok",
             "url": "https://docs.example.com",
-            "title": "Docs Home",
-            "links": [
-                {
-                    "url": "https://docs.example.com/docs/start",
-                    "title": "Start",
-                    "text": "Start",
-                    "link_type": "internal",
-                },
-                {
-                    "url": "https://docs.example.com/blog/post",
-                    "title": "Blog",
-                    "text": "Blog",
-                    "link_type": "internal",
-                },
-            ],
+            "metadata": {"title": "Docs Home", "depth": 0},
         },
         {
-            "status": "ok",
             "url": "https://docs.example.com/docs/start",
-            "title": "Start",
-            "links": [
-                {
-                    "url": "https://docs.example.com/docs/advanced",
-                    "title": "Advanced",
-                    "text": "Advanced",
-                    "link_type": "internal",
-                },
-            ],
+            "metadata": {"title": "Start", "depth": 1, "parent_url": "https://docs.example.com"},
+        },
+        {
+            "url": "https://docs.example.com/blog/post",
+            "metadata": {"title": "Blog", "depth": 1, "parent_url": "https://docs.example.com"},
+        },
+        {
+            "url": "https://docs.example.com/docs/advanced",
+            "metadata": {"title": "Advanced", "depth": 2, "parent_url": "https://docs.example.com/docs/start"},
         },
     ])
 
-    with patch(PATCH_DISCOVER_PAGE_LINKS, discover_mock):
+    with patch(PATCH_DEEP_CRAWL, deep_crawl_mock):
         payload = await server_module.map_impl(
             "https://docs.example.com",
             max_urls=10,
             max_depth=2,
             include_patterns=["https://docs.example.com/docs/*"],
-            exclude_patterns=["*advanced*"],
         )
 
     returned_urls = [result["url"] for result in payload["results"]]
     assert returned_urls == [
         "https://docs.example.com",
         "https://docs.example.com/docs/start",
+        "https://docs.example.com/blog/post",
+        "https://docs.example.com/docs/advanced",
     ]
+    assert deep_crawl_mock.call_args.kwargs["include_patterns"] == ["https://docs.example.com/docs/*"]
 
 
 @pytest.mark.asyncio
 async def test_map_can_include_external_links():
-    discover_mock = AsyncMock(side_effect=[
+    deep_crawl_mock = AsyncMock(return_value=[
         {
-            "status": "ok",
             "url": "https://docs.example.com",
-            "title": "Docs Home",
-            "links": [
-                {
-                    "url": "https://other.example.net/page",
-                    "title": "Other",
-                    "text": "Other",
-                    "link_type": "external",
-                },
-            ],
+            "metadata": {"title": "Docs Home", "depth": 0},
         },
         {
-            "status": "ok",
             "url": "https://other.example.net/page",
-            "title": "Other",
-            "links": [],
+            "metadata": {"title": "Other", "depth": 1, "parent_url": "https://docs.example.com"},
         },
     ])
 
-    with patch(PATCH_DISCOVER_PAGE_LINKS, discover_mock):
+    with patch(PATCH_DEEP_CRAWL, deep_crawl_mock):
         payload = await server_module.map_impl(
             "https://docs.example.com",
             same_domain_only=False,
@@ -174,23 +131,44 @@ async def test_map_can_include_external_links():
 
 
 @pytest.mark.asyncio
-async def test_discover_page_links_preserves_nav_footer_header():
-    """Link discovery must NOT strip nav/footer/header/aside — those are
-    exactly where a docs site's link graph lives. Stripping them with the
-    default content-extraction config made map return ~0 URLs on real
-    sites."""
+async def test_map_uses_prefetch_deep_crawl():
     captured: dict = {}
 
-    async def fake_post(client, url, priority, crawler_config=None):
-        captured["crawler_config"] = crawler_config
-        return {"results": [{"links": {"internal": [], "external": []}}]}
+    async def fake_deep_crawl(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return []
 
-    with patch("core._crawl_post", side_effect=fake_post):
-        await server_module._discover_page_links("https://example.com")
+    with patch(PATCH_DEEP_CRAWL, side_effect=fake_deep_crawl):
+        await server_module.map_impl(
+            "https://example.com",
+            max_urls=5,
+            max_depth=2,
+            include_patterns=["https://example.com/docs/*"],
+        )
 
-    cfg = captured["crawler_config"]
-    assert cfg is not None, "map config was not passed through"
-    excluded = cfg["params"].get("excluded_tags", [])
+    assert captured["url"] == "https://example.com"
+    assert captured["prefetch"] is True
+    assert captured["same_domain_only"] is True
+    assert captured["include_patterns"] == ["https://example.com/docs/*"]
+    assert captured["max_pages"] == 5
+    assert captured["max_depth"] == 2
+
+
+@pytest.mark.asyncio
+async def test_deep_crawl_config_uses_prefetch_and_preserves_link_graph():
+    cfg = server_module._deep_crawl_config(
+        root_url="https://example.com",
+        max_depth=2,
+        max_pages=5,
+        same_domain_only=True,
+        include_patterns=["https://example.com/docs/*"],
+        prefetch=True,
+    )
+
+    params = cfg["params"]
+    assert params["prefetch"] is True
+    excluded = params.get("excluded_tags", [])
     for tag in ("nav", "footer", "header", "aside"):
         assert tag not in excluded, (
             f"{tag!r} in excluded_tags would hide the link graph: {excluded}"

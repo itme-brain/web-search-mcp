@@ -8,7 +8,7 @@ session state, validators, and the per-file-type extractors.
 
 import asyncio
 import fnmatch
-import io
+import json
 import logging
 import mimetypes
 import os
@@ -18,12 +18,13 @@ from inspect import isawaitable
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 
 import httpx
-import pymupdf
-import pymupdf4llm
-import pysbd
+from datasketch import MinHash, MinHashLSH
+from langchain_text_splitters import MarkdownTextSplitter
+import magic
+from rapidfuzz import fuzz
+import tldextract
 import trafilatura
 from cachetools import TTLCache
-from docx import Document as DocxDocument
 from fastmcp import Context
 from flashrank import Ranker, RerankRequest
 from pydantic_settings import BaseSettings
@@ -70,6 +71,8 @@ _RERANK_MAX_LENGTH = 512
 _HTTP_TIMEOUT = max(REQUEST_TIMEOUT // 2, 10)
 _MAX_CONTENT_CHARS = 8000
 _DEDUP_SIMILARITY = 0.75
+_DEDUP_NUM_PERM = 128
+_TITLE_DEDUP_THRESHOLD = 97.0
 _TOP_CHUNKS = 3
 _MAX_CHUNKS_PER_PAGE = 10
 # Joiner for reranked chunks from the same page — standard editorial "elided
@@ -97,13 +100,13 @@ def _new_cache() -> TTLCache:
 
 VALID_TIME_RANGES = frozenset({"day", "week", "month", "year"})
 
-_SENTENCE_SPLITTER = pysbd.Segmenter(language="en", clean=False)
 _TRACKING_PARAMS = frozenset({
     "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
     "ref", "fbclid", "gclid", "dclid", "msclkid", "mc_cid", "mc_eid",
 })
 _WORD_SPLIT = re.compile(r"\W+")
 _WHITESPACE = re.compile(r"\s+")
+_MARKDOWN_SPLITTER = MarkdownTextSplitter(chunk_size=1000, chunk_overlap=0)
 
 
 # ---------------------------------------------------------------------------
@@ -157,20 +160,19 @@ def _normalize_url(url: str) -> str:
 
 def _dedup_results(results: list[dict]) -> list[dict]:
     seen_urls: set[str] = set()
-    seen_titles: set[tuple[str, str]] = set()
+    seen_titles: dict[str, list[str]] = defaultdict(list)
     deduped: list[dict] = []
     for r in results:
         norm = _normalize_url(r.get("url", ""))
         domain = _domain_from_url(r.get("url", "")).lower()
         title = _normalize_title(r.get("title", ""))
-        title_key = (domain, title)
         if norm in seen_urls:
             continue
-        if title and title_key in seen_titles:
+        if title and any(fuzz.ratio(title, seen) >= _TITLE_DEDUP_THRESHOLD for seen in seen_titles[domain]):
             continue
         seen_urls.add(norm)
         if title:
-            seen_titles.add(title_key)
+            seen_titles[domain].append(title)
         deduped.append(r)
     return deduped
 
@@ -183,28 +185,32 @@ def _normalize_title(title: str) -> str:
 
 
 def _word_set(text: str) -> set[str]:
-    return set(_WORD_SPLIT.split(text.lower()))
+    return {word for word in _WORD_SPLIT.split(text.lower()) if word}
+
+
+def _chunk_minhash(words: set[str]) -> MinHash:
+    sketch = MinHash(num_perm=_DEDUP_NUM_PERM)
+    for word in sorted(words):
+        if word:
+            sketch.update(word.encode("utf-8"))
+    return sketch
 
 
 def _dedup_chunks(chunks: list[str], entry_map: list[int]) -> tuple[list[str], list[int]]:
     kept_chunks: list[str] = []
     kept_entries: list[int] = []
-    seen_words: list[set[str]] = []
+    lsh = MinHashLSH(threshold=_DEDUP_SIMILARITY, num_perm=_DEDUP_NUM_PERM)
     for chunk, eidx in zip(chunks, entry_map):
         words = _word_set(chunk)
         if not words:
             continue
-        is_dup = False
-        for prev in seen_words:
-            intersection = len(words & prev)
-            union = len(words | prev)
-            if union and intersection / union >= _DEDUP_SIMILARITY:
-                is_dup = True
-                break
-        if not is_dup:
-            kept_chunks.append(chunk)
-            kept_entries.append(eidx)
-            seen_words.append(words)
+        sketch = _chunk_minhash(words)
+        if lsh.query(sketch):
+            continue
+        key = len(kept_chunks)
+        lsh.insert(key, sketch)
+        kept_chunks.append(chunk)
+        kept_entries.append(eidx)
     return kept_chunks, kept_entries
 
 
@@ -212,46 +218,40 @@ def _domain_from_url(url: str) -> str:
     return urlparse(url).hostname or ""
 
 
-def _registrable_domain(domain: str) -> str:
-    """Return the registrable domain (last two labels).
+def _canonical_hostname(host: str) -> str:
+    normalized = host.strip().lower().rstrip(".")
+    if normalized.startswith("www."):
+        normalized = normalized[4:]
+    return normalized
 
-    Good enough for conventional TLDs (.com, .dev, .org); imprecise for
-    multi-part TLDs like .co.uk where the true registrable domain is
-    three labels. A public-suffix list would be more correct but adds a
-    dep for a marginal fidelity gain. Used by map/crawl same-domain
-    scoping so `map docs.pydantic.dev` also discovers pydantic.dev/...,
-    logfire.pydantic.dev, etc. — "same org" rather than "same host."
-    """
-    bare = domain[4:] if domain.startswith("www.") else domain
-    parts = bare.split(".")
-    if len(parts) <= 2:
-        return bare
-    return ".".join(parts[-2:])
+
+def _registrable_domain(domain: str) -> str:
+    """Return the PSL-aware registrable domain for host/domain matching."""
+    bare = _canonical_hostname(domain)
+    extracted = tldextract.extract(bare)
+    if extracted.domain and extracted.suffix:
+        return f"{extracted.domain}.{extracted.suffix}"
+    return bare
 
 
 def _chunk_text(text: str) -> list[str]:
-    """Split text into paragraph-based chunks suitable for reranking.
+    """Split extracted markdown into bounded chunks for reranking.
 
-    Keeps paragraphs intact. Only splits paragraphs longer than 2000 chars
-    by sentence boundaries so the reranker can score them effectively.
+    Preserve existing paragraph boundaries for short blocks so reranked
+    excerpts remain visibly discontinuous, and delegate only oversized
+    blocks to LangChain's maintained markdown-aware splitter.
     """
-    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    blocks = [block.strip() for block in text.split("\n\n") if block.strip()]
     chunks: list[str] = []
-    for para in paragraphs:
-        if len(para) <= 2000:
-            chunks.append(para)
+    for block in blocks:
+        if len(block) <= 1000:
+            chunks.append(block)
             continue
-        # Long paragraph — split by sentence into ~1000-char groups.
-        sentences = _SENTENCE_SPLITTER.segment(para)
-        current = ""
-        for sent in sentences:
-            if current and len(current) + len(sent) + 1 > 1000:
-                chunks.append(current)
-                current = sent
-            else:
-                current = f"{current} {sent}".strip() if current else sent
-        if current:
-            chunks.append(current)
+        chunks.extend(
+            chunk.strip()
+            for chunk in _MARKDOWN_SPLITTER.split_text(block)
+            if chunk.strip()
+        )
     return chunks[:_MAX_CHUNKS_PER_PAGE]
 
 
@@ -329,11 +329,9 @@ def _normalize_domains(domains: list[str] | None, *, field_name: str) -> list[st
     normalized: list[str] = []
     seen: set[str] = set()
     for domain in domains:
-        value = domain.strip().lower()
+        value = _canonical_hostname(domain)
         if not value:
             continue
-        if value.startswith("www."):
-            value = value[4:]
         if "/" in value:
             raise ValueError(f"{field_name} entries must be bare domains, got {domain!r}")
         if value not in seen:
@@ -357,7 +355,15 @@ def _normalize_glob_patterns(patterns: list[str] | None, *, field_name: str) -> 
 
 
 def _match_domain(domain: str, patterns: list[str]) -> bool:
-    return any(domain == pattern or domain.endswith(f".{pattern}") for pattern in patterns)
+    host = _canonical_hostname(domain)
+    host_registrable = _registrable_domain(host)
+    for pattern in patterns:
+        normalized = _canonical_hostname(pattern)
+        if host == normalized or host.endswith(f".{normalized}"):
+            return True
+        if "." not in normalized and host_registrable == normalized:
+            return True
+    return False
 
 
 def _filter_results_by_domain(
@@ -367,11 +373,10 @@ def _filter_results_by_domain(
 ) -> list[dict]:
     filtered: list[dict] = []
     for result in results:
-        domain = _domain_from_url(result.get("url", "")).lower()
-        bare_domain = domain[4:] if domain.startswith("www.") else domain
-        if include_domains and not _match_domain(bare_domain, include_domains):
+        host = _canonical_hostname(_domain_from_url(result.get("url", "")))
+        if include_domains and not _match_domain(host, include_domains):
             continue
-        if exclude_domains and _match_domain(bare_domain, exclude_domains):
+        if exclude_domains and _match_domain(host, exclude_domains):
             continue
         filtered.append(result)
     return filtered
@@ -501,12 +506,24 @@ def _guess_file_type(url: str, content_type: str | None) -> str:
         or suffix == "docx"
     ):
         return "docx"
+    if (
+        normalized_content_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        or suffix == "xlsx"
+    ):
+        return "xlsx"
+    if (
+        normalized_content_type == "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        or suffix == "pptx"
+    ):
+        return "pptx"
     if normalized_content_type in {"text/html", "application/xhtml+xml"} or suffix in {"html", "htm", "xhtml"}:
         return "html"
     if normalized_content_type in {"text/markdown", "text/x-markdown"} or suffix == "md":
         return "markdown"
     if normalized_content_type == "application/json" or suffix == "json":
         return "json"
+    if normalized_content_type in {"application/yaml", "application/x-yaml", "text/yaml", "text/x-yaml"} or suffix in {"yaml", "yml"}:
+        return "yaml"
     if normalized_content_type in {"application/xml", "text/xml"} or suffix in {"xml", "rss", "atom"}:
         return "xml"
     if normalized_content_type in {"text/csv", "application/csv", "application/vnd.ms-excel"} or suffix == "csv":
@@ -525,6 +542,14 @@ def _extract_crawl_result(data: dict) -> dict:
     if results and isinstance(results, list):
         return results[0]
     return data.get("result", data)
+
+
+def _extract_crawl_results(data: dict) -> list[dict]:
+    results = data.get("results")
+    if isinstance(results, list):
+        return [result for result in results if isinstance(result, dict)]
+    result = data.get("result", data)
+    return [result] if isinstance(result, dict) else []
 
 
 def _extract_crawl_title(result: dict) -> str | None:
@@ -605,6 +630,105 @@ _MAP_CRAWL_CONFIG = {
 }
 
 
+def _query_keywords(query: str) -> list[str]:
+    return sorted({term for term in _WORD_SPLIT.split(query.lower()) if len(term) >= 2})
+
+
+def _domain_filter_patterns(root_url: str, same_domain_only: bool) -> list[str]:
+    if not same_domain_only:
+        return []
+    root_domain = _domain_from_url(root_url).lower()
+    registrable = _registrable_domain(root_domain)
+    schemes = ("http", "https")
+    patterns: list[str] = []
+    for scheme in schemes:
+        patterns.append(f"{scheme}://{registrable}/*")
+        patterns.append(f"{scheme}://*.{registrable}/*")
+        patterns.append(f"{scheme}://{root_domain}/*")
+    return patterns
+
+
+def _crawl_filter_chain(
+    *,
+    root_url: str,
+    same_domain_only: bool,
+    include_patterns: list[str] | None,
+    query: str | None = None,
+) -> list[dict]:
+    filters: list[dict] = []
+    domain_patterns = _domain_filter_patterns(root_url, same_domain_only)
+    if domain_patterns:
+        filters.append({
+            "type": "URLPatternFilter",
+            "params": {"patterns": domain_patterns},
+        })
+    if include_patterns:
+        filters.append({
+            "type": "URLPatternFilter",
+            "params": {"patterns": include_patterns},
+        })
+    filters.append({
+        "type": "ContentTypeFilter",
+        "params": {"allowed_types": ["text/html"]},
+    })
+    if query:
+        filters.append({
+            "type": "ContentRelevanceFilter",
+            "query": query,
+            "threshold": 0.15,
+        })
+    return filters
+
+
+def _deep_crawl_config(
+    *,
+    root_url: str,
+    max_depth: int,
+    max_pages: int,
+    same_domain_only: bool,
+    include_patterns: list[str] | None = None,
+    query: str | None = None,
+    prefetch: bool = False,
+) -> dict:
+    base_config = _MAP_CRAWL_CONFIG if prefetch else _DEFAULT_CRAWL_CONFIG
+    params = dict(base_config["params"])
+    strategy_type = "BFSDeepCrawlStrategy"
+    strategy_params: dict = {
+        "max_depth": max_depth,
+        "include_external": not same_domain_only,
+        "max_pages": max_pages,
+    }
+    filter_chain = _crawl_filter_chain(
+        root_url=root_url,
+        same_domain_only=same_domain_only,
+        include_patterns=include_patterns,
+        query=query,
+    )
+    if filter_chain:
+        strategy_params["filter_chain"] = filter_chain
+
+    if query:
+        strategy_type = "BestFirstCrawlingStrategy"
+        strategy_params["url_scorer"] = {
+            "type": "KeywordRelevanceScorer",
+            "params": {
+                "keywords": _query_keywords(query),
+                "weight": 1.0,
+            },
+        }
+
+    params["deep_crawl_strategy"] = {
+        "type": strategy_type,
+        "params": strategy_params,
+    }
+    if prefetch:
+        params["prefetch"] = True
+    return {
+        "type": "CrawlerRunConfig",
+        "params": params,
+    }
+
+
 def _is_retryable_crawl_error(exc: BaseException) -> bool:
     """Retry only on Crawl4AI transient failures: network issues and 5xx.
 
@@ -629,9 +753,9 @@ async def _crawl_post(
     priority: int,
     crawler_config: dict | None = None,
 ) -> dict:
-    """POST to Crawl4AI's /crawl endpoint with exponential-backoff retry."""
+    """POST to Crawl4AI's stream endpoint and collect NDJSON results."""
     resp = await client.post(
-        f"{CRAWL4AI_URL}/crawl",
+        f"{CRAWL4AI_URL}/crawl/stream",
         json={
             "urls": [url],
             "priority": priority,
@@ -639,49 +763,29 @@ async def _crawl_post(
         },
     )
     resp.raise_for_status()
-    return resp.json()
-
-
-# Max polls per task. REQUEST_TIMEOUT is the outer wait_for bound; this guard
-# catches a pathological case where the status endpoint returns "running"
-# indefinitely without the outer timeout firing (e.g. clock issues, broken
-# sleep). A few extra iterations over the timeout is fine — wait_for fires first.
-_MAX_TASK_POLLS = 60
-
-
-async def _poll_crawl_task(client: httpx.AsyncClient, task_id: str) -> dict | None:
-    """Poll /task/{id} until completed or failed. Bounded by _MAX_TASK_POLLS.
-
-    Returns the task's result dict on success, None on failure or timeout.
-    """
-    for _ in range(_MAX_TASK_POLLS):
-        await asyncio.sleep(1)
-        status_resp = await client.get(f"{CRAWL4AI_URL}/task/{task_id}")
-        status_resp.raise_for_status()
-        status_data = status_resp.json()
-        status = status_data.get("status")
+    body = (await resp.aread()).decode("utf-8", errors="replace")
+    results: list[dict] = []
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        item = json.loads(line)
+        if not isinstance(item, dict):
+            continue
+        status = item.get("status")
         if status == "completed":
-            return status_data.get("result", {})
+            break
         if status == "failed":
-            return None
-    log.warning("crawl task %s exceeded %d polls", task_id, _MAX_TASK_POLLS)
-    return None
+            detail = item.get("error") or item.get("error_message") or "crawl stream failed"
+            raise ValueError(detail)
+        results.append(item)
+    return {"results": results}
 
 
 async def _scrape_impl(url: str) -> dict:
     """Scrape a URL via Crawl4AI. Returns {content, title}."""
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
         data = await _crawl_post(client, url, priority=8)
-
-        task_id = data.get("task_id")
-        if task_id:
-            result = await _poll_crawl_task(client, task_id)
-            if result is None:
-                return {"content": None, "title": None}
-            return {
-                "content": _extract_markdown(result),
-                "title": _extract_crawl_title(result),
-            }
 
         result = _extract_crawl_result(data)
         return {
@@ -728,94 +832,45 @@ async def _head_content_type(url: str) -> str | None:
         return None
 
 
+async def _sniff_content_type(url: str) -> str | None:
+    try:
+        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, follow_redirects=True) as client:
+            resp = await client.get(url, headers={"Range": "bytes=0-8191"})
+            resp.raise_for_status()
+            if not resp.content:
+                return None
+            detected = magic.from_buffer(resp.content, mime=True)
+            return _content_type_without_charset(detected)
+    except (httpx.HTTPError, OSError, ValueError):
+        return None
+
+
 async def _detect_file_type(url: str) -> tuple[str, str | None]:
-    content_type = await _head_content_type(url)
-    return _guess_file_type(url, content_type), _content_type_without_charset(content_type)
+    sniffed_content_type = await _sniff_content_type(url)
+    header_content_type = await _head_content_type(url)
+    content_type = sniffed_content_type or _content_type_without_charset(header_content_type)
+    return _guess_file_type(url, content_type), content_type
 
 
 # ---------------------------------------------------------------------------
-# Per-file-type extractors
+# Per-file-type extractors / handoff
 # ---------------------------------------------------------------------------
-def _docx_bytes_to_markdown(data: bytes) -> tuple[str, str | None]:
-    document = DocxDocument(io.BytesIO(data))
-    title = document.core_properties.title or None
-    sections: list[str] = []
-
-    for paragraph in document.paragraphs:
-        text = paragraph.text.strip()
-        if text:
-            sections.append(text)
-
-    for table_number, table in enumerate(document.tables, start=1):
-        rows: list[str] = []
-        for row in table.rows:
-            cells = [cell.text.strip() for cell in row.cells]
-            if any(cells):
-                rows.append("| " + " | ".join(cells) + " |")
-        if rows:
-            sections.append(f"## Table {table_number}\n\n" + "\n".join(rows))
-
-    return "\n\n".join(sections), title
+_LOCAL_EXTRACT_TYPES = {"text", "markdown", "json", "yaml", "xml", "csv"}
 
 
-def _pdf_extract_all_pages(data: bytes) -> tuple[list[dict], str | None, int]:
-    """Extract every page from a PDF into clean markdown chunks.
-
-    Uses pymupdf4llm for layout-aware extraction with header/footer
-    stripping — the PDF equivalent of what Crawl4AI does for HTML.
-
-    Returns (pages, title, total_pages) where each page is
-    {page: int, content: str}.
-    """
-    doc = pymupdf.Document(stream=data, filetype="pdf")
-    title = doc.metadata.get("title") or None
-    total_pages = doc.page_count
-    chunks = pymupdf4llm.to_markdown(doc, page_chunks=True, hdr_info=False)
-    pages: list[dict] = []
-    for chunk in chunks:
-        text = chunk.get("text", "").strip()
-        if text:
-            page_num = chunk.get("metadata", {}).get("page", 0) + 1  # 0-based → 1-based
-            pages.append({"page": page_num, "content": text})
-    return pages, title, total_pages
-
-
-async def _extract_pdf_document(url: str) -> dict:
-    """Download a PDF, extract pages, and return joined markdown.
-
-    No query-time reranking here — PDFs go through the same central
-    `_rank_document_content` chunk-rerank path as HTML/docx/text. Pages
-    are joined with `\\n\\n` so `_chunk_text` sees paragraph boundaries
-    that naturally align with page boundaries.
-    """
-    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, follow_redirects=True) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-
-    all_pages, title, total_pages = _pdf_extract_all_pages(resp.content)
-
-    if not all_pages:
-        return {
-            "status": "ok",
-            "url": url,
-            "content_type": "application/pdf",
-            "file_type": "pdf",
-            "title": title,
-            "content": "",
-            "total_chars": 0,
-            "total_pages": total_pages,
-        }
-
-    full_content = "\n\n".join(p["content"] for p in all_pages)
+def _handoff_file_document(url: str, file_type: str, content_type: str | None) -> dict:
     return {
-        "status": "ok",
+        "status": "handoff",
         "url": url,
-        "content_type": "application/pdf",
-        "file_type": "pdf",
-        "title": title,
-        "content": full_content,
-        "total_chars": len(full_content),
-        "total_pages": total_pages,
+        "content_type": content_type,
+        "file_type": file_type,
+        "title": None,
+        "content": "",
+        "total_chars": 0,
+        "handoff": {
+            "handler": "files",
+            "reason": f"{file_type} extraction is delegated to the files MCP",
+        },
     }
 
 
@@ -844,23 +899,6 @@ async def _extract_web_document(url: str) -> dict:
     }
 
 
-async def _extract_docx_document(url: str) -> dict:
-    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, follow_redirects=True) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        content, title = _docx_bytes_to_markdown(resp.content)
-        return {
-            "status": "ok",
-            "url": url,
-            "content_type": _content_type_without_charset(resp.headers.get("content-type"))
-            or "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "file_type": "docx",
-            "title": title,
-            "content": content,
-            "total_chars": len(content),
-        }
-
-
 async def _extract_text_document(url: str, file_type: str) -> dict:
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, follow_redirects=True) as client:
         resp = await client.get(url)
@@ -882,25 +920,6 @@ async def _discover_page_links(url: str) -> dict:
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
         data = await _crawl_post(client, url, priority=6, crawler_config=_MAP_CRAWL_CONFIG)
 
-        task_id = data.get("task_id")
-        if task_id:
-            polled = await _poll_crawl_task(client, task_id)
-            if polled is None:
-                return {
-                    "status": "error",
-                    "url": url,
-                    "title": None,
-                    "links": [],
-                    "error": "link discovery failed",
-                }
-            result = _extract_crawl_result(polled)
-            return {
-                "status": "ok",
-                "url": url,
-                "title": _extract_crawl_title(result),
-                "links": _extract_crawl_links(result, url),
-            }
-
         result = _extract_crawl_result(data)
         return {
             "status": "ok",
@@ -908,6 +927,30 @@ async def _discover_page_links(url: str) -> dict:
             "title": _extract_crawl_title(result),
             "links": _extract_crawl_links(result, url),
         }
+
+
+async def _deep_crawl(
+    url: str,
+    *,
+    max_depth: int,
+    max_pages: int,
+    same_domain_only: bool,
+    include_patterns: list[str] | None = None,
+    query: str | None = None,
+    prefetch: bool = False,
+) -> list[dict]:
+    crawler_config = _deep_crawl_config(
+        root_url=url,
+        max_depth=max_depth,
+        max_pages=max_pages,
+        same_domain_only=same_domain_only,
+        include_patterns=include_patterns,
+        query=query,
+        prefetch=prefetch,
+    )
+    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
+        data = await _crawl_post(client, url, priority=7, crawler_config=crawler_config)
+        return _extract_crawl_results(data)
 
 
 # ---------------------------------------------------------------------------
@@ -958,14 +1001,12 @@ async def _extract_url_document(
     content_type = None
     try:
         file_type, content_type = await _detect_file_type(url)
-        if file_type == "pdf":
-            extracted = await _extract_pdf_document(url)
-        elif file_type == "docx":
-            extracted = await _extract_docx_document(url)
-        elif file_type in {"text", "markdown", "json", "xml", "csv"}:
+        if file_type == "html":
+            extracted = await _extract_web_document(url)
+        elif file_type in _LOCAL_EXTRACT_TYPES:
             extracted = await _extract_text_document(url, file_type)
         else:
-            extracted = await _extract_web_document(url)
+            extracted = _handoff_file_document(url, file_type, content_type)
     except Exception as exc:
         extracted = {
             "status": "error",
@@ -978,8 +1019,9 @@ async def _extract_url_document(
             "error": str(exc),
         }
 
-    if extracted["status"] == "ok":
-        # Cache the FULL raw content so later calls with offset can slice it.
+    if extracted["status"] in {"ok", "handoff"}:
+        # Cache successful local extracts and file handoffs so repeated
+        # calls do not re-sniff/reclassify the same resource.
         raw = extracted.get("content", "")
         total_chars = extracted.get("total_chars", len(raw))
         cached_entry = {
@@ -990,9 +1032,8 @@ async def _extract_url_document(
             "title": extracted.get("title"),
             "content": raw,
             "total_chars": total_chars,
+            "handoff": extracted.get("handoff"),
         }
-        if extracted.get("total_pages") is not None:
-            cached_entry["total_pages"] = extracted["total_pages"]
         cache[url] = cached_entry
         content, top_chunks = await _rank_document_content(query, raw, offset=offset)
         extracted["content"] = content

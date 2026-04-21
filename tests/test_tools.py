@@ -28,6 +28,9 @@ async def test_extract_urls_returns_structured_result_from_tool():
                 "file_type": "html",
                 "title": "Example",
                 "content": "# Example\n\nPage content",
+                "chars_shown": 22,
+                "offset": 0,
+                "total_chars": 22,
                 "top_chunks": [],
                 "cached": False,
                 "error": None,
@@ -43,15 +46,17 @@ async def test_extract_urls_returns_structured_result_from_tool():
 
     with patch(PATCH_EXTRACT_IMPL, extract_mock):
         async with Client(server_app) as client:
-            result = await client.call_tool(
+            result = await client.call_tool_mcp(
                 "extract",
                 {"urls": ["https://example.com/a1"], "query": "example query"},
             )
-            payload = result.data
+            payload = result.content[0].text
+            structured = result.structuredContent
 
     assert "example query" in payload
     assert "https://example.com/a1" in payload
     assert "Example" in payload
+    assert structured["results"][0]["url"] == "https://example.com/a1"
 
 
 @pytest.mark.asyncio
