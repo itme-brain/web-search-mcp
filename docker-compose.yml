@@ -48,15 +48,5 @@ services:
       <<: *healthcheck-defaults
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:11235/health', timeout=3).read()"]
 
-  tor:
-    image: dperson/torproxy:latest
-    container_name: tor
-    restart: unless-stopped
-    environment:
-      - TORUSER=nobody
-    healthcheck:
-      <<: *healthcheck-defaults
-      test: ["CMD", "curl", "-sf", "--socks5-hostname", "localhost:9050", "https://check.torproject.org/api/ip"]
-
 volumes:
   searxng-data:
