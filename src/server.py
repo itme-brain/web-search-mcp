@@ -126,25 +126,21 @@ async def extract(
 async def map(
     url: str,
     max_urls: int = 25,
-    max_depth: int = 2,
     include_patterns: list[str] | None = None,
-    same_domain_only: bool = True,
 ) -> ToolResult:
     """Discover URLs on a site — link graph, no body content.
+
+    Discovery stays within the root's registrable domain (e.g. `docs.pydantic.dev` and `pydantic.dev` count as same).
 
     Args:
         url: Root URL to start discovery from.
         max_urls: Maximum URLs to discover (1-50).
-        max_depth: How many link hops to follow from the root (1-3).
         include_patterns: Shell-glob patterns against the full URL; keep only matches (e.g. `["https://docs.example.com/api/*"]`).
-        same_domain_only: If True, restrict to the root's registrable domain (e.g. `docs.pydantic.dev` and `pydantic.dev` count as same). If False, follow every in-scope link.
     """
     response = await impls.map_impl(
         url=url,
         max_urls=max_urls,
-        max_depth=max_depth,
         include_patterns=include_patterns,
-        same_domain_only=same_domain_only,
     )
     return _tool_result(response, _format_map_results)
 
@@ -153,27 +149,21 @@ async def map(
 async def crawl(
     url: str,
     max_urls: int = 10,
-    max_depth: int = 2,
     include_patterns: list[str] | None = None,
-    same_domain_only: bool = True,
 ) -> ToolResult:
     """Discover URLs on a site and fetch their content.
 
-    Pure discovery + extraction. For query-based relevance ranking use `search` with `include_domains` instead.
+    Pure discovery + extraction, scoped to the root's registrable domain. For query-based relevance ranking use `search` with `include_domains` instead.
 
     Args:
         url: Root URL to start crawl from.
         max_urls: Maximum pages to crawl (1-20).
-        max_depth: How many link hops to follow from the root (1-3).
         include_patterns: Shell-glob patterns against the full URL; keep only matches.
-        same_domain_only: If True, restrict to the root's registrable domain. If False, follow every in-scope link.
     """
     response = await impls.crawl_impl(
         url=url,
         max_urls=max_urls,
-        max_depth=max_depth,
         include_patterns=include_patterns,
-        same_domain_only=same_domain_only,
     )
     return _tool_result(response, _format_crawl_results)
 

@@ -38,7 +38,6 @@ async def test_map_discovers_same_org_links():
         payload = await server_module.map_impl(
             "https://docs.example.com",
             max_urls=10,
-            max_depth=1,
         )
 
     returned_urls = set(result["url"] for result in payload["results"])
@@ -47,7 +46,6 @@ async def test_map_discovers_same_org_links():
     assert "https://docs.example.com/guide" in returned_urls
     assert "https://blog.example.com/post" in returned_urls
     assert "https://example.com/about" in returned_urls
-    assert payload["meta"]["same_domain_only"] is True
     assert deep_crawl_mock.call_args.kwargs["same_domain_only"] is True
 
 
@@ -88,7 +86,6 @@ async def test_map_applies_depth_and_patterns():
         payload = await server_module.map_impl(
             "https://docs.example.com",
             max_urls=10,
-            max_depth=2,
             include_patterns=["https://docs.example.com/docs/*"],
         )
 
@@ -100,34 +97,6 @@ async def test_map_applies_depth_and_patterns():
         "https://docs.example.com/docs/advanced",
     ]
     assert deep_crawl_mock.call_args.kwargs["include_patterns"] == ["https://docs.example.com/docs/*"]
-
-
-@pytest.mark.asyncio
-async def test_map_can_include_external_links():
-    deep_crawl_mock = AsyncMock(return_value=[
-        {
-            "url": "https://docs.example.com",
-            "metadata": {"title": "Docs Home", "depth": 0},
-        },
-        {
-            "url": "https://other.example.net/page",
-            "metadata": {"title": "Other", "depth": 1, "parent_url": "https://docs.example.com"},
-        },
-    ])
-
-    with patch(PATCH_DEEP_CRAWL, deep_crawl_mock):
-        payload = await server_module.map_impl(
-            "https://docs.example.com",
-            same_domain_only=False,
-            max_urls=10,
-            max_depth=1,
-        )
-
-    returned_urls = [result["url"] for result in payload["results"]]
-    assert returned_urls == [
-        "https://docs.example.com",
-        "https://other.example.net/page",
-    ]
 
 
 @pytest.mark.asyncio
@@ -143,7 +112,6 @@ async def test_map_uses_prefetch_deep_crawl():
         await server_module.map_impl(
             "https://example.com",
             max_urls=5,
-            max_depth=2,
             include_patterns=["https://example.com/docs/*"],
         )
 

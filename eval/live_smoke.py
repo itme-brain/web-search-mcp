@@ -58,17 +58,14 @@ TESTS = [
         "args": {
             "url": "https://docs.pydantic.dev/latest",
             "max_urls": 5,
-            "max_depth": 1,
         },
     },
     {
-        "name": "crawl — query-ranked",
+        "name": "crawl — discover + extract",
         "tool": "crawl",
         "args": {
             "url": "https://docs.pydantic.dev/latest",
-            "query": "model validators",
             "max_urls": 3,
-            "max_depth": 1,
         },
     },
 ]

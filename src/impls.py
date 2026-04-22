@@ -32,11 +32,12 @@ from core import (
     _CHUNK_GAP,
     _MAX_CONTENT_CHARS,
     _MAX_EXTRACT_URLS,
-    _MAX_MAP_DEPTH,
     _MAX_MAP_URLS,
     _MIN_RELEVANCE_SCORE,
     _TOP_CHUNKS,
 )
+
+_DISCOVERY_DEPTH = 2
 
 log = logging.getLogger("web-search-mcp")
 
@@ -166,7 +167,7 @@ async def search_impl(
     scrape_tasks = [core._scrape_cached(r["url"], scrape_cache) for r in results[:to_scrape]]
     scraped = await asyncio.gather(*scrape_tasks)
     timings_ms["scrape"] = int((time.monotonic() - scrape_started) * 1000)
-    scrape_failures = sum(1 for content in scraped if content is None)
+    scrape_failures = sum(1 for content, _ in scraped if content is None)
     if scrape_failures:
         degraded = True
         warnings.append(core._warning("scrape_failed", "crawl4ai", f"{scrape_failures} of {to_scrape} pages failed"))
@@ -174,12 +175,14 @@ async def search_impl(
     # --- build entries ---
     entries: list[dict] = []
     for i, result in enumerate(results[:to_scrape]):
-        raw = scraped[i][:_MAX_CONTENT_CHARS] if scraped[i] else None
+        content, metadata = scraped[i]
+        raw = content[:_MAX_CONTENT_CHARS] if content else None
         entries.append({
             "title": result.get("title", "Untitled"),
             "url": result.get("url", ""),
             "content": raw or result.get("content", ""),
             "scraped": raw is not None,
+            "metadata": metadata or {},
         })
 
     for result in results[to_scrape:]:
@@ -188,6 +191,7 @@ async def search_impl(
             "url": result.get("url", ""),
             "content": result.get("content", ""),
             "scraped": False,
+            "metadata": {},
         })
 
     # --- chunk scraped pages, keep snippets as single chunks ---
@@ -271,7 +275,7 @@ async def search_impl(
         else:
             content = entry["content"]
 
-        structured_results.append({
+        structured = {
             "rank": rank,
             "search_rank": eidx + 1,
             "title": entry["title"],
@@ -284,7 +288,11 @@ async def search_impl(
             "score": entry_best.get(eidx),
             "scraped": entry["scraped"],
             "previously_seen": normalized_url in seen_urls,
-        })
+        }
+        metadata = entry.get("metadata") or {}
+        if metadata:
+            structured["metadata"] = metadata
+        structured_results.append(structured)
         new_urls.append(normalized_url)
 
     response = {
@@ -382,6 +390,9 @@ async def extract_impl(
             "error": document.get("error"),
             "handoff": document.get("handoff"),
         }
+        metadata = document.get("metadata") or {}
+        if metadata:
+            entry["metadata"] = metadata
         results.append(entry)
 
     await core._save_cache(ctx, STATE_EXTRACT_CACHE, extract_cache)
@@ -405,14 +416,11 @@ async def extract_impl(
 async def map_impl(
     url: str,
     max_urls: int = 25,
-    max_depth: int = 2,
     include_patterns: list[str] | None = None,
-    same_domain_only: bool = True,
 ) -> dict:
     """Discover in-scope URLs from a site using Crawl4AI deep crawl + prefetch."""
     root_url = core._validate_urls([url], maximum=1)[0]
     max_urls = core._validate_positive_int("max_urls", max_urls, maximum=_MAX_MAP_URLS)
-    max_depth = core._validate_positive_int("max_depth", max_depth, maximum=_MAX_MAP_DEPTH)
     include_patterns = core._normalize_glob_patterns(include_patterns, field_name="include_patterns")
 
     started = time.monotonic()
@@ -420,9 +428,9 @@ async def map_impl(
     try:
         crawled_pages = await core._deep_crawl(
             root_url,
-            max_depth=max_depth,
+            max_depth=_DISCOVERY_DEPTH,
             max_pages=max_urls,
-            same_domain_only=same_domain_only,
+            same_domain_only=True,
             include_patterns=include_patterns,
             prefetch=True,
         )
@@ -440,8 +448,8 @@ async def map_impl(
         if normalized_url in visited_pages:
             continue
         visited_pages.add(normalized_url)
-        metadata = page.get("metadata") if isinstance(page.get("metadata"), dict) else {}
-        depth = metadata.get("depth", 0) or 0
+        crawl_metadata = page.get("metadata") if isinstance(page.get("metadata"), dict) else {}
+        depth = crawl_metadata.get("depth", 0) or 0
         results.append({
             "url": page_url,
             "normalized_url": normalized_url,
@@ -449,7 +457,7 @@ async def map_impl(
             "title": core._extract_crawl_title(page),
             "link_text": None,
             "depth": depth,
-            "discovered_from": metadata.get("parent_url"),
+            "discovered_from": crawl_metadata.get("parent_url"),
             "link_type": "seed" if depth == 0 else "internal",
         })
         if len(results) >= max_urls:
@@ -463,7 +471,7 @@ async def map_impl(
     if len(results) <= 1 and len(results) < max_urls:
         try:
             discovery = await core._discover_page_links(root_url)
-            domain_patterns = core._domain_filter_patterns(root_url, same_domain_only)
+            domain_patterns = core._domain_filter_patterns(root_url, True)
             for link in discovery.get("links", []):
                 if len(results) >= max_urls:
                     break
@@ -473,9 +481,8 @@ async def map_impl(
                 normalized_url = core._normalize_url(link_url)
                 if normalized_url in visited_pages:
                     continue
-                if same_domain_only and domain_patterns:
-                    if not core._url_matches_patterns(link_url, domain_patterns):
-                        continue
+                if domain_patterns and not core._url_matches_patterns(link_url, domain_patterns):
+                    continue
                 if include_patterns:
                     if not core._url_matches_patterns(link_url, include_patterns):
                         continue
@@ -501,10 +508,8 @@ async def map_impl(
         "results": results,
         "meta": {
             "max_urls_requested": max_urls,
-            "max_depth": max_depth,
             "urls_returned": len(results),
             "pages_visited": len(visited_pages),
-            "same_domain_only": same_domain_only,
             "warnings": warnings,
             "timings_ms": {
                 "total": int((time.monotonic() - started) * 1000),
@@ -524,9 +529,7 @@ async def map_impl(
 async def crawl_impl(
     url: str,
     max_urls: int = 10,
-    max_depth: int = 2,
     include_patterns: list[str] | None = None,
-    same_domain_only: bool = True,
 ) -> dict:
     """Deep-crawl a site through Crawl4AI and return a structured dict.
 
@@ -546,9 +549,9 @@ async def crawl_impl(
     try:
         crawled_pages = await core._deep_crawl(
             root_url,
-            max_depth=max_depth,
+            max_depth=_DISCOVERY_DEPTH,
             max_pages=effective_max_urls,
-            same_domain_only=same_domain_only,
+            same_domain_only=True,
             include_patterns=include_patterns,
         )
     except Exception as exc:
@@ -573,7 +576,8 @@ async def crawl_impl(
         if isinstance(status_code, int) and status_code >= 400:
             status = "error"
 
-        metadata = page.get("metadata") if isinstance(page.get("metadata"), dict) else {}
+        crawl_metadata = page.get("metadata") if isinstance(page.get("metadata"), dict) else {}
+        doc_metadata = core._build_document_metadata(page.get("html"), raw_content)
         entry = {
             "rank": len(entries) + 1,
             "url": page_url,
@@ -581,9 +585,9 @@ async def crawl_impl(
             "domain": core._domain_from_url(page_url),
             "title": core._extract_crawl_title(page),
             "link_text": None,
-            "depth": metadata.get("depth", 0) or 0,
-            "discovered_from": metadata.get("parent_url"),
-            "link_type": "seed" if (metadata.get("depth", 0) or 0) == 0 else "internal",
+            "depth": crawl_metadata.get("depth", 0) or 0,
+            "discovered_from": crawl_metadata.get("parent_url"),
+            "link_type": "seed" if (crawl_metadata.get("depth", 0) or 0) == 0 else "internal",
             "status": status,
             "content_type": "text/html",
             "content": raw_content,
@@ -593,13 +597,15 @@ async def crawl_impl(
             "cached": False,
             "error": None if status == "ok" else "extraction failed",
         }
+        if doc_metadata:
+            entry["metadata"] = doc_metadata
         entries.append(entry)
 
     # ----- Fallback: discover + scrape when deep crawl finds too few pages -----
     if len(entries) <= 1 and len(entries) < effective_max_urls:
         try:
             discovery = await core._discover_page_links(root_url)
-            domain_patterns = core._domain_filter_patterns(root_url, same_domain_only)
+            domain_patterns = core._domain_filter_patterns(root_url, True)
 
             candidates: list[dict] = []
             for link in discovery.get("links", []):
@@ -609,9 +615,8 @@ async def crawl_impl(
                 normalized_url = core._normalize_url(link_url)
                 if normalized_url in seen_normalized_urls:
                     continue
-                if same_domain_only and domain_patterns:
-                    if not core._url_matches_patterns(link_url, domain_patterns):
-                        continue
+                if domain_patterns and not core._url_matches_patterns(link_url, domain_patterns):
+                    continue
                 if include_patterns:
                     if not core._url_matches_patterns(link_url, include_patterns):
                         continue
@@ -651,10 +656,16 @@ async def crawl_impl(
                         "cached": False,
                         "error": None if status == "ok" else "extraction failed",
                     }
+                    doc_metadata = scrape_result.get("metadata") or {}
+                    if doc_metadata:
+                        entry["metadata"] = doc_metadata
                     entries.append(entry)
         except Exception as exc:
             warnings.append(core._warning("fallback_discovery_failed", "crawl4ai", str(exc)))
 
+    entries, urls_deduplicated = core._dedup_pages(entries)
+    for idx, entry in enumerate(entries, start=1):
+        entry["rank"] = idx
     results = entries[:effective_max_urls]
 
     urls_truncated = len(entries) - len(results)
@@ -663,13 +674,12 @@ async def crawl_impl(
         "results": results,
         "meta": {
             "max_urls_requested": effective_max_urls,
-            "max_depth": max_depth,
-            "urls_discovered": len(entries),
+            "urls_discovered": len(entries) + urls_deduplicated,
             "urls_returned": len(results),
             "urls_truncated_by_limit": urls_truncated,
+            "urls_deduplicated": urls_deduplicated,
             "urls_succeeded": sum(1 for result in results if result["status"] == "ok"),
             "urls_failed": sum(1 for result in results if result["status"] != "ok"),
-            "same_domain_only": same_domain_only,
             "warnings": warnings,
             "timings_ms": {
                 "total": int((time.monotonic() - started) * 1000),
@@ -677,10 +687,11 @@ async def crawl_impl(
         },
     }
     log.info(
-        "crawl url=%s discovered=%d returned=%d succeeded=%d failed=%d",
+        "crawl url=%s discovered=%d returned=%d dedup=%d succeeded=%d failed=%d",
         root_url,
-        len(entries),
+        response["meta"]["urls_discovered"],
         len(results),
+        urls_deduplicated,
         response["meta"]["urls_succeeded"],
         response["meta"]["urls_failed"],
     )

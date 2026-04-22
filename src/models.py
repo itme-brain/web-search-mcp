@@ -37,6 +37,14 @@ class HandoffModel(StrictModel):
     reason: str
 
 
+class DocumentMetadataModel(StrictModel):
+    author: str | None = None
+    date: str | None = None
+    site_name: str | None = None
+    description: str | None = None
+    word_count: int | None = None
+
+
 class SearchResultModel(StrictModel):
     rank: int
     search_rank: int
@@ -50,6 +58,7 @@ class SearchResultModel(StrictModel):
     score: float | None = None
     scraped: bool
     previously_seen: bool
+    metadata: DocumentMetadataModel | None = None
 
 
 class SearchMetaModel(StrictModel):
@@ -88,6 +97,7 @@ class ExtractResultModel(StrictModel):
     cached: bool
     error: str | None = None
     handoff: HandoffModel | None = None
+    metadata: DocumentMetadataModel | None = None
 
 
 class ExtractMetaModel(StrictModel):
@@ -117,10 +127,8 @@ class MapResultModel(StrictModel):
 
 class MapMetaModel(StrictModel):
     max_urls_requested: int
-    max_depth: int
     urls_returned: int
     pages_visited: int
-    same_domain_only: bool
     warnings: list[WarningModel]
     timings_ms: TimingModel
 
@@ -149,17 +157,17 @@ class CrawlResultModel(StrictModel):
     total_chars: int
     cached: bool
     error: str | None = None
+    metadata: DocumentMetadataModel | None = None
 
 
 class CrawlMetaModel(StrictModel):
     max_urls_requested: int
-    max_depth: int
     urls_discovered: int
     urls_returned: int
     urls_truncated_by_limit: int
+    urls_deduplicated: int = 0
     urls_succeeded: int
     urls_failed: int
-    same_domain_only: bool
     warnings: list[WarningModel]
     timings_ms: TimingModel
 

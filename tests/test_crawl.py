@@ -68,6 +68,43 @@ async def test_crawl_preserves_discovery_order():
 
 
 @pytest.mark.asyncio
+async def test_crawl_collapses_same_body_at_different_urls():
+    body = (
+        "# Intro\n\nThe Model Context Protocol standardizes how applications "
+        "expose tools and data to large language models. It gives developers a "
+        "common integration surface so that any MCP-aware client can connect to "
+        "any MCP-aware server without bespoke glue code each time."
+    )
+    deep_crawl_mock = AsyncMock(return_value=[
+        {
+            "url": "https://example.com/docs/getting-started/intro",
+            "metadata": {"title": "Intro", "depth": 0},
+            "markdown": {"raw_markdown": body},
+        },
+        {
+            "url": "https://example.com/docs/getting-started",
+            "metadata": {"title": "Intro", "depth": 1, "parent_url": "https://example.com"},
+            "markdown": {"raw_markdown": body + "\n\n_mirror_"},
+        },
+        {
+            "url": "https://example.com/",
+            "metadata": {"title": "Intro", "depth": 1, "parent_url": "https://example.com"},
+            "markdown": {"raw_markdown": body + "\n\n_home_"},
+        },
+    ])
+
+    with patch(PATCH_DEEP_CRAWL, deep_crawl_mock):
+        payload = await server_module.crawl_impl(
+            "https://example.com",
+            max_urls=5,
+        )
+
+    assert payload["meta"]["urls_deduplicated"] == 2
+    assert payload["meta"]["urls_returned"] == 1
+    assert payload["results"][0]["url"] == "https://example.com/docs/getting-started/intro"
+
+
+@pytest.mark.asyncio
 async def test_crawl_passes_include_patterns_to_deep_crawl():
     deep_crawl_mock = AsyncMock(return_value=[
         {
@@ -91,7 +128,6 @@ async def test_crawl_passes_include_patterns_to_deep_crawl():
         await server_module.crawl_impl(
             "https://docs.example.com",
             include_patterns=["https://docs.example.com/api/*"],
-            same_domain_only=True,
             max_urls=5,
         )
 

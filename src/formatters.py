@@ -129,6 +129,8 @@ def _format_crawl_results(response: dict) -> str:
     discovered = meta.get("urls_discovered", 0)
     returned = meta.get("urls_returned", meta.get("urls_succeeded", 0))
     parts.append(f"pages: {returned} returned of {discovered} discovered")
+    if meta.get("urls_deduplicated"):
+        parts.append(f"deduplicated: {meta['urls_deduplicated']} near-identical page(s) collapsed")
     if meta.get("urls_truncated_by_limit"):
         parts.append(f"note: {meta['urls_truncated_by_limit']} additional page(s) available — increase max_urls to see more")
     if meta.get("urls_failed"):

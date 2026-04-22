@@ -39,6 +39,7 @@ sys.modules["flashrank"] = _flashrank
 if "trafilatura" not in sys.modules:
     _trafilatura = types.ModuleType("trafilatura")
     _trafilatura.extract = lambda *args, **kwargs: None
+    _trafilatura.extract_metadata = lambda *args, **kwargs: None
     sys.modules["trafilatura"] = _trafilatura
 
 # Import the four split modules. `core` pulls in Settings + Ranker on first

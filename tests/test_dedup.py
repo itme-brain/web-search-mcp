@@ -3,6 +3,7 @@ from tests.conftest import server_module
 _normalize_url = server_module._normalize_url
 _dedup_results = server_module._dedup_results
 _dedup_chunks = server_module._dedup_chunks
+_dedup_pages = server_module._dedup_pages
 _diversify_ranked_entries = server_module._diversify_ranked_entries
 _chunk_text = server_module._chunk_text
 _match_domain = server_module._match_domain
@@ -136,6 +137,38 @@ def test_chunk_text_preserves_markdown_structure_and_bounds_chunks():
     assert any("## Section" in chunk for chunk in chunks)
     assert len(chunks) > 1
     assert max(len(chunk) for chunk in chunks) <= 1000
+
+
+def test_dedup_pages_collapses_near_identical_bodies():
+    body = (
+        "Model Context Protocol is an open protocol that standardizes how "
+        "applications provide context to large language models. It defines "
+        "a way for AI applications to connect to external data sources and "
+        "tools through a common interface. MCP enables developers to build "
+        "integrations once and reuse them across many AI clients."
+    )
+    entries = [
+        {"url": "https://example.com/docs/getting-started/intro", "content": body},
+        {"url": "https://example.com/docs/getting-started", "content": body + " Read more."},
+        {"url": "https://example.com/", "content": body + " Home."},
+        {"url": "https://example.com/other", "content": "A totally different page about quantum computing qubits and entanglement."},
+    ]
+    kept, dropped = _dedup_pages(entries)
+    assert dropped == 2
+    assert [entry["url"] for entry in kept] == [
+        "https://example.com/docs/getting-started/intro",
+        "https://example.com/other",
+    ]
+
+
+def test_dedup_pages_skips_short_bodies():
+    entries = [
+        {"url": "https://a.com", "content": "short stub"},
+        {"url": "https://b.com", "content": "short stub"},
+    ]
+    kept, dropped = _dedup_pages(entries)
+    assert dropped == 0
+    assert len(kept) == 2
 
 
 def test_diversify_ranked_entries_interleaves_domains():

@@ -82,7 +82,6 @@ _MAX_CHUNKS_PER_PAGE = 10
 _CHUNK_GAP = "\n\n[…]\n\n"
 _MAX_EXTRACT_URLS = 20
 _MAX_MAP_URLS = 50
-_MAX_MAP_DEPTH = 3
 # Minimum FlashRank relevance score for a result's best chunk.  Entries
 # scoring below this are CAPTCHA walls, wrong-language pages, or
 # auto-generated spam — noise the reranker confidently identifies as
@@ -218,6 +217,35 @@ def _dedup_chunks(chunks: list[str], entry_map: list[int]) -> tuple[list[str], l
         kept_chunks.append(chunk)
         kept_entries.append(eidx)
     return kept_chunks, kept_entries
+
+
+def _dedup_pages(entries: list[dict], *, min_chars: int = 200) -> tuple[list[dict], int]:
+    """Collapse pages with near-identical body content; keep first-seen entry.
+
+    Catches the case where a site serves the same rendered page at several URLs
+    (e.g. `/`, `/docs/getting-started`, `/docs/getting-started/intro` all rendering
+    one intro page). Pages shorter than `min_chars` bypass the check since short
+    bodies false-match easily against shared boilerplate.
+    """
+    kept: list[dict] = []
+    lsh = MinHashLSH(threshold=_DEDUP_SIMILARITY, num_perm=_DEDUP_NUM_PERM)
+    dropped = 0
+    for entry in entries:
+        content = entry.get("content") or ""
+        if len(content) < min_chars:
+            kept.append(entry)
+            continue
+        words = _word_set(content)
+        if not words:
+            kept.append(entry)
+            continue
+        sketch = _chunk_minhash(words)
+        if lsh.query(sketch):
+            dropped += 1
+            continue
+        lsh.insert(len(kept), sketch)
+        kept.append(entry)
+    return kept, dropped
 
 
 def _domain_from_url(url: str) -> str:
@@ -478,6 +506,20 @@ async def _probe_dependency(url: str) -> dict[str, str]:
         return {"status": "error", "detail": str(exc)}
 
 
+# Matches markdown table separator rows like "| --- | --- |" or "| :---: | ---: |".
+# Alignment markers (`:`) and dashes only — any other content disqualifies.
+_TABLE_SEPARATOR_ROW = re.compile(r"^\s*\|?\s*(:?-{3,}:?\s*\|\s*)+:?-{3,}:?\s*\|?\s*$")
+
+
+def _strip_table_separator_rows(text: str) -> str:
+    """Drop `|---|---|` noise rows while leaving the surrounding table intact."""
+    if "|" not in text or "---" not in text:
+        return text
+    return "\n".join(
+        line for line in text.splitlines() if not _TABLE_SEPARATOR_ROW.match(line)
+    )
+
+
 def _extract_markdown(result: dict) -> str | None:
     html = result.get("html")
     if html:
@@ -486,16 +528,45 @@ def _extract_markdown(result: dict) -> str | None:
                 html, output_format="txt", include_links=True, include_tables=True,
             )
             if extracted and len(extracted.strip()) >= 50:
-                return extracted
+                return _strip_table_separator_rows(extracted)
         except Exception:
             pass
 
     md = result.get("markdown")
+    content: str | None
     if isinstance(md, dict):
-        return md.get("fit_markdown") or md.get("raw_markdown")
-    if isinstance(md, str):
-        return md
-    return result.get("cleaned_html")
+        content = md.get("fit_markdown") or md.get("raw_markdown")
+    elif isinstance(md, str):
+        content = md
+    else:
+        content = result.get("cleaned_html")
+    return _strip_table_separator_rows(content) if content else content
+
+
+def _extract_html_metadata(html: str | None) -> dict:
+    """Pull author/date/site_name/description from raw HTML via trafilatura."""
+    if not html:
+        return {}
+    try:
+        doc = trafilatura.extract_metadata(html)
+    except Exception:
+        return {}
+    if doc is None:
+        return {}
+    return {
+        "author": doc.author or None,
+        "date": doc.date or None,
+        "site_name": doc.sitename or None,
+        "description": doc.description or None,
+    }
+
+
+def _build_document_metadata(html: str | None, content: str | None) -> dict:
+    """Assemble the per-document metadata block (empty fields stripped)."""
+    metadata = _extract_html_metadata(html)
+    if content:
+        metadata["word_count"] = len(content.split())
+    return {k: v for k, v in metadata.items() if v is not None}
 
 
 def _content_type_without_charset(content_type: str | None) -> str | None:
@@ -573,6 +644,32 @@ def _extract_crawl_title(result: dict) -> str | None:
     return None
 
 
+# Visible link text used for accessibility shortcuts — useless as a map snippet
+# since it describes the *mechanism* of the link, not its destination.
+_A11Y_LINK_TEXTS = frozenset({
+    "skip to main content",
+    "skip to content",
+    "skip to main",
+    "skip navigation",
+    "skip to navigation",
+    "jump to content",
+    "jump to main content",
+    "jump to navigation",
+    "main content",
+})
+
+
+def _clean_link_label(value: str | None) -> str | None:
+    if not value:
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    if stripped.lower() in _A11Y_LINK_TEXTS:
+        return None
+    return stripped
+
+
 def _extract_crawl_links(result: dict, base_url: str) -> list[dict]:
     link_groups = result.get("links")
     if not isinstance(link_groups, dict):
@@ -595,8 +692,8 @@ def _extract_crawl_links(result: dict, base_url: str) -> list[dict]:
                 continue
             links.append({
                 "url": absolute_url,
-                "title": (link.get("title") or "").strip() or None,
-                "text": (link.get("text") or "").strip() or None,
+                "title": _clean_link_label(link.get("title")),
+                "text": _clean_link_label(link.get("text")),
                 "link_type": link_type,
             })
     return links
@@ -773,23 +870,25 @@ async def _crawl_post(
 
 
 async def _scrape_impl(url: str) -> dict:
-    """Scrape a URL via Crawl4AI. Returns {content, title}."""
+    """Scrape a URL via Crawl4AI. Returns {content, title, metadata}."""
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
         data = await _crawl_post(client, url, priority=8)
 
         result = _extract_crawl_result(data)
+        content = _extract_markdown(result)
         return {
-            "content": _extract_markdown(result),
+            "content": content,
             "title": _extract_crawl_title(result),
+            "metadata": _build_document_metadata(result.get("html"), content),
         }
 
 
 async def _scrape(url: str) -> dict:
     """Scrape a URL via Crawl4AI, bounded by REQUEST_TIMEOUT seconds end-to-end.
 
-    Returns {content, title}. On failure content is None.
+    Returns {content, title, metadata}. On failure content is None.
     """
-    empty = {"content": None, "title": None}
+    empty = {"content": None, "title": None, "metadata": {}}
     try:
         return await asyncio.wait_for(_scrape_impl(url), timeout=REQUEST_TIMEOUT)
     except asyncio.TimeoutError:
@@ -801,15 +900,17 @@ async def _scrape(url: str) -> dict:
     return empty
 
 
-async def _scrape_cached(url: str, cache: TTLCache) -> str | None:
-    """Scrape with per-session cache. Returns cached content on hit, scrapes on miss."""
+async def _scrape_cached(url: str, cache: TTLCache) -> tuple[str | None, dict]:
+    """Scrape with per-session cache. Returns (content, metadata) tuple."""
     if url in cache:
         log.debug("scrape cache hit url=%s", url)
-        return cache[url]
+        cached = cache[url]
+        return cached.get("content"), cached.get("metadata") or {}
     result = await _scrape(url)
     content = result["content"]
-    cache[url] = content
-    return content
+    metadata = result.get("metadata") or {}
+    cache[url] = {"content": content, "metadata": metadata}
+    return content, metadata
 
 
 async def _head_content_type(url: str) -> str | None:
@@ -857,6 +958,7 @@ def _handoff_file_document(url: str, file_type: str, content_type: str | None) -
         "title": None,
         "content": "",
         "total_chars": 0,
+        "metadata": {},
         "handoff": {
             "handler": "files",
             "reason": f"{file_type} extraction is delegated to the files MCP",
@@ -876,6 +978,7 @@ async def _extract_web_document(url: str) -> dict:
             "title": None,
             "content": "",
             "total_chars": 0,
+            "metadata": {},
             "error": "extraction failed",
         }
     return {
@@ -886,6 +989,7 @@ async def _extract_web_document(url: str) -> dict:
         "title": result.get("title"),
         "content": content,
         "total_chars": len(content),
+        "metadata": result.get("metadata") or {},
     }
 
 
@@ -903,6 +1007,7 @@ async def _extract_text_document(url: str, file_type: str) -> dict:
             "title": None,
             "content": resp.text,
             "total_chars": len(resp.text),
+            "metadata": {"word_count": len(resp.text.split())} if resp.text else {},
         }
 
 
@@ -1004,6 +1109,7 @@ async def _extract_url_document(
             "title": None,
             "content": "",
             "total_chars": 0,
+            "metadata": {},
             "error": str(exc),
         }
 
@@ -1020,6 +1126,7 @@ async def _extract_url_document(
             "title": extracted.get("title"),
             "content": raw,
             "total_chars": total_chars,
+            "metadata": extracted.get("metadata") or {},
             "handoff": extracted.get("handoff"),
         }
         cache[url] = cached_entry

@@ -182,6 +182,56 @@ async def test_search_separates_reranked_chunks_with_ellipsis_gap():
     assert "[…]" in content, f"expected ellipsis gap in content:\n{content}"
 
 
+@pytest.mark.asyncio
+async def test_search_surfaces_metadata_on_result():
+    search_mock = AsyncMock(return_value=make_search_results(URLS_A[:1]))
+    scrape_mock = AsyncMock(return_value={
+        "content": "Body content covering the query topic in enough depth to matter.",
+        "title": "Result 1",
+        "metadata": {
+            "author": "Jane Doe",
+            "date": "2024-03-15",
+            "site_name": "Example Blog",
+            "word_count": 11,
+        },
+    })
+    rerank_mock = AsyncMock(side_effect=_identity_rerank)
+
+    with (
+        patch(PATCH_SEARCH, search_mock),
+        patch(PATCH_SCRAPE, scrape_mock),
+        patch(PATCH_RERANK, rerank_mock),
+    ):
+        payload = await server_module.search_impl(query="topic", num_results=1)
+
+    assert payload["results"][0]["metadata"] == {
+        "author": "Jane Doe",
+        "date": "2024-03-15",
+        "site_name": "Example Blog",
+        "word_count": 11,
+    }
+
+
+@pytest.mark.asyncio
+async def test_search_omits_metadata_when_empty():
+    search_mock = AsyncMock(return_value=make_search_results(URLS_A[:1]))
+    scrape_mock = AsyncMock(return_value={
+        "content": "Body content.",
+        "title": "Result 1",
+        "metadata": {},
+    })
+    rerank_mock = AsyncMock(side_effect=_identity_rerank)
+
+    with (
+        patch(PATCH_SEARCH, search_mock),
+        patch(PATCH_SCRAPE, scrape_mock),
+        patch(PATCH_RERANK, rerank_mock),
+    ):
+        payload = await server_module.search_impl(query="topic", num_results=1)
+
+    assert "metadata" not in payload["results"][0]
+
+
 def test_dedup_unresponsive_engines_handles_list_and_dict_shapes():
     """SearXNG sometimes ships list pairs, sometimes dicts, sometimes dupes."""
     entries = [

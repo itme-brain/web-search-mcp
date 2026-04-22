@@ -149,7 +149,7 @@ async def test_map_markdown_does_not_leak_metadata_fields():
 
     with patch("core._discover_page_links", discover_mock):
         markdown = await server_module.map.fn(
-            "https://docs.example.com", max_urls=5, max_depth=1,
+            "https://docs.example.com", max_urls=5,
         )
 
     for field in _LEAKY_FIELDS + ["link_type", "discovered_from", "domain"]:
