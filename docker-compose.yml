@@ -33,7 +33,13 @@ services:
     container_name: searxng
     restart: unless-stopped
     volumes:
-      - ./searxng/config:/etc/searxng
+      # Mount only settings.yml as read-only so the SearXNG entrypoint can't
+      # chown the whole host config dir to its internal UID (977), which
+      # wedges host-side git operations on searxng/config/*. The template
+      # is host-only (rendered into settings.yml by `just setup`); /etc/searxng
+      # inside the container stays writable in the container layer for uwsgi.ini
+      # and other image-generated files.
+      - ./searxng/config/settings.yml:/etc/searxng/settings.yml:ro
       - searxng-data:/var/cache/searxng
     healthcheck:
       <<: *healthcheck-defaults
