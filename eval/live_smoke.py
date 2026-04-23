@@ -114,6 +114,19 @@ def _parse_header(markdown: str) -> list[str]:
     ]
 
 
+def _markdown_text(result) -> str:
+    """Pull the markdown payload off a CallToolResult.
+
+    `result.data` is a validated Pydantic model (output_schema path).
+    The markdown lives in the first content block.
+    """
+    blocks = getattr(result, "content", None) or []
+    if not blocks:
+        return ""
+    text = getattr(blocks[0], "text", None)
+    return text or ""
+
+
 async def _run_tool(client: Client, name: str, tool: str, args: dict) -> None:
     print(f"\n{SEPARATOR}\n[{name}]\n  {tool}({args})\n{SEPARATOR}")
     started = time.monotonic()
@@ -123,7 +136,7 @@ async def _run_tool(client: Client, name: str, tool: str, args: dict) -> None:
         print(f"  FAILED: {type(exc).__name__}: {exc}")
         return
     elapsed_ms = int((time.monotonic() - started) * 1000)
-    output = result.data or ""
+    output = _markdown_text(result)
     print(f"  latency: {elapsed_ms} ms   bytes: {len(output)}")
     for line in _parse_header(output):
         print(f"  {line}")
@@ -154,7 +167,7 @@ async def _burst_search(client: Client) -> None:
         except Exception as exc:
             print(f"  {q!r}: FAILED {exc}")
             continue
-        output = result.data or ""
+        output = _markdown_text(result)
         warnings_line = next(
             (line for line in _parse_header(output) if line.startswith("warnings:")),
             None,
@@ -183,11 +196,13 @@ async def _burst_search(client: Client) -> None:
 async def _cache_warmup(client: Client) -> None:
     """Call extract twice on the same URL and compare latencies.
 
-    The second call must hit Valkey and skip Crawl4AI — a drop of 10×
+    The second call must hit Valkey and skip Crawl4AI — a drop of 3×
     or more is the signal that the shared cache is actually in play.
+    URL is deliberately outside the other smoke cases so the first
+    call is genuinely cold.
     """
     print(f"\n{SEPARATOR}\n[cache warmup: extract the same URL twice]\n{SEPARATOR}")
-    url = "https://docs.python.org/3/library/asyncio-task.html"
+    url = "https://docs.python.org/3/library/itertools.html"
 
     started = time.monotonic()
     try:
