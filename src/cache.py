@@ -18,6 +18,7 @@ server binary. Valkey speaks the same wire protocol.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from typing import Any
@@ -59,11 +60,17 @@ class KVCache:
     Values are JSON-serialized on write and parsed on read. Mirrors the
     read/write surface the old TTLCache exposed (contains / get / set)
     so call sites in core.py change minimally.
+
+    Every `get` increments a per-cache hit/miss counter at
+    `ws:stats:<prefix>:{hits,misses}`. These are plain Valkey INCR
+    counters; no TTL (we want lifetime totals). Read via /metrics.
     """
 
     def __init__(self, prefix: str, *, ttl: int = _DEFAULT_TTL_S) -> None:
         self._prefix = prefix
         self._ttl = ttl
+        self._hits_key = f"ws:stats:{prefix}:hits"
+        self._misses_key = f"ws:stats:{prefix}:misses"
 
     def _key(self, key: str) -> str:
         return f"{self._prefix}:{key}"
@@ -72,9 +79,12 @@ class KVCache:
         return bool(await _get_client().exists(self._key(key)))
 
     async def get(self, key: str) -> Any | None:
-        raw = await _get_client().get(self._key(key))
+        client = _get_client()
+        raw = await client.get(self._key(key))
         if raw is None:
+            await client.incr(self._misses_key)
             return None
+        await client.incr(self._hits_key)
         return json.loads(raw)
 
     async def set(self, key: str, value: Any) -> None:
@@ -82,6 +92,17 @@ class KVCache:
 
     async def delete(self, key: str) -> None:
         await _get_client().delete(self._key(key))
+
+    async def stats(self) -> dict[str, int]:
+        """Return this cache's lifetime hit/miss counts."""
+        client = _get_client()
+        hits, misses = await asyncio.gather(
+            client.get(self._hits_key), client.get(self._misses_key),
+        )
+        return {
+            "hits": int(hits) if hits else 0,
+            "misses": int(misses) if misses else 0,
+        }
 
 
 # Single source of truth per page. The scrape path and the extract path

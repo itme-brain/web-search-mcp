@@ -5,6 +5,8 @@ Run with `python server.py` inside the container (WORKDIR /app, where
 the sibling modules live).
 """
 
+import asyncio
+
 from fastmcp import Context, FastMCP
 from fastmcp.tools.tool import ToolResult
 from starlette.requests import Request
@@ -52,6 +54,26 @@ def _tool_result(response: dict, formatter) -> ToolResult:
 @mcp.custom_route("/health", methods=["GET"])
 async def health(_: Request) -> JSONResponse:
     return JSONResponse({"status": "ok", "reranker": {"name": "flashrank", "model": RERANK_MODEL}})
+
+
+@mcp.custom_route("/metrics", methods=["GET"])
+async def metrics(_: Request) -> JSONResponse:
+    """Per-cache lifetime hit/miss counts.
+
+    Plain INCR counters; no TTL. Reset by flushing Valkey.
+    """
+    page, query, seen = await asyncio.gather(
+        cache.page_cache.stats(),
+        cache.query_cache.stats(),
+        cache.seen_urls.stats(),
+    )
+    return JSONResponse({
+        "caches": {
+            "page": page,
+            "query": query,
+            "seen_urls": seen,
+        },
+    })
 
 
 @mcp.custom_route("/ready", methods=["GET"])

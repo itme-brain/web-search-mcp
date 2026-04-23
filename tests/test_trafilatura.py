@@ -112,17 +112,41 @@ class TestDocumentMetadata:
     def test_build_document_metadata_adds_word_count(self):
         with patch("core.trafilatura.extract_metadata", return_value=self._doc()):
             metadata = server_module._build_document_metadata("<html/>", "one two three four five")
-        assert metadata == {"word_count": 5}
+        assert metadata["word_count"] == 5
+        assert metadata["content_hash"].startswith("sha256:")
 
     def test_build_document_metadata_strips_none_fields(self):
         metadata = server_module._build_document_metadata(None, "one two three")
-        assert metadata == {"word_count": 3}
+        assert metadata["word_count"] == 3
+        assert metadata["content_hash"].startswith("sha256:")
+        # No trafilatura-derived fields when html is None.
+        assert "author" not in metadata
+        assert "date" not in metadata
 
     def test_build_document_metadata_keeps_populated_fields(self):
         doc = self._doc(author="Alice", date="2024-03-01")
         with patch("core.trafilatura.extract_metadata", return_value=doc):
             metadata = server_module._build_document_metadata("<html/>", "hello world")
-        assert metadata == {"author": "Alice", "date": "2024-03-01", "word_count": 2}
+        assert metadata["author"] == "Alice"
+        assert metadata["date"] == "2024-03-01"
+        assert metadata["word_count"] == 2
+        assert metadata["content_hash"].startswith("sha256:")
+
+    def test_build_document_metadata_extracts_headings_and_code_blocks(self):
+        content = (
+            "# Top\n\nintro body.\n\n"
+            "## Sub\n\nparagraph\n\n"
+            "```python\nprint('x')\n```\n\n"
+            "more text\n\n"
+            "```\nraw block\n```\n"
+        )
+        with patch("core.trafilatura.extract_metadata", return_value=self._doc()):
+            metadata = server_module._build_document_metadata("<html/>", content)
+        assert metadata["headings"] == [
+            {"level": 1, "text": "Top"},
+            {"level": 2, "text": "Sub"},
+        ]
+        assert metadata["code_blocks"] == 2
 
 
 class TestTableSeparatorStrip:

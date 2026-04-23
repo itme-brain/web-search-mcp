@@ -508,11 +508,49 @@ def _extract_html_metadata(html: str | None) -> dict:
     }
 
 
+_HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*$", re.MULTILINE)
+_CODE_FENCE_RE = re.compile(r"^```", re.MULTILINE)
+
+
+def _extract_headings(content: str) -> list[dict]:
+    """Pull H1–H6 markdown headings as {level, text}. Bounded to 200."""
+    headings: list[dict] = []
+    for match in _HEADING_RE.finditer(content):
+        headings.append({"level": len(match.group(1)), "text": match.group(2).strip()})
+        if len(headings) >= 200:
+            break
+    return headings
+
+
+def _count_code_blocks(content: str) -> int:
+    """Count triple-backtick fenced blocks. Assumes balanced fences."""
+    return len(_CODE_FENCE_RE.findall(content)) // 2
+
+
+def _content_hash(content: str) -> str:
+    """Stable fingerprint for exact-duplicate detection at write time."""
+    import hashlib
+    return "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
 def _build_document_metadata(html: str | None, content: str | None) -> dict:
-    """Assemble the per-document metadata block (empty fields stripped)."""
+    """Assemble the per-document metadata block (empty fields stripped).
+
+    Structural fields (headings, code_blocks, content_hash) are computed
+    at write time so the cached envelope carries a mini-index of the
+    page, letting later reads answer structural questions without
+    re-parsing the markdown body.
+    """
     metadata = _extract_html_metadata(html)
     if content:
         metadata["word_count"] = len(content.split())
+        metadata["content_hash"] = _content_hash(content)
+        headings = _extract_headings(content)
+        if headings:
+            metadata["headings"] = headings
+        code_blocks = _count_code_blocks(content)
+        if code_blocks:
+            metadata["code_blocks"] = code_blocks
     return {k: v for k, v in metadata.items() if v is not None}
 
 

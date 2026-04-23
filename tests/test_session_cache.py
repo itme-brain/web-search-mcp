@@ -390,6 +390,26 @@ async def test_final_results_are_domain_diversified(fake_ctx):
 
 
 @pytest.mark.asyncio
+async def test_kvcache_hit_miss_counters():
+    """KVCache increments per-cache hit/miss counters on every get."""
+    import cache as cache_module
+
+    kv = cache_module.KVCache("test-counter")
+    assert (await kv.stats()) == {"hits": 0, "misses": 0}
+
+    # Miss.
+    assert (await kv.get("nope")) is None
+    # Hit.
+    await kv.set("yep", {"v": 1})
+    assert (await kv.get("yep")) == {"v": 1}
+    # Another miss.
+    assert (await kv.get("also-nope")) is None
+
+    stats = await kv.stats()
+    assert stats == {"hits": 1, "misses": 2}
+
+
+@pytest.mark.asyncio
 async def test_cache_survives_across_ctx_instances(patched_backends):
     """Cache state lives in Valkey, not per-Context. A fresh ctx in the same
     process must still see the previous call's cached response."""

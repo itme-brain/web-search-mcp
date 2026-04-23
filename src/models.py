@@ -50,12 +50,20 @@ class HandoffModel(StrictModel):
     reason: str
 
 
+class HeadingModel(StrictModel):
+    level: int
+    text: str
+
+
 class DocumentMetadataModel(StrictModel):
     author: str | None = None
     date: str | None = None
     site_name: str | None = None
     description: str | None = None
     word_count: int | None = None
+    content_hash: str | None = None
+    headings: list[HeadingModel] | None = None
+    code_blocks: int | None = None
 
 
 class SearchResultModel(StrictModel):
