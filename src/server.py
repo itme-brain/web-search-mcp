@@ -6,6 +6,7 @@ the sibling modules live).
 """
 
 import asyncio
+from typing import Literal
 
 from fastmcp import Context, FastMCP
 from fastmcp.tools.tool import ToolResult
@@ -106,21 +107,21 @@ async def ready(_: Request) -> JSONResponse:
 async def search(
     query: str,
     num_results: int = 10,
-    time_range: str | None = None,
+    time_range: Literal["day", "week", "month", "year"] | None = None,
     language: str | None = "en",
     include_domains: list[str] | None = None,
     exclude_domains: list[str] | None = None,
     ctx: Context | None = None,
  ) -> ToolResult:
-    """Search the web, scrape and rerank the top results.
+    """Search the web.
 
     Args:
-        query: Search query. Prefix with `site:<domain>` to scope to one site.
-        num_results: How many results to return (1-10).
-        time_range: Recency filter — `day` / `week` / `month` / `year`. Omit for no filter. Do NOT put dates or years in the query text; use this instead.
-        language: Language code for results (e.g. `en`, `de`, `fr`). Defaults to `en`. Pass `None` or empty string for no language filter.
-        include_domains: Keep only results from these bare domains (e.g. `["docs.python.org"]`).
-        exclude_domains: Drop results from these bare domains.
+        query: Search query. Use normal search text. To scope to one site, prefix with `site:<domain>`.
+        num_results: Number of results to return, from `1` to `10`.
+        time_range: Optional recency filter. One of `day`, `week`, `month`, or `year`. Prefer this over putting dates in the query.
+        language: Optional language code such as `en`, `de`, or `fr`. Pass `None` or `\"\"` for no language filter.
+        include_domains: Optional bare domains to keep, such as `["docs.python.org"]`.
+        exclude_domains: Optional bare domains to exclude.
     """
     response = await impls.search_impl(
         query=query,
@@ -141,12 +142,12 @@ async def extract(
     chunk_ids: list[int] | None = None,
     ctx: Context | None = None,
 ) -> ToolResult:
-    """Fetch full content for one or more URLs.
+    """Read content from one or more URLs.
 
     Args:
-        urls: URLs to fetch. Always a list — pass `["https://..."]` for one URL.
-        query: Optional. Reranks the document's chunks and returns the top matches. Omit to get leading document chunks in order.
-        chunk_ids: Cherry-pick specific chunks by their stable id from the `chunks` field on a prior response. Returns the joined text of the requested chunks, skipping rerank.
+        urls: URLs to read. Always pass a list, even for one URL.
+        query: Optional query used to return the most relevant chunks from each document.
+        chunk_ids: Optional chunk ids from a prior response. When provided, returns those exact chunks instead of reranking.
     """
     response = await impls.extract_impl(
         urls=urls, query=query, chunk_ids=chunk_ids, ctx=ctx,
@@ -160,14 +161,12 @@ async def map(
     max_urls: int = 25,
     include_patterns: list[str] | None = None,
 ) -> ToolResult:
-    """Discover a bounded site tree — graph only, no body content.
-
-    Discovery stays within the root's registrable domain (e.g. `docs.pydantic.dev` and `pydantic.dev` count as same).
+    """Discover a site tree.
 
     Args:
-        url: Root URL to start discovery from.
-        max_urls: Maximum URLs to discover (1-50).
-        include_patterns: Shell-glob patterns against the full URL; keep only matches (e.g. `["https://docs.example.com/api/*"]`).
+        url: URL to use as the root of the returned tree.
+        max_urls: Maximum URLs to include, from `1` to `50`.
+        include_patterns: Optional shell-glob patterns matched against the full URL. Only matching URLs are kept.
     """
     response = await impls.map_impl(
         url=url,
@@ -183,14 +182,12 @@ async def crawl(
     max_urls: int = 10,
     include_patterns: list[str] | None = None,
 ) -> ToolResult:
-    """Discover a site tree and fetch content for its nodes.
-
-    Composes `map`-style discovery with `extract`-style content fetches, scoped to the root's registrable domain.
+    """Map a site tree and read its pages.
 
     Args:
-        url: Root URL to start crawl from.
-        max_urls: Maximum pages to crawl (1-20).
-        include_patterns: Shell-glob patterns against the full URL; keep only matches.
+        url: URL to use as the root of the crawl.
+        max_urls: Maximum pages to include, from `1` to `20`.
+        include_patterns: Optional shell-glob patterns matched against the full URL. Only matching URLs are kept.
     """
     response = await impls.crawl_impl(
         url=url,
