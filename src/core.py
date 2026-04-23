@@ -8,11 +8,13 @@ per-file-type extractors. Cache adapters live in cache.py.
 
 import asyncio
 import fnmatch
+import ipaddress
 import json
 import logging
 import mimetypes
 import os
 import re
+import socket
 from collections import defaultdict
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 
@@ -88,6 +90,8 @@ _MAX_CHUNKS_PER_PAGE = 10
 _CHUNK_GAP = "\n\n[…]\n\n"
 _MAX_EXTRACT_URLS = 20
 _MAX_MAP_URLS = 50
+_SNIFF_MAX_BYTES = 8192
+_DISPLAY_CHUNK_COUNT = 3
 # Minimum FlashRank relevance score for a result's best chunk.  Entries
 # scoring below this are CAPTCHA walls, wrong-language pages, or
 # auto-generated spam — noise the reranker confidently identifies as
@@ -104,6 +108,8 @@ _TRACKING_PARAMS = frozenset({
 _WORD_SPLIT = re.compile(r"\W+")
 _WHITESPACE = re.compile(r"\s+")
 _MARKDOWN_SPLITTER = MarkdownTextSplitter(chunk_size=1000, chunk_overlap=0)
+_PILCROW_LINK = re.compile(r"\[¶\]\([^)]*\)")
+_MARKDOWN_LINK = re.compile(r"\[[^\]]+\]\([^)]+\)")
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +284,7 @@ def _chunk_text(text: str) -> list[str]:
             for chunk in _MARKDOWN_SPLITTER.split_text(block)
             if chunk.strip()
         )
-    return chunks[:_MAX_CHUNKS_PER_PAGE]
+    return chunks
 
 
 def _diversify_ranked_entries(ranked_entry_idxs: list[int], entries: list[dict]) -> list[int]:
@@ -345,8 +351,56 @@ def _validate_urls(urls: list[str], *, maximum: int) -> list[str]:
         parsed = urlparse(value)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError(f"invalid URL: {url!r}")
+        _reject_non_public_target(parsed.hostname, url=value)
         normalized.append(value)
     return normalized
+
+
+def _is_blocked_ip(ip: ipaddress._BaseAddress) -> bool:
+    return any((
+        ip.is_private,
+        ip.is_loopback,
+        ip.is_link_local,
+        ip.is_multicast,
+        ip.is_reserved,
+        ip.is_unspecified,
+        not ip.is_global,
+    ))
+
+
+def _reject_non_public_target(hostname: str | None, *, url: str) -> None:
+    """Reject localhost and DNS targets that resolve to non-public IP space."""
+    if not hostname:
+        raise ValueError(f"invalid URL: {url!r}")
+
+    host = hostname.rstrip(".").lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        raise ValueError(f"URL resolves to a private or reserved target: {url!r}")
+
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        ip = None
+
+    if ip is not None:
+        if _is_blocked_ip(ip):
+            raise ValueError(f"URL resolves to a private or reserved target: {url!r}")
+        return
+
+    try:
+        resolved = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except socket.gaierror:
+        return
+
+    for family, _, _, _, sockaddr in resolved:
+        if family == socket.AF_INET:
+            candidate = ipaddress.ip_address(sockaddr[0])
+        elif family == socket.AF_INET6:
+            candidate = ipaddress.ip_address(sockaddr[0])
+        else:
+            continue
+        if _is_blocked_ip(candidate):
+            raise ValueError(f"URL resolves to a private or reserved target: {url!r}")
 
 
 def _normalize_domains(domains: list[str] | None, *, field_name: str) -> list[str]:
@@ -474,6 +528,40 @@ def _strip_table_separator_rows(text: str) -> str:
     )
 
 
+def _is_link_soup_line(line: str) -> bool:
+    """Detect dense nav/TOC lines that are mostly markdown links."""
+    matches = list(_MARKDOWN_LINK.finditer(line))
+    if len(matches) < 4:
+        return False
+    residue = _MARKDOWN_LINK.sub("", line)
+    residue = residue.replace("`", "").replace("*", "").replace("_", "")
+    residue = _WHITESPACE.sub("", residue)
+    return len(residue) <= 12
+
+
+def _clean_extracted_markdown(text: str | None) -> str | None:
+    """Light cleanup for site chrome that leaks through extraction."""
+    if not text:
+        return text
+    cleaned = _PILCROW_LINK.sub("", text)
+    lines = [line.rstrip() for line in cleaned.splitlines()]
+    kept: list[str] = []
+    blank_streak = 0
+    for line in lines:
+        stripped = line.strip()
+        if stripped and _is_link_soup_line(stripped):
+            continue
+        if not stripped:
+            blank_streak += 1
+            if blank_streak > 1:
+                continue
+        else:
+            blank_streak = 0
+        kept.append(line)
+    cleaned = "\n".join(kept).strip("\n")
+    return cleaned or None
+
+
 def _extract_markdown(result: dict) -> str | None:
     html = result.get("html")
     if html:
@@ -487,7 +575,7 @@ def _extract_markdown(result: dict) -> str | None:
                 html, output_format="markdown", include_links=True, include_tables=True,
             )
             if extracted and len(extracted.strip()) >= 50:
-                return _strip_table_separator_rows(extracted)
+                return _clean_extracted_markdown(_strip_table_separator_rows(extracted))
         except Exception:
             pass
 
@@ -499,7 +587,7 @@ def _extract_markdown(result: dict) -> str | None:
         content = md
     else:
         content = result.get("cleaned_html")
-    return _strip_table_separator_rows(content) if content else content
+    return _clean_extracted_markdown(_strip_table_separator_rows(content)) if content else content
 
 
 def _extract_html_metadata(html: str | None) -> dict:
@@ -1023,20 +1111,45 @@ async def _head_content_type(url: str) -> str | None:
 async def _sniff_content_type(url: str) -> str | None:
     try:
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, follow_redirects=True) as client:
-            resp = await client.get(url, headers={"Range": "bytes=0-8191"})
-            resp.raise_for_status()
-            if not resp.content:
+            async with client.stream(
+                "GET",
+                url,
+                headers={
+                    "Range": f"bytes=0-{_SNIFF_MAX_BYTES - 1}",
+                    "Accept-Encoding": "identity",
+                },
+            ) as resp:
+                resp.raise_for_status()
+                if resp.status_code != httpx.codes.PARTIAL_CONTENT:
+                    return None
+                length = resp.headers.get("content-length")
+                if length is not None and int(length) > _SNIFF_MAX_BYTES:
+                    return None
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in resp.aiter_bytes():
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > _SNIFF_MAX_BYTES:
+                        return None
+                    chunks.append(chunk)
+            if not chunks:
                 return None
-            detected = magic.from_buffer(resp.content, mime=True)
+            detected = magic.from_buffer(b"".join(chunks), mime=True)
             return _content_type_without_charset(detected)
     except (httpx.HTTPError, OSError, ValueError):
         return None
 
 
 async def _detect_file_type(url: str) -> tuple[str, str | None]:
-    sniffed_content_type = await _sniff_content_type(url)
     header_content_type = await _head_content_type(url)
-    content_type = sniffed_content_type or _content_type_without_charset(header_content_type)
+    content_type = _content_type_without_charset(header_content_type)
+    guessed_content_type = _content_type_without_charset(mimetypes.guess_type(url)[0])
+    if content_type in {None, "application/octet-stream"}:
+        content_type = guessed_content_type or content_type
+    if content_type in {None, "application/octet-stream"}:
+        content_type = await _sniff_content_type(url) or content_type
     return _guess_file_type(url, content_type), content_type
 
 
@@ -1155,9 +1268,8 @@ async def _deep_crawl(
 async def _rank_document_content(
     query: str | None,
     content: str,
-    offset: int = 0,
     chunk_ids: list[int] | None = None,
-) -> tuple[str, list[dict], list[dict]]:
+) -> tuple[str, list[dict], list[dict], list[int], str]:
     """Return (display, top_chunks, chunks) for one document's raw content.
 
     `chunks` is the full chunk list for the first _MAX_CONTENT_CHARS of
@@ -1166,47 +1278,54 @@ async def _rank_document_content(
     content). Empty when there is no content to chunk.
 
     `top_chunks` is the reranked top-K — populated only when a query is
-    given and neither chunk_ids nor offset overrides apply.
+    given and no explicit chunk selection override applies.
 
     `display` is what the caller reads:
       - chunk_ids provided: joined text of the requested ids
-      - offset>0:           raw [offset, offset+MAX] slice (continuation)
-      - query+offset=0:     joined text of top-K reranked chunks
-      - otherwise:          raw first-MAX slice
+      - query provided:     joined text of top-K reranked chunks
+      - otherwise:          first display-sized chunk window in document order
     """
-    window = content[:_MAX_CONTENT_CHARS]
     chunks = [
-        {"id": i, "text": text} for i, text in enumerate(_chunk_text(window))
+        {"id": i, "text": text} for i, text in enumerate(_chunk_text(content))
     ]
 
     if chunk_ids is not None:
         wanted = set(chunk_ids)
         selected = [c for c in chunks if c["id"] in wanted]
         display = _CHUNK_GAP.join(c["text"] for c in selected)
-        return display, [], chunks
-
-    if offset > 0:
-        return content[offset:offset + _MAX_CONTENT_CHARS], [], chunks
+        return display, [], chunks, [c["id"] for c in selected], "selected"
 
     if not query or not content:
-        return window, [], chunks
+        selected = chunks[:_DISPLAY_CHUNK_COUNT]
+        display = _CHUNK_GAP.join(c["text"] for c in selected)
+        return display, [], chunks, [c["id"] for c in selected], "document"
 
     if not chunks:
-        return window, [], chunks
+        return content[:_MAX_CONTENT_CHARS], [], chunks, [], "relevant"
 
     chunk_texts = [c["text"] for c in chunks]
     scored = await _rerank_scored(query, chunk_texts)
-    top = [{"text": chunk_texts[idx], "score": score} for idx, score in scored[:_TOP_CHUNKS]]
+    top = [
+        {"id": idx, "text": chunk_texts[idx], "score": score}
+        for idx, score in scored[:_TOP_CHUNKS]
+    ]
     if not top:
-        return window, [], chunks
-    return _CHUNK_GAP.join(item["text"] for item in top), top, chunks
+        selected = chunks[:_DISPLAY_CHUNK_COUNT]
+        display = _CHUNK_GAP.join(c["text"] for c in selected)
+        return display, [], chunks, [c["id"] for c in selected], "document"
+    return (
+        _CHUNK_GAP.join(item["text"] for item in top),
+        top,
+        chunks,
+        [item["id"] for item in top],
+        "relevant",
+    )
 
 
 async def _extract_url_document(
     url: str,
     query: str | None,
     cache: KVCache,
-    offset: int = 0,
     chunk_ids: list[int] | None = None,
 ) -> dict:
     # Normalized URL is the cache key so www./trailing-slash variants
@@ -1215,14 +1334,17 @@ async def _extract_url_document(
     cached = await _page_get(url, cache)
     if cached is not None:
         raw = cached.get("content") or ""
-        content, top_chunks, chunks = await _rank_document_content(
-            query, raw, offset=offset, chunk_ids=chunk_ids,
+        content, top_chunks, chunks, shown_chunk_ids, chunk_mode = await _rank_document_content(
+            query, raw, chunk_ids=chunk_ids,
         )
         return {
             **cached,
             "content": content,
             "top_chunks": top_chunks,
             "chunks": chunks,
+            "shown_chunk_ids": shown_chunk_ids,
+            "total_chunks": len(chunks),
+            "chunk_mode": chunk_mode,
             "cached": True,
         }
     key = _normalize_url(url)
@@ -1269,19 +1391,25 @@ async def _extract_url_document(
         # that know their own length) rather than deriving from content.
         cached_entry["total_chars"] = total_chars
         await _page_set(url, cached_entry, cache)
-        content, top_chunks, chunks = await _rank_document_content(
-            query, raw, offset=offset, chunk_ids=chunk_ids,
+        content, top_chunks, chunks, shown_chunk_ids, chunk_mode = await _rank_document_content(
+            query, raw, chunk_ids=chunk_ids,
         )
         extracted["content"] = content
         extracted["total_chars"] = total_chars
         extracted["top_chunks"] = top_chunks
         extracted["chunks"] = chunks
+        extracted["shown_chunk_ids"] = shown_chunk_ids
+        extracted["total_chunks"] = len(chunks)
+        extracted["chunk_mode"] = chunk_mode
         extracted["cached"] = False
         return extracted
 
     extracted.setdefault("total_chars", 0)
     extracted["top_chunks"] = []
     extracted["chunks"] = []
+    extracted["shown_chunk_ids"] = []
+    extracted["total_chunks"] = 0
+    extracted["chunk_mode"] = None
     extracted["cached"] = False
     return extracted
 

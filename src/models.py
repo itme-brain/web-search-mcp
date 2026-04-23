@@ -14,9 +14,8 @@ class ChunkSpecModel(StrictModel):
 
     Returned on extract responses so callers can cherry-pick chunks by
     id on a follow-up call (`chunk_ids=[...]`) without re-scraping or
-    re-reranking. IDs are indices into the chunk list derived from the
-    first `_MAX_CONTENT_CHARS` of the document and are stable as long
-    as the cached raw content is.
+    re-reranking. IDs are indices into the full cached document chunk
+    list and are stable as long as the cached raw content is.
     """
     id: int
     text: str
@@ -101,8 +100,10 @@ class ExtractResultModel(StrictModel):
     title: str | None = None
     content: str
     chars_shown: int
-    offset: int
     total_chars: int
+    total_chunks: int | None = None
+    shown_chunk_ids: list[int] = []
+    chunk_mode: str | None = None
     top_chunks: list[str]
     chunks: list[ChunkSpecModel] = []
     cached: bool
@@ -162,7 +163,6 @@ class CrawlResultModel(StrictModel):
     content_type: str | None = None
     content: str
     chars_shown: int
-    offset: int
     total_chars: int
     cached: bool
     error: str | None = None

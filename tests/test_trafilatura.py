@@ -12,7 +12,7 @@ class TestExtractMarkdown:
         with patch("core.trafilatura.extract", return_value=long_text) as mock:
             output = server_module._extract_markdown(result)
             mock.assert_called_once()
-            assert output == long_text
+            assert output == long_text.rstrip()
 
     def test_falls_back_when_trafilatura_returns_short_text(self):
         result = {
@@ -73,6 +73,23 @@ class TestExtractMarkdown:
         result = {"markdown": {"fit_markdown": "", "raw_markdown": "raw"}}
         output = server_module._extract_markdown(result)
         assert output == "raw"
+
+    def test_strips_pilcrow_anchor_links(self):
+        result = {"markdown": "# Title[¶](#title)\n\nBody text."}
+        output = server_module._extract_markdown(result)
+        assert output == "# Title\n\nBody text."
+
+    def test_drops_dense_link_soup_lines(self):
+        result = {
+            "markdown": (
+                "# Title\n\n"
+                "[One](a)[Two](b)[Three](c)[Four](d)[Five](e)\n\n"
+                "Body paragraph."
+            )
+        }
+        output = server_module._extract_markdown(result)
+        assert "[One](a)" not in output
+        assert "Body paragraph." in output
 
 
 class TestDocumentMetadata:

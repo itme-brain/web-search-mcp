@@ -110,6 +110,31 @@ async def test_searxng_cache_key_normalizes_whitespace_and_case(patched_backends
 
 
 @pytest.mark.asyncio
+async def test_searxng_cache_key_includes_num_results(fake_ctx):
+    """A smaller cached SearXNG page must not underfill a later larger request."""
+    search_mock = AsyncMock(
+        side_effect=[
+            make_search_results(["https://example.com/one"]),
+            make_search_results(URLS_A),
+        ]
+    )
+    scrape_mock = _make_scrape_mock()
+    rerank_mock = AsyncMock(side_effect=_identity_rerank)
+
+    with (
+        patch(PATCH_SEARCH, search_mock),
+        patch(PATCH_SCRAPE, scrape_mock),
+        patch(PATCH_RERANK, rerank_mock),
+    ):
+        small = await server_module.search_impl("cached query", num_results=1, ctx=fake_ctx)
+        large = await server_module.search_impl("cached query", num_results=3, ctx=fake_ctx)
+
+    assert len(small["results"]) == 1
+    assert len(large["results"]) == 3
+    assert search_mock.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_concurrent_searches_single_flight_to_searxng(fake_ctx):
     """Two concurrent search calls for the same (query, page, lang, time)
     share one upstream SearXNG call instead of both cache-missing.

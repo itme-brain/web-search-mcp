@@ -132,6 +132,31 @@ async def test_extract_urls_single_url_returns_markdown():
 
 
 @pytest.mark.asyncio
+async def test_single_extract_markdown_omits_redundant_success_header():
+    extract_mock = AsyncMock(return_value={
+        "status": "ok",
+        "url": "https://example.com/page",
+        "content_type": "text/html",
+        "file_type": "html",
+        "title": "Example Page",
+        "content": "# Example\n\nUseful extracted content.",
+        "total_chars": 28,
+        "total_chunks": 3,
+        "shown_chunk_ids": [0, 1, 2],
+        "chunk_mode": "document",
+        "top_chunks": [],
+        "cached": False,
+    })
+
+    with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
+        payload = await server_module.extract.fn(["https://example.com/page"], ctx=None)
+
+    payload_text = payload.content[0].text
+    assert not payload_text.startswith("succeeded:")
+    assert "## [Example Page](https://example.com/page)" in payload_text
+
+
+@pytest.mark.asyncio
 async def test_extract_url_document_handoffs_binary_file_types():
     with patch("core._detect_file_type", AsyncMock(return_value=("pdf", "application/pdf"))):
         result = await server_module._extract_url_document(
@@ -191,15 +216,15 @@ def test_guess_file_type_supports_handoff_and_text_formats():
 
 
 @pytest.mark.asyncio
-async def test_detect_file_type_prefers_magic_sniffing():
+async def test_detect_file_type_prefers_head_content_type_when_specific():
     with (
-        patch("core._sniff_content_type", AsyncMock(return_value="application/pdf")),
         patch("core._head_content_type", AsyncMock(return_value="text/html")),
+        patch("core._sniff_content_type", AsyncMock(return_value="application/pdf")),
     ):
         file_type, content_type = await server_module._detect_file_type("https://example.com/download")
 
-    assert file_type == "pdf"
-    assert content_type == "application/pdf"
+    assert file_type == "html"
+    assert content_type == "text/html"
 
 
 @pytest.mark.asyncio
@@ -212,6 +237,54 @@ async def test_detect_file_type_falls_back_to_head_content_type():
 
     assert file_type == "text"
     assert content_type == "text/plain"
+
+
+@pytest.mark.asyncio
+async def test_detect_file_type_sniffs_when_head_is_generic():
+    with (
+        patch("core._head_content_type", AsyncMock(return_value="application/octet-stream")),
+        patch("core._sniff_content_type", AsyncMock(return_value="application/pdf")),
+    ):
+        file_type, content_type = await server_module._detect_file_type("https://example.com/download")
+
+    assert file_type == "pdf"
+    assert content_type == "application/pdf"
+
+
+@pytest.mark.asyncio
+async def test_sniff_content_type_bails_when_range_is_ignored():
+    class _FakeResponse:
+        status_code = 200
+        headers = {"content-length": "8192"}
+
+        def raise_for_status(self):
+            return None
+
+        async def aiter_bytes(self):
+            yield b"%PDF-1.7"
+
+    class _FakeStream:
+        async def __aenter__(self):
+            return _FakeResponse()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def stream(self, *args, **kwargs):
+            return _FakeStream()
+
+    with patch("core.httpx.AsyncClient", _FakeClient):
+        assert await server_module._sniff_content_type("https://example.com/file.pdf") is None
 
 
 @pytest.mark.asyncio
@@ -229,18 +302,12 @@ async def test_extract_url_document_handoffs_unknown_types_by_default():
 
 
 # ---------------------------------------------------------------------------
-# Truncation signal + offset continuation
+# Chunk-aware extract presentation
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_extract_markdown_signals_truncation_with_next_offset():
-    """When content is truncated, markdown footer must tell the LLM
-    how to continue (offset=N).
-
-    _extract_url_document returns content already sliced to <= MAX
-    plus the full total_chars alongside — simulate that shape.
-    """
+async def test_extract_markdown_surfaces_chunk_range_summary():
     full_length = 24000
     sliced = "x" * 8000
     extract_mock = AsyncMock(return_value={
@@ -251,19 +318,22 @@ async def test_extract_markdown_signals_truncation_with_next_offset():
         "title": "Long Page",
         "content": sliced,
         "total_chars": full_length,
+        "total_chunks": 9,
+        "shown_chunk_ids": [0, 1, 2],
+        "chunk_mode": "relevant",
     })
 
     with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
         markdown = await server_module.extract.fn(["https://example.com/long"])
     markdown_text = markdown.content[0].text
 
-    assert "chars shown" in markdown_text
-    assert "offset=8000" in markdown_text, f"truncation footer missing offset hint:\n{markdown_text}"
+    assert "chunks: 0..2 of 0..8" in markdown_text
+    assert "mode: relevant" in markdown_text
+    assert "8,000 of 24,000 chars" in markdown_text
 
 
 @pytest.mark.asyncio
-async def test_extract_no_signal_when_content_fits():
-    """Short content that wasn't truncated must not emit a truncation footer."""
+async def test_extract_no_chunk_summary_when_chunks_absent():
     short = "tiny content"
     extract_mock = AsyncMock(return_value={
         "status": "ok",
@@ -279,49 +349,8 @@ async def test_extract_no_signal_when_content_fits():
         markdown = await server_module.extract.fn(["https://example.com/short"])
     markdown_text = markdown.content[0].text
 
-    assert "chars shown" not in markdown_text
-    assert "end of document" not in markdown_text
-
-
-@pytest.mark.asyncio
-async def test_extract_offset_bypasses_rerank_and_slices_raw():
-    """offset>0 returns the raw content slice, skipping query rerank."""
-    long_content = "A" * 20000
-    await cache_module.page_cache.set("https://example.com/long", {
-        "status": "ok",
-        "url": "https://example.com/long",
-        "content_type": "text/html",
-        "file_type": "html",
-        "title": "Long",
-        "content": long_content,
-        "total_chars": len(long_content),
-    })
-
-    result = await server_module._extract_url_document(
-        "https://example.com/long",
-        query="something",
-        cache=cache_module.page_cache,
-        offset=8000,
-    )
-    assert result["content"] == long_content[8000:16000]
-    # Offset skips rerank — no top_chunks.
-    assert result["top_chunks"] == []
-
-
-@pytest.mark.asyncio
-async def test_extract_rejects_negative_offset():
-    with pytest.raises(ValueError, match="offset must be >= 0"):
-        await server_module.extract_impl(
-            urls=["https://example.com/a"], offset=-1,
-        )
-
-
-@pytest.mark.asyncio
-async def test_extract_rejects_chunk_ids_with_offset():
-    with pytest.raises(ValueError, match="mutually exclusive"):
-        await server_module.extract_impl(
-            urls=["https://example.com/a"], offset=100, chunk_ids=[0],
-        )
+    assert "chunks:" not in markdown_text
+    assert "mode:" not in markdown_text
 
 
 @pytest.mark.asyncio
@@ -356,6 +385,9 @@ async def test_extract_response_includes_chunks_with_stable_ids():
     assert [c["id"] for c in result["chunks"]] == [0, 1, 2]
     assert result["chunks"][0]["text"] == "Alpha paragraph one."
     assert result["chunks"][2]["text"] == "Gamma paragraph three."
+    assert result["shown_chunk_ids"] == [0, 1, 2]
+    assert result["total_chunks"] == 3
+    assert result["chunk_mode"] == "document"
 
 
 @pytest.mark.asyncio
@@ -600,10 +632,12 @@ async def test_extract_chunk_ids_returns_only_selected_chunks():
     assert "Beta paragraph two." not in result["content"]
     # The full chunk list is still surfaced so the caller can iterate.
     assert [c["id"] for c in result["chunks"]] == [0, 1, 2]
+    assert result["shown_chunk_ids"] == [0, 2]
+    assert result["chunk_mode"] == "selected"
 
 
 @pytest.mark.asyncio
-async def test_extract_offset_reaching_end_shows_end_marker():
+async def test_extract_markdown_uses_compact_chunk_ranges():
     long_content = "B" * 12000
     extract_mock = AsyncMock(return_value={
         "status": "ok",
@@ -611,15 +645,16 @@ async def test_extract_offset_reaching_end_shows_end_marker():
         "content_type": "text/html",
         "file_type": "html",
         "title": "Page",
-        "content": long_content[8000:],  # simulating the slice returned
+        "content": long_content[:8000],
         "total_chars": 12000,
+        "total_chunks": 9,
+        "shown_chunk_ids": [3, 4, 5],
+        "chunk_mode": "selected",
     })
 
     with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
-        markdown = await server_module.extract.fn(
-            ["https://example.com/page"], offset=8000,
-        )
+        markdown = await server_module.extract.fn(["https://example.com/page"])
     markdown_text = markdown.content[0].text
 
-    assert "end of document" in markdown_text
-    assert "12,000 chars total" in markdown_text
+    assert "chunks: 3..5 of 0..8" in markdown_text
+    assert "mode: selected" in markdown_text

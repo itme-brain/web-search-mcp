@@ -138,7 +138,6 @@ async def search(
 async def extract(
     urls: list[str],
     query: str | None = None,
-    offset: int = 0,
     chunk_ids: list[int] | None = None,
     ctx: Context | None = None,
 ) -> ToolResult:
@@ -146,12 +145,11 @@ async def extract(
 
     Args:
         urls: URLs to fetch. Always a list — pass `["https://..."]` for one URL.
-        query: Optional. Reranks the document's chunks and returns the top matches. Omit to get raw content from the top of the document.
-        offset: Byte offset into the document. When the output footer says `N of M chars shown — pass offset=N to continue`, call again with that `offset` to read the next slice. `offset > 0` bypasses `query` reranking in favor of raw continuation. Mutually exclusive with `chunk_ids`.
-        chunk_ids: Cherry-pick specific chunks by their stable id from the `chunks` field on a prior response. Returns the joined text of the requested chunks, skipping rerank. Mutually exclusive with `offset`.
+        query: Optional. Reranks the document's chunks and returns the top matches. Omit to get leading document chunks in order.
+        chunk_ids: Cherry-pick specific chunks by their stable id from the `chunks` field on a prior response. Returns the joined text of the requested chunks, skipping rerank.
     """
     response = await impls.extract_impl(
-        urls=urls, query=query, offset=offset, chunk_ids=chunk_ids, ctx=ctx,
+        urls=urls, query=query, chunk_ids=chunk_ids, ctx=ctx,
     )
     return _tool_result(response, _format_extract_results)
 
@@ -162,7 +160,7 @@ async def map(
     max_urls: int = 25,
     include_patterns: list[str] | None = None,
 ) -> ToolResult:
-    """Discover URLs on a site — link graph, no body content.
+    """Discover a bounded site tree — graph only, no body content.
 
     Discovery stays within the root's registrable domain (e.g. `docs.pydantic.dev` and `pydantic.dev` count as same).
 
@@ -185,9 +183,9 @@ async def crawl(
     max_urls: int = 10,
     include_patterns: list[str] | None = None,
 ) -> ToolResult:
-    """Discover URLs on a site and fetch their content.
+    """Discover a site tree and fetch content for its nodes.
 
-    Pure discovery + extraction, scoped to the root's registrable domain. For query-based relevance ranking use `search` with `include_domains` instead.
+    Composes `map`-style discovery with `extract`-style content fetches, scoped to the root's registrable domain.
 
     Args:
         url: Root URL to start crawl from.

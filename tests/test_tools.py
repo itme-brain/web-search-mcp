@@ -28,7 +28,6 @@ async def test_extract_urls_returns_structured_result_from_tool():
                 "title": "Example",
                 "content": "# Example\n\nPage content",
                 "chars_shown": 22,
-                "offset": 0,
                 "total_chars": 22,
                 "top_chunks": [],
                 "cached": False,
@@ -74,6 +73,22 @@ async def test_search_validates_num_results():
 async def test_search_validates_domain_filters():
     with pytest.raises(ValueError, match="bare domains"):
         await server_module.search_impl("test query", include_domains=["example.com/path"], ctx=None)
+
+
+@pytest.mark.asyncio
+async def test_extract_rejects_private_ip_urls():
+    with pytest.raises(ValueError, match="private or reserved target"):
+        await server_module.extract_impl(urls=["http://127.0.0.1/admin"], ctx=None)
+
+
+@pytest.mark.asyncio
+async def test_extract_rejects_hostnames_that_resolve_private():
+    fake_addrinfo = [(2, 1, 6, "", ("10.0.0.8", 0))]
+    with (
+        patch("core.socket.getaddrinfo", return_value=fake_addrinfo),
+        pytest.raises(ValueError, match="private or reserved target"),
+    ):
+        await server_module.extract_impl(urls=["http://internal.example.test/secret"], ctx=None)
 
 
 @pytest.mark.asyncio
