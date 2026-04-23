@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -106,6 +107,53 @@ async def test_searxng_cache_key_normalizes_whitespace_and_case(patched_backends
     patched_backends["search"].reset_mock()
     await server_module.search_impl("  test query", num_results=3, ctx=fake_ctx)
     patched_backends["search"].assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_searches_single_flight_to_searxng(fake_ctx):
+    """Two concurrent search calls for the same (query, page, lang, time)
+    share one upstream SearXNG call instead of both cache-missing.
+
+    Without single-flighting, burst workloads (agent running several
+    similar queries at once) doubled or tripled load on upstream
+    engines, which is the exact pattern that trips brave's rate limit.
+    """
+    call_count = 0
+    search_gate = asyncio.Event()
+
+    async def _slow_search(query, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        # Park the first caller so the second one definitely arrives
+        # while the first is still mid-flight.
+        await search_gate.wait()
+        return make_search_results(URLS_A)
+
+    search_mock = AsyncMock(side_effect=_slow_search)
+    scrape_mock = _make_scrape_mock()
+    rerank_mock = AsyncMock(side_effect=_identity_rerank)
+
+    with (
+        patch(PATCH_SEARCH, search_mock),
+        patch(PATCH_SCRAPE, scrape_mock),
+        patch(PATCH_RERANK, rerank_mock),
+    ):
+        # Fire two concurrent searches for the same query.
+        task_a = asyncio.create_task(
+            server_module.search_impl("concurrent query", num_results=3, ctx=fake_ctx)
+        )
+        task_b = asyncio.create_task(
+            server_module.search_impl("concurrent query", num_results=3, ctx=fake_ctx)
+        )
+        # Yield enough turns so both tasks reach the in-flight gate.
+        for _ in range(5):
+            await asyncio.sleep(0)
+        # Release the upstream call.
+        search_gate.set()
+        await asyncio.gather(task_a, task_b)
+
+    # Two concurrent callers, one upstream SearXNG call.
+    assert call_count == 1
 
 
 @pytest.mark.asyncio

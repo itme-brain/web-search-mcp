@@ -37,6 +37,13 @@ from core import (
 log = logging.getLogger("web-search-mcp")
 
 
+# In-flight SearXNG requests, keyed on the searxng_cache key. Two
+# concurrent searches for the same (query, time_range, language, pageno)
+# share a single upstream call instead of both cache-missing and both
+# hitting the SearXNG → brave/google/etc. chain. Cleared on completion
+# (success or failure); awaiters of a failed request re-raise and the
+# next caller will retry.
+_searxng_inflight: dict[str, asyncio.Future] = {}
 
 
 def _validated_response(model_cls, response: dict) -> dict:
@@ -85,6 +92,10 @@ async def search_impl(
         Filters (include_domains / exclude_domains) are NOT part of the
         key — the cache holds raw SearXNG output and filters apply at
         response-shaping time.
+
+        Single-flighted: concurrent callers with the same key share one
+        upstream SearXNG request instead of amplifying load on brave /
+        google / etc.
         """
         key = hashlib.sha256(
             json.dumps(
@@ -95,12 +106,24 @@ async def search_impl(
         cached = await searxng_cache.get(key)
         if cached is not None:
             return cached
-        result = await core._search(
-            query, num_results=num_results, time_range=time_range,
-            language=language, pageno=pageno,
-        )
-        await searxng_cache.set(key, result)
-        return result
+        inflight = _searxng_inflight.get(key)
+        if inflight is not None:
+            return await inflight
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        _searxng_inflight[key] = fut
+        try:
+            result = await core._search(
+                query, num_results=num_results, time_range=time_range,
+                language=language, pageno=pageno,
+            )
+            await searxng_cache.set(key, result)
+            fut.set_result(result)
+            return result
+        except Exception as exc:
+            fut.set_exception(exc)
+            raise
+        finally:
+            _searxng_inflight.pop(key, None)
 
     # --- search (page 1, with reactive page-2 fallback on underflow) ---
     search_started = time.monotonic()
