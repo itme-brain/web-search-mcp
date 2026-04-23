@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+import cache as cache_module
 from tests.conftest import FakeContext, server_module
 
 PATCH_EXTRACT_URL_DOCUMENT = "core._extract_url_document"
@@ -136,7 +137,7 @@ async def test_extract_url_document_handoffs_binary_file_types():
         result = await server_module._extract_url_document(
             "https://example.com/manual.pdf",
             query=None,
-            cache=server_module._new_cache(),
+            cache=cache_module.extract_cache,
         )
 
     assert result["status"] == "handoff"
@@ -147,8 +148,7 @@ async def test_extract_url_document_handoffs_binary_file_types():
 
 @pytest.mark.asyncio
 async def test_extract_cache_hit_preserves_handoff_metadata():
-    cache = server_module._new_cache()
-    cache["https://example.com/manual.pdf"] = {
+    await cache_module.extract_cache.set("https://example.com/manual.pdf", {
         "status": "handoff",
         "url": "https://example.com/manual.pdf",
         "content_type": "application/pdf",
@@ -160,10 +160,10 @@ async def test_extract_cache_hit_preserves_handoff_metadata():
             "handler": "files",
             "reason": "pdf extraction is delegated to the files MCP",
         },
-    }
+    })
 
     result = await server_module._extract_url_document(
-        "https://example.com/manual.pdf", query=None, cache=cache,
+        "https://example.com/manual.pdf", query=None, cache=cache_module.extract_cache,
     )
 
     assert result["cached"] is True
@@ -220,7 +220,7 @@ async def test_extract_url_document_handoffs_unknown_types_by_default():
         result = await server_module._extract_url_document(
             "https://example.com/blob.bin",
             query=None,
-            cache=server_module._new_cache(),
+            cache=cache_module.extract_cache,
         )
 
     assert result["status"] == "handoff"
@@ -287,8 +287,7 @@ async def test_extract_no_signal_when_content_fits():
 async def test_extract_offset_bypasses_rerank_and_slices_raw():
     """offset>0 returns the raw content slice, skipping query rerank."""
     long_content = "A" * 20000
-    fake_cache = server_module._new_cache()
-    fake_cache["https://example.com/long"] = {
+    await cache_module.extract_cache.set("https://example.com/long", {
         "status": "ok",
         "url": "https://example.com/long",
         "content_type": "text/html",
@@ -296,12 +295,12 @@ async def test_extract_offset_bypasses_rerank_and_slices_raw():
         "title": "Long",
         "content": long_content,
         "total_chars": len(long_content),
-    }
+    })
 
     result = await server_module._extract_url_document(
         "https://example.com/long",
         query="something",
-        cache=fake_cache,
+        cache=cache_module.extract_cache,
         offset=8000,
     )
     assert result["content"] == long_content[8000:16000]

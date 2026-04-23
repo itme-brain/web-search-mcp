@@ -3,6 +3,7 @@ import types
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 
 # Make the server's flat-layout modules importable as top-level names.
 _SRC = Path(__file__).resolve().parent.parent / "src"
@@ -42,8 +43,9 @@ if "trafilatura" not in sys.modules:
     _trafilatura.extract_metadata = lambda *args, **kwargs: None
     sys.modules["trafilatura"] = _trafilatura
 
-# Import the four split modules. `core` pulls in Settings + Ranker on first
+# Import the split modules. `core` pulls in Settings + Ranker on first
 # import; the stub above has to be in place first.
+import cache  # noqa: E402
 import core  # noqa: E402
 import formatters  # noqa: E402
 import impls  # noqa: E402
@@ -74,12 +76,11 @@ server_module = _ServerModuleProxy()
 
 
 class FakeContext:
-    """Minimal stub for fastmcp.Context in impl-level tests.
+    """Minimal no-op stub for fastmcp.Context in impl-level tests.
 
-    Enforces the same JSON-serializability contract the real FastMCP
-    Context does on `set_state`, so non-serializable values (e.g. a raw
-    TTLCache) fail in pytest instead of silently passing here and
-    blowing up only at runtime against a real MCP client.
+    Cache state no longer round-trips through ctx (it lives in Valkey),
+    so the old JSON-serializability gate isn't needed anymore. The
+    class stays because tool signatures still accept ctx.
     """
 
     def __init__(self):
@@ -89,15 +90,6 @@ class FakeContext:
         return self._state.get(key)
 
     def set_state(self, key, value):
-        try:
-            import json
-            json.dumps(value)
-        except (TypeError, ValueError) as exc:
-            raise TypeError(
-                f"FakeContext.set_state({key!r}): value is not JSON-serializable "
-                f"({type(value).__name__}: {exc}). Real FastMCP Context would reject "
-                f"this too. Persist as a plain dict/list/primitive."
-            ) from exc
         self._state[key] = value
 
 
@@ -140,3 +132,19 @@ SCRAPE_CONTENT = {
 @pytest.fixture
 def fake_ctx():
     return FakeContext()
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _fake_valkey():
+    """Swap the cache module's backing client with a fresh fakeredis
+    instance for every test. Autouse so tests don't have to opt in."""
+    import fakeredis.aioredis
+
+    fake = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    cache.set_client(fake)
+    try:
+        yield fake
+    finally:
+        await fake.flushall()
+        await fake.aclose()
+        cache.set_client(None)

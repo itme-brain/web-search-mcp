@@ -389,45 +389,23 @@ async def test_final_results_are_domain_diversified(fake_ctx):
     ]
 
 
-def test_session_caches_are_bounded():
-    """Session caches must have a maxsize + TTL cap to prevent unbounded growth."""
-    from cachetools import TTLCache
-
-    cache = server_module._new_cache()
-    assert isinstance(cache, TTLCache)
-    assert cache.maxsize == server_module._CACHE_MAXSIZE
-    assert cache.ttl == server_module._CACHE_TTL_S
-
-
 @pytest.mark.asyncio
-async def test_persisted_state_is_json_serializable(fake_ctx):
-    """Every value written to ctx state must survive json.dumps round-trip.
+async def test_cache_survives_across_ctx_instances(patched_backends):
+    """Cache state lives in Valkey, not per-Context. A fresh ctx in the same
+    process must still see the previous call's cached response."""
+    from tests.conftest import FakeContext
 
-    Real FastMCP Context rejects non-serializable state at runtime — so a
-    full search_impl run that completes under FakeContext must leave every
-    state key in a JSON-dumpable shape. Pre-fix this regressed: we stored
-    raw TTLCache objects and live MCP calls failed with 'not serializable'.
-    """
-    import json
+    ctx_a = FakeContext()
+    payload1 = await server_module.search_impl("cross-ctx query", num_results=2, ctx=ctx_a)
 
-    search_mock = AsyncMock(return_value=make_search_results(URLS_A[:2]))
-    scrape_mock = _make_scrape_mock()
-    rerank_mock = AsyncMock(side_effect=_identity_rerank)
+    patched_backends["search"].reset_mock()
+    patched_backends["scrape"].reset_mock()
+    patched_backends["rerank"].reset_mock()
 
-    with (
-        patch(PATCH_SEARCH, search_mock),
-        patch(PATCH_SCRAPE, scrape_mock),
-        patch(PATCH_RERANK, rerank_mock),
-    ):
-        await server_module.search_impl("test", num_results=2, ctx=fake_ctx)
+    ctx_b = FakeContext()
+    payload2 = await server_module.search_impl("cross-ctx query", num_results=2, ctx=ctx_b)
 
-    for key in (
-        server_module.STATE_SCRAPE_CACHE,
-        server_module.STATE_QUERY_CACHE,
-        server_module.STATE_SEEN_URLS,
-    ):
-        value = fake_ctx.get_state(key)
-        assert value is not None, f"state key {key!r} was never written"
-        # Should not raise — hardened FakeContext also enforces this,
-        # but explicit assertion here documents the contract.
-        json.dumps(value)
+    assert payload1 == payload2
+    patched_backends["search"].assert_not_called()
+    patched_backends["scrape"].assert_not_called()
+    patched_backends["rerank"].assert_not_called()
