@@ -359,6 +359,108 @@ async def test_extract_response_includes_chunks_with_stable_ids():
 
 
 @pytest.mark.asyncio
+async def test_scrape_cache_rejects_under_length_floor():
+    """Speculative scrape (search path) caches short content as a failure.
+
+    CAPTCHA walls and 404 shells typically come back as <20-word
+    responses. The cache treats these as misses so search doesn't
+    surface them and extract doesn't thrash re-fetching them.
+    """
+    url = "https://captcha.example.com/blocked"
+    fake_scrape = AsyncMock(return_value={
+        "content": "Please verify you are human.",  # 5 words
+        "title": "Access Blocked",
+        "metadata": {},
+    })
+    with patch("core._scrape", fake_scrape):
+        envelope = await server_module._scrape_cached(url, cache_module.page_cache)
+
+    # Short content rejected at write time → cached as failure.
+    assert envelope["status"] == "error"
+    assert envelope["content"] is None
+
+
+@pytest.mark.asyncio
+async def test_content_hash_alias_collapses_duplicate_content_at_different_urls():
+    """Two URLs with byte-identical content share one full entry.
+
+    Writes the second URL as an alias; reads through the alias return
+    the canonical's content.
+    """
+    content = (
+        "# Canonical\n\nOne paragraph of genuinely useful content that "
+        "clears the minimum word count floor applied at cache admission "
+        "time so the entry becomes a full write and the dedup alias path "
+        "through content_hash gets exercised by this test without hitting "
+        "the speculative-admission rejection branch that we also test."
+    )
+    fake_scrape = AsyncMock(return_value={
+        "content": content,
+        "title": "Canonical",
+        "metadata": {},
+    })
+    with patch("core._scrape", fake_scrape):
+        # First URL writes the canonical entry.
+        await server_module._scrape_cached(
+            "https://example.com/canonical", cache_module.page_cache,
+        )
+        # Second URL scrapes identical content.
+        aliased = await server_module._scrape_cached(
+            "https://example.com/mirror", cache_module.page_cache,
+        )
+
+    # Raw Valkey peek: the alias entry is light, the canonical is full.
+    raw_alias = await cache_module.page_cache.get(
+        server_module._normalize_url("https://example.com/mirror")
+    )
+    raw_canonical = await cache_module.page_cache.get(
+        server_module._normalize_url("https://example.com/canonical")
+    )
+    assert "alias" in raw_alias
+    assert raw_alias["alias"] == server_module._normalize_url("https://example.com/canonical")
+    assert raw_canonical.get("content") == content
+
+    # Dereferenced read returns the canonical content but keeps the
+    # requested URL in the returned envelope.
+    resolved = await server_module._page_get(
+        "https://example.com/mirror", cache_module.page_cache,
+    )
+    assert resolved["content"] == content
+    assert resolved["url"] == "https://example.com/mirror"
+
+
+@pytest.mark.asyncio
+async def test_dangling_alias_treated_as_miss():
+    """If the canonical disappears, the alias returns None (re-scrape)."""
+    content = (
+        "# Page\n\nGenuine content body with at least enough prose to "
+        "comfortably pass the cache admission floor used in the scrape "
+        "path so we are exercising the happy-path aliasing logic and "
+        "not the short-content rejection branch in this test scenario."
+    )
+    fake_scrape = AsyncMock(return_value={
+        "content": content, "title": "T", "metadata": {},
+    })
+    with patch("core._scrape", fake_scrape):
+        await server_module._scrape_cached(
+            "https://example.com/canonical", cache_module.page_cache,
+        )
+        await server_module._scrape_cached(
+            "https://example.com/mirror", cache_module.page_cache,
+        )
+
+    # Simulate the canonical being evicted.
+    await cache_module.page_cache.delete(
+        server_module._normalize_url("https://example.com/canonical")
+    )
+
+    resolved = await server_module._page_get(
+        "https://example.com/mirror", cache_module.page_cache,
+    )
+    assert resolved is None
+
+
+@pytest.mark.asyncio
 async def test_extract_sees_search_scrape_as_cache_hit():
     """Unified ws:page cache — search's scrape is an extract cache hit.
 
@@ -369,9 +471,9 @@ async def test_extract_sees_search_scrape_as_cache_hit():
     url = "https://docs.example.com/shared"
     # Populate via _scrape_cached the way search_impl does.
     fake_scrape = AsyncMock(return_value={
-        "content": "# Shared\n\nbody used by both tools.",
+        "content": "# Shared\n\nthis is the shared page body used by both the search path and the extract path; it needs enough words to clear the cache admission floor for test purposes.",
         "title": "Shared",
-        "metadata": {"word_count": 6},
+        "metadata": {"word_count": 32},
     })
     with patch("core._scrape", fake_scrape):
         envelope = await server_module._scrape_cached(url, cache_module.page_cache)
@@ -394,7 +496,7 @@ async def test_extract_sees_search_scrape_as_cache_hit():
 
     assert result["cached"] is True
     assert result["status"] == "ok"
-    assert "body used by both tools" in result["content"]
+    assert "shared page body" in result["content"]
 
 
 @pytest.mark.asyncio

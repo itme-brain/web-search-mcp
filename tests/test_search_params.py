@@ -102,7 +102,7 @@ async def test_page2_skipped_when_page1_already_full():
 @pytest.mark.asyncio
 async def test_cache_key_includes_time_range():
     search_mock = AsyncMock(return_value=make_search_results(URLS_A[:1]))
-    scrape_mock = AsyncMock(return_value={"content": "# Page\n\ncontent", "title": None, "screenshot": None})
+    scrape_mock = AsyncMock(return_value={"content": "# Page\n\nfull page body text with at least enough words to clear the speculative cache admission floor for tests.", "title": None, "screenshot": None})
     rerank_mock = AsyncMock(side_effect=_identity_rerank)
 
     with (
@@ -130,7 +130,7 @@ async def test_unresponsive_engines_emitted_as_warnings():
         URLS_A[:2],
         unresponsive_engines=[["google", "CAPTCHA"], ["brave", "HTTP 503"]],
     ))
-    scrape_mock = AsyncMock(return_value={"content": "# Page\n\ncontent", "title": None, "screenshot": None})
+    scrape_mock = AsyncMock(return_value={"content": "# Page\n\nfull page body text with at least enough words to clear the speculative cache admission floor for tests.", "title": None, "screenshot": None})
     rerank_mock = AsyncMock(side_effect=_identity_rerank)
 
     with (

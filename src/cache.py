@@ -113,3 +113,7 @@ query_cache = KVCache("ws:query")
 # Stored as individual keys rather than a set so each URL carries its
 # own TTL, matching the per-entry expiry TTLCache used to give us.
 seen_urls = KVCache("ws:seen")
+# content_hash → canonical normalized URL. When two URLs scrape byte-
+# identical content we write only one full entry and alias the rest
+# through this map. See core._page_set / core._page_get.
+content_alias = KVCache("ws:content")

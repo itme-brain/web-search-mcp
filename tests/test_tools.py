@@ -84,7 +84,7 @@ async def test_search_returns_structured_json():
 
     with (
         patch(PATCH_SEARCH, search_mock),
-        patch("core._scrape", AsyncMock(return_value={"content": "# Page\n\ncontent", "title": None, "screenshot": None})),
+        patch("core._scrape", AsyncMock(return_value={"content": "# Page\n\nfull page body text with at least enough words to clear the speculative cache admission floor for tests.", "title": None, "screenshot": None})),
         patch(PATCH_RERANK, rerank_mock),
     ):
         payload = await server_module.search_impl("test query", num_results=2, ctx=None)

@@ -28,6 +28,7 @@ from pydantic_settings import BaseSettings
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 from url_normalize import url_normalize
 
+import cache as cache_module
 from cache import KVCache
 
 
@@ -885,6 +886,13 @@ async def _scrape(url: str) -> dict:
     return empty
 
 
+# Minimum word count for a speculative scrape (search / crawl paths) to
+# be admitted to the cache. Calibrated to exclude CAPTCHA walls and
+# 404 shells (typically <15 words) without rejecting short-but-useful
+# doc snippets. User-directed extract bypasses this gate.
+_MIN_CACHE_WORDS = 20
+
+
 async def _scrape_cached(url: str, cache: KVCache) -> dict:
     """Scrape with shared page cache. Returns the full envelope.
 
@@ -893,20 +901,87 @@ async def _scrape_cached(url: str, cache: KVCache) -> dict:
     per normalized URL. Callers that only need {content, title,
     metadata} read those fields; callers that need status / file_type /
     etc. read those too.
+
+    Speculative fetches (search/crawl) apply a minimum-length gate:
+    scraped pages with fewer than _MIN_CACHE_WORDS cache as failures.
+    Blocks CAPTCHA walls / error shells from crowding the cache.
     """
     key = _normalize_url(url)
-    if await cache.contains(key):
+    existing = await _page_get(url, cache)
+    if existing is not None:
         log.debug("page cache hit url=%s", url)
-        return await cache.get(key) or _page_entry(url=url, content=None, title=None, metadata={})
+        return existing
     result = await _scrape(url)
+    content = result.get("content")
+    # Length floor — only applied at speculative write time, not on user-
+    # directed extract (which wants whatever it asked for).
+    if content and len(content.split()) < _MIN_CACHE_WORDS:
+        content = None
     entry = _page_entry(
         url=url,
-        content=result.get("content"),
+        content=content,
         title=result.get("title"),
         metadata=result.get("metadata") or {},
     )
-    await cache.set(key, entry)
+    await _page_set(url, entry, cache)
     return entry
+
+
+async def _page_set(url: str, entry: dict, cache: KVCache) -> None:
+    """Write a page entry, aliasing when content_hash already seen.
+
+    If another URL has already cached a page with this exact content,
+    write a lightweight alias entry instead of a duplicate full entry.
+    Dangling detection happens on read via _page_get.
+    """
+    key = _normalize_url(url)
+    content_hash = (entry.get("metadata") or {}).get("content_hash")
+    if not content_hash or entry.get("status") != "ok":
+        # No hash (no content) or rejected entry → plain write, no dedup.
+        await cache.set(key, entry)
+        return
+
+    canonical_key = await cache_module.content_alias.get(content_hash)
+    if canonical_key and canonical_key != key:
+        canonical = await cache.get(canonical_key)
+        canonical_hash = (canonical or {}).get("metadata", {}).get("content_hash")
+        if canonical and canonical_hash == content_hash:
+            # Existing canonical confirmed — alias through it.
+            await cache.set(key, {
+                "_schema_version": 1,
+                "alias": canonical_key,
+                "content_hash": content_hash,
+            })
+            return
+        # Canonical missing or drifted — fall through and reclaim the hash.
+
+    await cache.set(key, entry)
+    await cache_module.content_alias.set(content_hash, key)
+
+
+async def _page_get(url: str, cache: KVCache) -> dict | None:
+    """Read a page entry, dereferencing aliases and detecting dangling.
+
+    An alias entry (`{alias, content_hash}`) is resolved against the
+    canonical URL. If the canonical is missing or its content_hash
+    drifted (stale alias), return None so the caller re-scrapes.
+    """
+    key = _normalize_url(url)
+    entry = await cache.get(key)
+    if not entry:
+        return None
+    if "alias" not in entry:
+        return entry
+    canonical_key = entry["alias"]
+    expected_hash = entry.get("content_hash")
+    canonical = await cache.get(canonical_key)
+    if not canonical:
+        return None
+    canonical_hash = (canonical.get("metadata") or {}).get("content_hash")
+    if canonical_hash != expected_hash:
+        return None
+    # Preserve the caller's requested URL in the returned view.
+    return {**canonical, "url": url}
 
 
 def _page_entry(
@@ -927,6 +1002,11 @@ def _page_entry(
     """
     if status is None:
         status = "ok" if content else "error"
+    # Ensure every ok entry has a content_hash so _page_set can alias
+    # byte-identical pages across URLs, regardless of whether upstream
+    # metadata carried it.
+    if content and status == "ok" and "content_hash" not in metadata:
+        metadata = {**metadata, "content_hash": _content_hash(content)}
     return {
         "_schema_version": 1,
         "status": status,
@@ -1143,10 +1223,9 @@ async def _extract_url_document(
     # Normalized URL is the cache key so www./trailing-slash variants
     # collapse. The stored entry keeps the caller's original URL for
     # display (see cached_entry["url"] below).
-    key = _normalize_url(url)
-    if await cache.contains(key):
-        cached = await cache.get(key) or {}
-        raw = cached.get("content", "")
+    cached = await _page_get(url, cache)
+    if cached is not None:
+        raw = cached.get("content") or ""
         content, top_chunks, chunks = await _rank_document_content(
             query, raw, offset=offset, chunk_ids=chunk_ids,
         )
@@ -1157,6 +1236,7 @@ async def _extract_url_document(
             "chunks": chunks,
             "cached": True,
         }
+    key = _normalize_url(url)
 
     file_type = "unknown"
     content_type = None
@@ -1199,7 +1279,7 @@ async def _extract_url_document(
         # Preserve the upstream's total_chars (e.g. local text documents
         # that know their own length) rather than deriving from content.
         cached_entry["total_chars"] = total_chars
-        await cache.set(key, cached_entry)
+        await _page_set(url, cached_entry, cache)
         content, top_chunks, chunks = await _rank_document_content(
             query, raw, offset=offset, chunk_ids=chunk_ids,
         )
