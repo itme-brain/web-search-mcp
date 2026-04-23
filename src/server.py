@@ -117,6 +117,7 @@ async def extract(
     urls: list[str],
     query: str | None = None,
     offset: int = 0,
+    chunk_ids: list[int] | None = None,
     ctx: Context | None = None,
 ) -> ToolResult:
     """Fetch full content for one or more URLs.
@@ -124,9 +125,12 @@ async def extract(
     Args:
         urls: URLs to fetch. Always a list — pass `["https://..."]` for one URL.
         query: Optional. Reranks the document's chunks and returns the top matches. Omit to get raw content from the top of the document.
-        offset: Byte offset into the document. When the output footer says `N of M chars shown — pass offset=N to continue`, call again with that `offset` to read the next slice. `offset > 0` bypasses `query` reranking in favor of raw continuation.
+        offset: Byte offset into the document. When the output footer says `N of M chars shown — pass offset=N to continue`, call again with that `offset` to read the next slice. `offset > 0` bypasses `query` reranking in favor of raw continuation. Mutually exclusive with `chunk_ids`.
+        chunk_ids: Cherry-pick specific chunks by their stable id from the `chunks` field on a prior response. Returns the joined text of the requested chunks, skipping rerank. Mutually exclusive with `offset`.
     """
-    response = await impls.extract_impl(urls=urls, query=query, offset=offset, ctx=ctx)
+    response = await impls.extract_impl(
+        urls=urls, query=query, offset=offset, chunk_ids=chunk_ids, ctx=ctx,
+    )
     return _tool_result(response, _format_extract_results)
 
 

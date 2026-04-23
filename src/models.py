@@ -14,6 +14,19 @@ class ChunkModel(StrictModel):
     score: float
 
 
+class ChunkSpecModel(StrictModel):
+    """A chunk with a stable id — not rerank-scored.
+
+    Returned on extract responses so callers can cherry-pick chunks by
+    id on a follow-up call (`chunk_ids=[...]`) without re-scraping or
+    re-reranking. IDs are indices into the chunk list derived from the
+    first `_MAX_CONTENT_CHARS` of the document and are stable as long
+    as the cached raw content is.
+    """
+    id: int
+    text: str
+
+
 class WarningModel(StrictModel):
     type: str
     source: str
@@ -94,6 +107,7 @@ class ExtractResultModel(StrictModel):
     offset: int
     total_chars: int
     top_chunks: list[ChunkModel]
+    chunks: list[ChunkSpecModel] = []
     cached: bool
     error: str | None = None
     handoff: HandoffModel | None = None

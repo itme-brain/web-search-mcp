@@ -997,27 +997,53 @@ async def _deep_crawl(
 # Ranking + central extract orchestrator
 # ---------------------------------------------------------------------------
 async def _rank_document_content(
-    query: str | None, content: str, offset: int = 0,
-) -> tuple[str, list[dict]]:
-    """Return (display, top_chunks) for one document's raw content.
+    query: str | None,
+    content: str,
+    offset: int = 0,
+    chunk_ids: list[int] | None = None,
+) -> tuple[str, list[dict], list[dict]]:
+    """Return (display, top_chunks, chunks) for one document's raw content.
 
-    offset>0 bypasses rerank and returns the next [offset, offset+MAX]
-    slice — caller wants raw continuation after a prior truncated view.
-    query+offset=0 returns top-K reranked chunks.
-    No query, no offset returns the first-MAX slice.
+    `chunks` is the full chunk list for the first _MAX_CONTENT_CHARS of
+    content with stable ids (derived fresh each call — chunking is
+    deterministic, so ids are stable across calls for the same raw
+    content). Empty when there is no content to chunk.
+
+    `top_chunks` is the reranked top-K — populated only when a query is
+    given and neither chunk_ids nor offset overrides apply.
+
+    `display` is what the caller reads:
+      - chunk_ids provided: joined text of the requested ids
+      - offset>0:           raw [offset, offset+MAX] slice (continuation)
+      - query+offset=0:     joined text of top-K reranked chunks
+      - otherwise:          raw first-MAX slice
     """
+    window = content[:_MAX_CONTENT_CHARS]
+    chunks = [
+        {"id": i, "text": text} for i, text in enumerate(_chunk_text(window))
+    ]
+
+    if chunk_ids is not None:
+        wanted = set(chunk_ids)
+        selected = [c for c in chunks if c["id"] in wanted]
+        display = _CHUNK_GAP.join(c["text"] for c in selected)
+        return display, [], chunks
+
     if offset > 0:
-        return content[offset:offset + _MAX_CONTENT_CHARS], []
+        return content[offset:offset + _MAX_CONTENT_CHARS], [], chunks
+
     if not query or not content:
-        return content[:_MAX_CONTENT_CHARS], []
-    chunks = _chunk_text(content[:_MAX_CONTENT_CHARS])
+        return window, [], chunks
+
     if not chunks:
-        return content[:_MAX_CONTENT_CHARS], []
-    scored = await _rerank_scored(query, chunks)
-    top = [{"text": chunks[idx], "score": score} for idx, score in scored[:_TOP_CHUNKS]]
+        return window, [], chunks
+
+    chunk_texts = [c["text"] for c in chunks]
+    scored = await _rerank_scored(query, chunk_texts)
+    top = [{"text": chunk_texts[idx], "score": score} for idx, score in scored[:_TOP_CHUNKS]]
     if not top:
-        return content[:_MAX_CONTENT_CHARS], []
-    return _CHUNK_GAP.join(item["text"] for item in top), top
+        return window, [], chunks
+    return _CHUNK_GAP.join(item["text"] for item in top), top, chunks
 
 
 async def _extract_url_document(
@@ -1025,15 +1051,19 @@ async def _extract_url_document(
     query: str | None,
     cache: KVCache,
     offset: int = 0,
+    chunk_ids: list[int] | None = None,
 ) -> dict:
     if await cache.contains(url):
         cached = await cache.get(url) or {}
         raw = cached.get("content", "")
-        content, top_chunks = await _rank_document_content(query, raw, offset=offset)
+        content, top_chunks, chunks = await _rank_document_content(
+            query, raw, offset=offset, chunk_ids=chunk_ids,
+        )
         return {
             **cached,
             "content": content,
             "top_chunks": top_chunks,
+            "chunks": chunks,
             "cached": True,
         }
 
@@ -1077,15 +1107,19 @@ async def _extract_url_document(
             "handoff": extracted.get("handoff"),
         }
         await cache.set(url, cached_entry)
-        content, top_chunks = await _rank_document_content(query, raw, offset=offset)
+        content, top_chunks, chunks = await _rank_document_content(
+            query, raw, offset=offset, chunk_ids=chunk_ids,
+        )
         extracted["content"] = content
         extracted["total_chars"] = total_chars
         extracted["top_chunks"] = top_chunks
+        extracted["chunks"] = chunks
         extracted["cached"] = False
         return extracted
 
     extracted.setdefault("total_chars", 0)
     extracted["top_chunks"] = []
+    extracted["chunks"] = []
     extracted["cached"] = False
     return extracted
 

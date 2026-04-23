@@ -337,6 +337,7 @@ async def extract_impl(
     urls: list[str],
     query: str | None = None,
     offset: int = 0,
+    chunk_ids: list[int] | None = None,
     ctx: Context | None = None,
 ) -> dict:
     """Extract a batch of URLs with per-URL status reporting.
@@ -349,17 +350,28 @@ async def extract_impl(
     content — pair with the per-result `total_chars` / `chars_shown`
     metadata to paginate through long documents. offset>0 bypasses
     query-based rerank in favor of raw continuation.
+
+    `chunk_ids` cherry-picks specific chunks from the document by their
+    stable id (see the `chunks` field on the response). Mutually
+    exclusive with offset>0 — raise if both are set.
     """
     urls = core._validate_urls(urls, maximum=_MAX_EXTRACT_URLS)
     if offset < 0:
         raise ValueError("offset must be >= 0")
+    if chunk_ids is not None and offset > 0:
+        raise ValueError("chunk_ids and offset>0 are mutually exclusive")
+    if chunk_ids is not None and any(i < 0 for i in chunk_ids):
+        raise ValueError("chunk_ids entries must be >= 0")
     normalized_query = query.strip() if query else None
     started = time.monotonic()
 
     extract_cache = cache_module.extract_cache
 
     documents = await asyncio.gather(*[
-        core._extract_url_document(url, normalized_query, extract_cache, offset=offset)
+        core._extract_url_document(
+            url, normalized_query, extract_cache,
+            offset=offset, chunk_ids=chunk_ids,
+        )
         for url in urls
     ])
 
@@ -387,6 +399,7 @@ async def extract_impl(
             "offset": offset,
             "total_chars": total_chars,
             "top_chunks": document.get("top_chunks", []),
+            "chunks": document.get("chunks", []),
             "cached": document.get("cached", False),
             "error": document.get("error"),
             "handoff": document.get("handoff"),

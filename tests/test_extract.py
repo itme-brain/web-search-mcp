@@ -317,6 +317,78 @@ async def test_extract_rejects_negative_offset():
 
 
 @pytest.mark.asyncio
+async def test_extract_rejects_chunk_ids_with_offset():
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        await server_module.extract_impl(
+            urls=["https://example.com/a"], offset=100, chunk_ids=[0],
+        )
+
+
+@pytest.mark.asyncio
+async def test_extract_rejects_negative_chunk_ids():
+    with pytest.raises(ValueError, match="chunk_ids entries must be >= 0"):
+        await server_module.extract_impl(
+            urls=["https://example.com/a"], chunk_ids=[-1],
+        )
+
+
+@pytest.mark.asyncio
+async def test_extract_response_includes_chunks_with_stable_ids():
+    """The full chunk list with ids is returned so callers can cherry-pick."""
+    # Three paragraphs → three chunks with ids 0, 1, 2.
+    content = "Alpha paragraph one.\n\nBeta paragraph two.\n\nGamma paragraph three."
+    await cache_module.extract_cache.set("https://example.com/chunked", {
+        "status": "ok",
+        "url": "https://example.com/chunked",
+        "content_type": "text/html",
+        "file_type": "html",
+        "title": "Chunked",
+        "content": content,
+        "total_chars": len(content),
+    })
+
+    result = await server_module._extract_url_document(
+        "https://example.com/chunked",
+        query=None,
+        cache=cache_module.extract_cache,
+    )
+
+    assert [c["id"] for c in result["chunks"]] == [0, 1, 2]
+    assert result["chunks"][0]["text"] == "Alpha paragraph one."
+    assert result["chunks"][2]["text"] == "Gamma paragraph three."
+
+
+@pytest.mark.asyncio
+async def test_extract_chunk_ids_returns_only_selected_chunks():
+    """chunk_ids=[0,2] joins chunks 0 and 2 into `content`, skips rerank."""
+    content = "Alpha paragraph one.\n\nBeta paragraph two.\n\nGamma paragraph three."
+    await cache_module.extract_cache.set("https://example.com/chunked", {
+        "status": "ok",
+        "url": "https://example.com/chunked",
+        "content_type": "text/html",
+        "file_type": "html",
+        "title": "Chunked",
+        "content": content,
+        "total_chars": len(content),
+    })
+
+    result = await server_module._extract_url_document(
+        "https://example.com/chunked",
+        query="query that would otherwise rerank",
+        cache=cache_module.extract_cache,
+        chunk_ids=[0, 2],
+    )
+
+    # chunk_ids short-circuits rerank.
+    assert result["top_chunks"] == []
+    assert "Alpha paragraph one." in result["content"]
+    assert "Gamma paragraph three." in result["content"]
+    assert "Beta paragraph two." not in result["content"]
+    # The full chunk list is still surfaced so the caller can iterate.
+    assert [c["id"] for c in result["chunks"]] == [0, 1, 2]
+
+
+@pytest.mark.asyncio
 async def test_extract_offset_reaching_end_shows_end_marker():
     long_content = "B" * 12000
     extract_mock = AsyncMock(return_value={
