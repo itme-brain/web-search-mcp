@@ -148,6 +148,71 @@ class TestDocumentMetadata:
         ]
         assert metadata["code_blocks"] == 2
 
+    def test_structure_ignores_hashes_inside_code_blocks(self):
+        """The old regex matched '# fake heading' inside fences as a heading.
+        markdown-it-py's AST does not — prove it."""
+        content = (
+            "# Real heading\n\n"
+            "```\n"
+            "# this is a shell comment, not a heading\n"
+            "## another fake\n"
+            "```\n"
+        )
+        structure = server_module._extract_structure(content)
+        assert structure["headings"] == [{"level": 1, "text": "Real heading"}]
+        assert structure["code_blocks"] == 1
+
+    def test_structure_counts_indented_code_blocks(self):
+        """Indented 4-space blocks are code blocks too. The old regex only
+        counted triple-backtick fences and missed these."""
+        content = (
+            "Normal paragraph.\n\n"
+            "    indented = code_block()\n"
+            "    another = line()\n\n"
+            "More paragraph.\n"
+        )
+        structure = server_module._extract_structure(content)
+        assert structure["code_blocks"] == 1
+
+    def test_structure_extracts_outgoing_links_with_anchor_text(self):
+        """Inline [text](url), autolinks, and reference links all surface."""
+        content = (
+            "# Refs\n\n"
+            "See the [official docs](https://docs.example.com/guide) for details. "
+            "Bare autolink: <https://autolink.example.com/x>.\n\n"
+            "And a [ref-style link][ref] with a definition.\n\n"
+            "[ref]: https://refstyle.example.com/y\n"
+        )
+        structure = server_module._extract_structure(content)
+        urls = [link["url"] for link in structure["outgoing_links"]]
+        assert "https://docs.example.com/guide" in urls
+        assert "https://autolink.example.com/x" in urls
+        assert "https://refstyle.example.com/y" in urls
+        labelled = next(
+            link for link in structure["outgoing_links"]
+            if link["url"] == "https://docs.example.com/guide"
+        )
+        assert labelled["text"] == "official docs"
+
+    def test_structure_skips_relative_and_non_http_links(self):
+        """Only http(s) links go in outgoing_links — relative refs and
+        mailto: are ignored. Avoids polluting the field with fragments,
+        mailto, javascript:, etc."""
+        content = (
+            "[relative](/about) [email](mailto:a@b) "
+            "[js](javascript:void(0)) [real](https://example.com/x)\n"
+        )
+        structure = server_module._extract_structure(content)
+        urls = [link["url"] for link in structure["outgoing_links"]]
+        assert urls == ["https://example.com/x"]
+
+    def test_structure_handles_closed_atx_heading(self):
+        """'## Title ##' is a valid closed-ATX heading; the regex gave the
+        wrong text back (included the trailing '##')."""
+        content = "## Section ##\n\nbody\n"
+        structure = server_module._extract_structure(content)
+        assert structure["headings"] == [{"level": 2, "text": "Section"}]
+
 
 class TestTableSeparatorStrip:
     def test_strips_basic_separator_row(self):

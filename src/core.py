@@ -20,6 +20,7 @@ import httpx
 from datasketch import MinHash, MinHashLSH
 from langchain_text_splitters import MarkdownTextSplitter
 import magic
+from markdown_it import MarkdownIt
 from rapidfuzz import fuzz
 import tldextract
 import trafilatura
@@ -509,23 +510,14 @@ def _extract_html_metadata(html: str | None) -> dict:
     }
 
 
-_HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*$", re.MULTILINE)
-_CODE_FENCE_RE = re.compile(r"^```", re.MULTILINE)
+# Shared CommonMark parser. Stateless; reused across calls.
+_md_parser = MarkdownIt("commonmark")
 
-
-def _extract_headings(content: str) -> list[dict]:
-    """Pull H1–H6 markdown headings as {level, text}. Bounded to 200."""
-    headings: list[dict] = []
-    for match in _HEADING_RE.finditer(content):
-        headings.append({"level": len(match.group(1)), "text": match.group(2).strip()})
-        if len(headings) >= 200:
-            break
-    return headings
-
-
-def _count_code_blocks(content: str) -> int:
-    """Count triple-backtick fenced blocks. Assumes balanced fences."""
-    return len(_CODE_FENCE_RE.findall(content)) // 2
+# Bounds on per-document structural metadata — stop walking once we
+# have enough. Prevents a pathological page from blowing up cache
+# entry size without changing the happy-path answer.
+_MAX_HEADINGS = 200
+_MAX_OUTGOING_LINKS = 100
 
 
 def _content_hash(content: str) -> str:
@@ -534,24 +526,90 @@ def _content_hash(content: str) -> str:
     return "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+def _extract_structure(content: str) -> dict:
+    """Walk a markdown AST once to collect headings, code blocks, and links.
+
+    Using markdown-it-py's parser instead of regexes because:
+      - '#' inside a code block no longer counts as a heading;
+      - fenced and indented code blocks both count correctly;
+      - autolinks and reference links surface as normal link tokens;
+      - closed-ATX headings ('## Title ##') yield the right text.
+
+    Returned dict has only keys we found something for — callers can
+    treat missing keys as absent.
+    """
+    tokens = _md_parser.parse(content)
+    headings: list[dict] = []
+    code_blocks = 0
+    links: list[dict] = []
+
+    for tok in tokens:
+        if tok.type == "heading_open" and len(headings) < _MAX_HEADINGS:
+            # The following 'inline' token holds the rendered heading text.
+            idx = tokens.index(tok)
+            inline = tokens[idx + 1] if idx + 1 < len(tokens) else None
+            level = int(tok.tag[1]) if tok.tag.startswith("h") else 0
+            text = (inline.content if inline and inline.type == "inline" else "").strip()
+            if level and text:
+                headings.append({"level": level, "text": text})
+        elif tok.type in ("fence", "code_block"):
+            code_blocks += 1
+        elif tok.type == "inline" and tok.children and len(links) < _MAX_OUTGOING_LINKS:
+            children = tok.children
+            i = 0
+            while i < len(children) and len(links) < _MAX_OUTGOING_LINKS:
+                c = children[i]
+                if c.type == "link_open":
+                    href = ""
+                    for k, v in (c.attrs or {}).items() if isinstance(c.attrs, dict) else (c.attrs or []):
+                        if k == "href":
+                            href = v
+                            break
+                    # Collect text until link_close; nested links shouldn't
+                    # happen in CommonMark but we track depth defensively.
+                    label_parts: list[str] = []
+                    depth = 1
+                    j = i + 1
+                    while j < len(children) and depth > 0:
+                        cc = children[j]
+                        if cc.type == "link_open":
+                            depth += 1
+                        elif cc.type == "link_close":
+                            depth -= 1
+                        elif cc.type == "text" and depth == 1:
+                            label_parts.append(cc.content)
+                        j += 1
+                    if href.startswith(("http://", "https://")):
+                        text = "".join(label_parts).strip()
+                        links.append({"url": href, "text": text or None})
+                    i = j
+                else:
+                    i += 1
+
+    out: dict = {}
+    if headings:
+        out["headings"] = headings
+    if code_blocks:
+        out["code_blocks"] = code_blocks
+    if links:
+        out["outgoing_links"] = links
+    return out
+
+
 def _build_document_metadata(html: str | None, content: str | None) -> dict:
     """Assemble the per-document metadata block (empty fields stripped).
 
-    Structural fields (headings, code_blocks, content_hash) are computed
-    at write time so the cached envelope carries a mini-index of the
-    page, letting later reads answer structural questions without
-    re-parsing the markdown body.
+    Structural fields (headings, code_blocks, outgoing_links, content_hash)
+    are computed at write time so the cached envelope carries a
+    mini-index of the page. Later reads can answer structural questions
+    — 'what sections does this page have?', 'what does it link to?' —
+    without re-parsing the markdown body.
     """
     metadata = _extract_html_metadata(html)
     if content:
         metadata["word_count"] = len(content.split())
         metadata["content_hash"] = _content_hash(content)
-        headings = _extract_headings(content)
-        if headings:
-            metadata["headings"] = headings
-        code_blocks = _count_code_blocks(content)
-        if code_blocks:
-            metadata["code_blocks"] = code_blocks
+        metadata.update(_extract_structure(content))
     return {k: v for k, v in metadata.items() if v is not None}
 
 

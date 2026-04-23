@@ -55,6 +55,11 @@ class HeadingModel(StrictModel):
     text: str
 
 
+class OutgoingLinkModel(StrictModel):
+    url: str
+    text: str | None = None
+
+
 class DocumentMetadataModel(StrictModel):
     author: str | None = None
     date: str | None = None
@@ -64,6 +69,7 @@ class DocumentMetadataModel(StrictModel):
     content_hash: str | None = None
     headings: list[HeadingModel] | None = None
     code_blocks: int | None = None
+    outgoing_links: list[OutgoingLinkModel] | None = None
 
 
 class SearchResultModel(StrictModel):
