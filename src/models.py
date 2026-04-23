@@ -9,13 +9,8 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class ChunkModel(StrictModel):
-    text: str
-    score: float
-
-
 class ChunkSpecModel(StrictModel):
-    """A chunk with a stable id — not rerank-scored.
+    """A chunk with a stable id.
 
     Returned on extract responses so callers can cherry-pick chunks by
     id on a follow-up call (`chunk_ids=[...]`) without re-scraping or
@@ -50,39 +45,28 @@ class HandoffModel(StrictModel):
     reason: str
 
 
-class HeadingModel(StrictModel):
-    level: int
-    text: str
-
-
-class OutgoingLinkModel(StrictModel):
-    url: str
-    text: str | None = None
-
-
 class DocumentMetadataModel(StrictModel):
+    """Citation metadata that accompanies a page response.
+
+    Structural info (headings, code blocks, links) is not duplicated
+    here — trafilatura's markdown output already carries it inline in
+    the `content` field where the LLM can see it directly.
+    """
     author: str | None = None
     date: str | None = None
     site_name: str | None = None
     description: str | None = None
     word_count: int | None = None
-    content_hash: str | None = None
-    headings: list[HeadingModel] | None = None
-    code_blocks: int | None = None
-    outgoing_links: list[OutgoingLinkModel] | None = None
 
 
 class SearchResultModel(StrictModel):
     rank: int
-    search_rank: int
     title: str
     url: str
-    normalized_url: str
     domain: str
     snippet: str
     content: str
-    top_chunks: list[ChunkModel]
-    score: float | None = None
+    top_chunks: list[str]
     scraped: bool
     previously_seen: bool
     metadata: DocumentMetadataModel | None = None
@@ -110,7 +94,6 @@ class SearchResponseModel(StrictModel):
 
 class ExtractResultModel(StrictModel):
     url: str
-    normalized_url: str
     domain: str
     status: str
     content_type: str | None = None
@@ -120,7 +103,7 @@ class ExtractResultModel(StrictModel):
     chars_shown: int
     offset: int
     total_chars: int
-    top_chunks: list[ChunkModel]
+    top_chunks: list[str]
     chunks: list[ChunkSpecModel] = []
     cached: bool
     error: str | None = None
@@ -144,7 +127,6 @@ class ExtractResponseModel(StrictModel):
 class MapResultModel(StrictModel):
     rank: int
     url: str
-    normalized_url: str
     domain: str
     title: str | None = None
     link_text: str | None = None
@@ -170,7 +152,6 @@ class MapResponseModel(StrictModel):
 class CrawlResultModel(StrictModel):
     rank: int
     url: str
-    normalized_url: str
     domain: str
     title: str | None = None
     link_text: str | None = None

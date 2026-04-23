@@ -112,106 +112,36 @@ class TestDocumentMetadata:
     def test_build_document_metadata_adds_word_count(self):
         with patch("core.trafilatura.extract_metadata", return_value=self._doc()):
             metadata = server_module._build_document_metadata("<html/>", "one two three four five")
-        assert metadata["word_count"] == 5
-        assert metadata["content_hash"].startswith("sha256:")
+        assert metadata == {"word_count": 5}
 
     def test_build_document_metadata_strips_none_fields(self):
         metadata = server_module._build_document_metadata(None, "one two three")
-        assert metadata["word_count"] == 3
-        assert metadata["content_hash"].startswith("sha256:")
-        # No trafilatura-derived fields when html is None.
-        assert "author" not in metadata
-        assert "date" not in metadata
+        assert metadata == {"word_count": 3}
 
     def test_build_document_metadata_keeps_populated_fields(self):
         doc = self._doc(author="Alice", date="2024-03-01")
         with patch("core.trafilatura.extract_metadata", return_value=doc):
             metadata = server_module._build_document_metadata("<html/>", "hello world")
-        assert metadata["author"] == "Alice"
-        assert metadata["date"] == "2024-03-01"
-        assert metadata["word_count"] == 2
-        assert metadata["content_hash"].startswith("sha256:")
+        assert metadata == {
+            "author": "Alice",
+            "date": "2024-03-01",
+            "word_count": 2,
+        }
 
-    def test_build_document_metadata_extracts_headings_and_code_blocks(self):
+    def test_build_document_metadata_does_not_duplicate_structure_already_in_markdown(self):
+        """Headings and code blocks live inline in the markdown body where
+        the LLM reads them. We intentionally do NOT emit parallel fields."""
         content = (
             "# Top\n\nintro body.\n\n"
             "## Sub\n\nparagraph\n\n"
-            "```python\nprint('x')\n```\n\n"
-            "more text\n\n"
-            "```\nraw block\n```\n"
+            "```python\nprint('x')\n```\n"
         )
         with patch("core.trafilatura.extract_metadata", return_value=self._doc()):
             metadata = server_module._build_document_metadata("<html/>", content)
-        assert metadata["headings"] == [
-            {"level": 1, "text": "Top"},
-            {"level": 2, "text": "Sub"},
-        ]
-        assert metadata["code_blocks"] == 2
-
-    def test_structure_ignores_hashes_inside_code_blocks(self):
-        """The old regex matched '# fake heading' inside fences as a heading.
-        markdown-it-py's AST does not — prove it."""
-        content = (
-            "# Real heading\n\n"
-            "```\n"
-            "# this is a shell comment, not a heading\n"
-            "## another fake\n"
-            "```\n"
-        )
-        structure = server_module._extract_structure(content)
-        assert structure["headings"] == [{"level": 1, "text": "Real heading"}]
-        assert structure["code_blocks"] == 1
-
-    def test_structure_counts_indented_code_blocks(self):
-        """Indented 4-space blocks are code blocks too. The old regex only
-        counted triple-backtick fences and missed these."""
-        content = (
-            "Normal paragraph.\n\n"
-            "    indented = code_block()\n"
-            "    another = line()\n\n"
-            "More paragraph.\n"
-        )
-        structure = server_module._extract_structure(content)
-        assert structure["code_blocks"] == 1
-
-    def test_structure_extracts_outgoing_links_with_anchor_text(self):
-        """Inline [text](url), autolinks, and reference links all surface."""
-        content = (
-            "# Refs\n\n"
-            "See the [official docs](https://docs.example.com/guide) for details. "
-            "Bare autolink: <https://autolink.example.com/x>.\n\n"
-            "And a [ref-style link][ref] with a definition.\n\n"
-            "[ref]: https://refstyle.example.com/y\n"
-        )
-        structure = server_module._extract_structure(content)
-        urls = [link["url"] for link in structure["outgoing_links"]]
-        assert "https://docs.example.com/guide" in urls
-        assert "https://autolink.example.com/x" in urls
-        assert "https://refstyle.example.com/y" in urls
-        labelled = next(
-            link for link in structure["outgoing_links"]
-            if link["url"] == "https://docs.example.com/guide"
-        )
-        assert labelled["text"] == "official docs"
-
-    def test_structure_skips_relative_and_non_http_links(self):
-        """Only http(s) links go in outgoing_links — relative refs and
-        mailto: are ignored. Avoids polluting the field with fragments,
-        mailto, javascript:, etc."""
-        content = (
-            "[relative](/about) [email](mailto:a@b) "
-            "[js](javascript:void(0)) [real](https://example.com/x)\n"
-        )
-        structure = server_module._extract_structure(content)
-        urls = [link["url"] for link in structure["outgoing_links"]]
-        assert urls == ["https://example.com/x"]
-
-    def test_structure_handles_closed_atx_heading(self):
-        """'## Title ##' is a valid closed-ATX heading; the regex gave the
-        wrong text back (included the trailing '##')."""
-        content = "## Section ##\n\nbody\n"
-        structure = server_module._extract_structure(content)
-        assert structure["headings"] == [{"level": 2, "text": "Section"}]
+        assert "headings" not in metadata
+        assert "code_blocks" not in metadata
+        assert "outgoing_links" not in metadata
+        assert "content_hash" not in metadata  # now envelope-level, not metadata
 
 
 class TestTableSeparatorStrip:

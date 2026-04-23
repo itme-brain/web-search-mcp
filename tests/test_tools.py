@@ -21,7 +21,6 @@ async def test_extract_urls_returns_structured_result_from_tool():
         "results": [
             {
                 "url": "https://example.com/a1",
-                "normalized_url": "https://example.com/a1",
                 "domain": "example.com",
                 "status": "ok",
                 "content_type": "text/html",
@@ -93,5 +92,4 @@ async def test_search_returns_structured_json():
     assert payload["meta"]["reranker"]["name"] == "flashrank"
     assert payload["meta"]["num_results_returned"] == 2
     assert payload["results"][0]["url"] == "https://example.com/a1"
-    assert payload["results"][0]["normalized_url"] == "https://example.com/a1"
     assert payload["results"][0]["scraped"] is True

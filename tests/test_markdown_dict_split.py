@@ -14,15 +14,14 @@ PATCH_EXTRACT_URL_DOCUMENT = "core._extract_url_document"
 PATCH_MAP_IMPL = "impls.map_impl"
 PATCH_EXTRACT_IMPL = "impls.extract_impl"
 
-# These fields may live in the Python dict for scripting access, but must
-# never appear as literal keys in the LLM-facing markdown output.
+# Fields that are part of the structured dict for scripting access but
+# must never appear as literal keys in the LLM-facing markdown output.
+# (normalized_url / search_rank / score were trimmed from the response
+# entirely — they're internal bookkeeping, not agent-facing data.)
 _LEAKY_FIELDS = [
-    "normalized_url",
-    "search_rank",
     "previously_seen",
     "cached",
     "top_chunks",
-    "score",
 ]
 
 
@@ -50,8 +49,10 @@ async def test_search_dict_carries_full_structured_fields():
 
     first = payload["results"][0]
     # search dict carries these for scripting access
-    for field in ["normalized_url", "search_rank", "previously_seen", "top_chunks", "score"]:
+    for field in ["previously_seen", "top_chunks", "scraped"]:
         assert field in first, f"dict should carry {field} for scripting access"
+    # top_chunks is a flat list[str] now — the LLM reads ordering as relevance.
+    assert all(isinstance(c, str) for c in first["top_chunks"])
 
 
 @pytest.mark.asyncio
@@ -87,7 +88,7 @@ async def test_extract_dict_carries_full_structured_fields():
         "file_type": "html",
         "title": "A",
         "content": "# A\n\ncontent",
-        "top_chunks": [{"text": "content", "score": 0.5}],
+        "top_chunks": ["content"],
         "cached": False,
     })
 
@@ -97,9 +98,10 @@ async def test_extract_dict_carries_full_structured_fields():
         )
 
     result = payload["results"][0]
-    # extract's dict carries a different subset of leaky fields than search.
-    for field in ["normalized_url", "top_chunks", "cached"]:
+    # extract's dict carries these for scripting access
+    for field in ["top_chunks", "cached"]:
         assert field in result, f"extract dict should carry {field}"
+    assert all(isinstance(c, str) for c in result["top_chunks"])
 
 
 @pytest.mark.asyncio
@@ -111,7 +113,7 @@ async def test_extract_markdown_does_not_leak_metadata_fields():
         "file_type": "html",
         "title": "A",
         "content": "# A\n\ncontent",
-        "top_chunks": [{"text": "content", "score": 0.5}],
+        "top_chunks": ["content"],
         "cached": True,
     })
 

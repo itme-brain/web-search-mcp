@@ -308,15 +308,12 @@ async def search_impl(
 
         structured = {
             "rank": rank,
-            "search_rank": eidx + 1,
             "title": entry["title"],
             "url": url,
-            "normalized_url": normalized_url,
             "domain": core._domain_from_url(url),
             "snippet": results[eidx].get("content", ""),
             "content": content,
-            "top_chunks": [{"text": chunk, "score": score} for chunk, score in top],
-            "score": entry_best.get(eidx),
+            "top_chunks": [chunk for chunk, _ in top],
             "scraped": entry["scraped"],
             "previously_seen": previously_seen,
         }
@@ -413,7 +410,6 @@ async def extract_impl(
         total_chars = document.get("total_chars", len(content))
         entry = {
             "url": url,
-            "normalized_url": core._normalize_url(url),
             "domain": core._domain_from_url(url),
             "status": document["status"],
             "content_type": document.get("content_type"),
@@ -423,7 +419,10 @@ async def extract_impl(
             "chars_shown": len(content),
             "offset": offset,
             "total_chars": total_chars,
-            "top_chunks": document.get("top_chunks", []),
+            "top_chunks": [
+                c["text"] if isinstance(c, dict) else c
+                for c in document.get("top_chunks", [])
+            ],
             "chunks": document.get("chunks", []),
             "cached": document.get("cached", False),
             "error": document.get("error"),
@@ -483,7 +482,6 @@ async def map_impl(
     visited.add(root_normalized)
     results.append({
         "url": root_url,
-        "normalized_url": root_normalized,
         "domain": core._domain_from_url(root_url),
         "title": discovery.get("title"),
         "link_text": None,
@@ -510,7 +508,6 @@ async def map_impl(
         visited.add(normalized_url)
         results.append({
             "url": link_url,
-            "normalized_url": normalized_url,
             "domain": core._domain_from_url(link_url),
             "title": link.get("title"),
             "link_text": link.get("text"),
@@ -565,7 +562,6 @@ async def crawl_impl(
     def _entry(
         *,
         url: str,
-        normalized_url: str,
         title: str | None,
         content: str,
         metadata: dict,
@@ -579,7 +575,6 @@ async def crawl_impl(
         e = {
             "rank": 0,  # filled in after final dedup
             "url": url,
-            "normalized_url": normalized_url,
             "domain": core._domain_from_url(url),
             "title": title,
             "link_text": link_text,
@@ -623,7 +618,6 @@ async def crawl_impl(
     seen.add(root_normalized)
     entries.append(_entry(
         url=root_url,
-        normalized_url=root_normalized,
         title=root_scrape.get("title") or discovery.get("title"),
         content=root_scrape.get("content") or "",
         metadata=root_scrape.get("metadata") or {},
@@ -667,7 +661,6 @@ async def crawl_impl(
             seen.add(normalized)
             entries.append(_entry(
                 url=seed_url,
-                normalized_url=normalized,
                 title=scrape.get("title") or link_info.get("title"),
                 content=scrape.get("content") or "",
                 metadata=scrape.get("metadata") or {},
@@ -708,7 +701,6 @@ async def crawl_impl(
             crawl_md = page.get("metadata") if isinstance(page.get("metadata"), dict) else {}
             entries.append(_entry(
                 url=page_url,
-                normalized_url=normalized,
                 title=core._extract_crawl_title(page),
                 content=raw_content,
                 metadata=core._build_document_metadata(page.get("html"), raw_content),
