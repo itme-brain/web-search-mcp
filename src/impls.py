@@ -432,7 +432,14 @@ async def map_impl(
     max_urls: int = 25,
     include_patterns: list[str] | None = None,
 ) -> dict:
-    """Discover in-scope URLs from a site using Crawl4AI deep crawl + prefetch."""
+    """Discover in-scope URLs from a site via single-page link extraction.
+
+    One authoritative request: pull the rendered link graph of the root
+    page from Crawl4AI and filter it to the registrable domain + any
+    caller-supplied include_patterns. Depth-1 only; multi-hop discovery
+    is out of scope for map (callers who want deeper structure should
+    crawl one step at a time).
+    """
     root_url = core._validate_urls([url], maximum=1)[0]
     max_urls = core._validate_positive_int("max_urls", max_urls, maximum=_MAX_MAP_URLS)
     include_patterns = core._normalize_glob_patterns(include_patterns, field_name="include_patterns")
@@ -440,79 +447,54 @@ async def map_impl(
     started = time.monotonic()
     warnings: list[dict] = []
     try:
-        crawled_pages = await core._deep_crawl(
-            [root_url],
-            max_depth=_DISCOVERY_DEPTH,
-            max_pages=max_urls,
-            same_domain_only=True,
-            include_patterns=include_patterns,
-            prefetch=True,
-        )
+        discovery = await core._discover_page_links(root_url)
     except Exception as exc:
         warnings.append(core._warning("link_discovery_failed", "crawl4ai", str(exc)))
-        crawled_pages = []
+        discovery = {"links": [], "title": None}
 
     results: list[dict] = []
-    visited_pages: set[str] = set()
-    for page in crawled_pages:
-        page_url = page.get("url")
-        if not isinstance(page_url, str) or not page_url:
-            continue
-        normalized_url = core._normalize_url(page_url)
-        if normalized_url in visited_pages:
-            continue
-        visited_pages.add(normalized_url)
-        crawl_metadata = page.get("metadata") if isinstance(page.get("metadata"), dict) else {}
-        depth = crawl_metadata.get("depth", 0) or 0
-        results.append({
-            "url": page_url,
-            "normalized_url": normalized_url,
-            "domain": core._domain_from_url(page_url),
-            "title": core._extract_crawl_title(page),
-            "link_text": None,
-            "depth": depth,
-            "discovered_from": crawl_metadata.get("parent_url"),
-            "link_type": "seed" if depth == 0 else "internal",
-        })
+    visited: set[str] = set()
+
+    # Seed: the root itself.
+    root_normalized = core._normalize_url(root_url)
+    visited.add(root_normalized)
+    results.append({
+        "url": root_url,
+        "normalized_url": root_normalized,
+        "domain": core._domain_from_url(root_url),
+        "title": discovery.get("title"),
+        "link_text": None,
+        "depth": 0,
+        "discovered_from": None,
+        "link_type": "seed",
+    })
+
+    # Discovered in-scope links at depth 1.
+    domain_patterns = core._domain_filter_patterns(root_url, True)
+    for link in discovery.get("links", []):
         if len(results) >= max_urls:
             break
-
-    # ----- Fallback: explicit link extraction when deep crawl finds too few -----
-    # Crawl4AI's BFS deep crawl can silently return only the seed page on
-    # many documentation sites (JS-rendered nav, non-standard link structures).
-    # When that happens, fall back to single-page link extraction which
-    # parses the rendered DOM directly.
-    if len(results) <= 1 and len(results) < max_urls:
-        try:
-            discovery = await core._discover_page_links(root_url)
-            domain_patterns = core._domain_filter_patterns(root_url, True)
-            for link in discovery.get("links", []):
-                if len(results) >= max_urls:
-                    break
-                link_url = link.get("url")
-                if not isinstance(link_url, str) or not link_url:
-                    continue
-                normalized_url = core._normalize_url(link_url)
-                if normalized_url in visited_pages:
-                    continue
-                if domain_patterns and not core._url_matches_patterns(link_url, domain_patterns):
-                    continue
-                if include_patterns:
-                    if not core._url_matches_patterns(link_url, include_patterns):
-                        continue
-                visited_pages.add(normalized_url)
-                results.append({
-                    "url": link_url,
-                    "normalized_url": normalized_url,
-                    "domain": core._domain_from_url(link_url),
-                    "title": link.get("title"),
-                    "link_text": link.get("text"),
-                    "depth": 1,
-                    "discovered_from": root_url,
-                    "link_type": link.get("link_type", "internal"),
-                })
-        except Exception as exc:
-            warnings.append(core._warning("fallback_discovery_failed", "crawl4ai", str(exc)))
+        link_url = link.get("url")
+        if not isinstance(link_url, str) or not link_url:
+            continue
+        normalized_url = core._normalize_url(link_url)
+        if normalized_url in visited:
+            continue
+        if domain_patterns and not core._url_matches_patterns(link_url, domain_patterns):
+            continue
+        if include_patterns and not core._url_matches_patterns(link_url, include_patterns):
+            continue
+        visited.add(normalized_url)
+        results.append({
+            "url": link_url,
+            "normalized_url": normalized_url,
+            "domain": core._domain_from_url(link_url),
+            "title": link.get("title"),
+            "link_text": link.get("text"),
+            "depth": 1,
+            "discovered_from": root_url,
+            "link_type": link.get("link_type", "internal"),
+        })
 
     for rank, entry in enumerate(results, start=1):
         entry["rank"] = rank
@@ -523,7 +505,7 @@ async def map_impl(
         "meta": {
             "max_urls_requested": max_urls,
             "urls_returned": len(results),
-            "pages_visited": len(visited_pages),
+            "pages_visited": len(visited),
             "warnings": warnings,
             "timings_ms": {
                 "total": int((time.monotonic() - started) * 1000),
@@ -531,11 +513,8 @@ async def map_impl(
         },
     }
     log.info(
-        "map url=%s returned=%d visited=%d warnings=%d",
-        root_url,
-        len(results),
-        len(visited_pages),
-        len(warnings),
+        "map url=%s returned=%d warnings=%d",
+        root_url, len(results), len(warnings),
     )
     return _validated_response(models.MapResponseModel, response)
 
