@@ -81,6 +81,16 @@ FULL_EXTRAS = [
         },
     },
     {
+        "name": "cache — cold vs warm extract latency",
+        "tool": "__cache_warmup",
+        "args": None,
+    },
+    {
+        "name": "chunks — cherry-pick by id",
+        "tool": "__chunk_ids",
+        "args": None,
+    },
+    {
         "name": "degraded-mode spike",
         "tool": "__burst_search",
         "args": None,
@@ -170,6 +180,85 @@ async def _burst_search(client: Client) -> None:
         print(f"non-engine warnings across burst (scrape/rerank): {scrape_failures}")
 
 
+async def _cache_warmup(client: Client) -> None:
+    """Call extract twice on the same URL and compare latencies.
+
+    The second call must hit Valkey and skip Crawl4AI — a drop of 10×
+    or more is the signal that the shared cache is actually in play.
+    """
+    print(f"\n{SEPARATOR}\n[cache warmup: extract the same URL twice]\n{SEPARATOR}")
+    url = "https://docs.python.org/3/library/asyncio-task.html"
+
+    started = time.monotonic()
+    try:
+        await client.call_tool("extract", {"urls": [url]})
+    except Exception as exc:
+        print(f"  cold call FAILED: {exc}")
+        return
+    cold_ms = int((time.monotonic() - started) * 1000)
+
+    started = time.monotonic()
+    try:
+        result = await client.call_tool("extract", {"urls": [url]})
+    except Exception as exc:
+        print(f"  warm call FAILED: {exc}")
+        return
+    warm_ms = int((time.monotonic() - started) * 1000)
+
+    cached_flag = False
+    payload = (result.structured_content or {}).get("results") or []
+    if payload:
+        cached_flag = bool(payload[0].get("cached"))
+
+    ratio = cold_ms / warm_ms if warm_ms else float("inf")
+    print(f"  cold: {cold_ms} ms   warm: {warm_ms} ms   speedup: {ratio:.1f}x   cached={cached_flag}")
+    if not cached_flag:
+        print("  !! warm call did not report cached=true — Valkey may be bypassed")
+    elif ratio < 3:
+        print("  !! speedup < 3× — warm call is not reading from cache cleanly")
+
+
+async def _chunk_ids(client: Client) -> None:
+    """Extract a page, then re-request specific chunks by id."""
+    print(f"\n{SEPARATOR}\n[chunks: cherry-pick by id]\n{SEPARATOR}")
+    url = "https://docs.python.org/3/library/asyncio-task.html"
+    try:
+        first = await client.call_tool("extract", {"urls": [url], "query": "task group"})
+    except Exception as exc:
+        print(f"  initial extract FAILED: {exc}")
+        return
+
+    payload = (first.structured_content or {}).get("results") or []
+    if not payload:
+        print("  !! no results from initial extract")
+        return
+    chunks = payload[0].get("chunks") or []
+    print(f"  initial extract returned {len(chunks)} chunks")
+    if len(chunks) < 2:
+        print("  !! need at least 2 chunks to exercise chunk_ids; skipping")
+        return
+
+    wanted = [chunks[0]["id"], chunks[-1]["id"]]
+    started = time.monotonic()
+    try:
+        second = await client.call_tool("extract", {"urls": [url], "chunk_ids": wanted})
+    except Exception as exc:
+        print(f"  chunk_ids call FAILED: {exc}")
+        return
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+
+    second_payload = (second.structured_content or {}).get("results") or []
+    if not second_payload:
+        print("  !! no results from chunk_ids extract")
+        return
+    got = second_payload[0]
+    cached_flag = bool(got.get("cached"))
+    content = got.get("content") or ""
+    print(f"  chunk_ids={wanted}   latency: {elapsed_ms} ms   cached={cached_flag}   chars: {len(content)}")
+    if not cached_flag:
+        print("  !! chunk_ids call did not hit cache — rerank/scrape was re-done")
+
+
 def _looks_like_engine_warning(chunk: str) -> bool:
     """Engine warnings render as `<engine>: <reason>`; other warning types
     (scrape_failed = 'N of M pages failed') have no colon, or a multi-word
@@ -206,6 +295,10 @@ async def _main() -> None:
             for test in tests:
                 if test["tool"] == "__burst_search":
                     await _burst_search(client)
+                elif test["tool"] == "__cache_warmup":
+                    await _cache_warmup(client)
+                elif test["tool"] == "__chunk_ids":
+                    await _chunk_ids(client)
                 else:
                     await _run_tool(client, test["name"], test["tool"], test["args"])
     except Exception as exc:
