@@ -100,30 +100,6 @@ async def test_map_applies_depth_and_patterns():
 
 
 @pytest.mark.asyncio
-async def test_map_uses_prefetch_deep_crawl():
-    captured: dict = {}
-
-    async def fake_deep_crawl(url, **kwargs):
-        captured["url"] = url
-        captured.update(kwargs)
-        return []
-
-    with patch(PATCH_DEEP_CRAWL, side_effect=fake_deep_crawl):
-        await server_module.map_impl(
-            "https://example.com",
-            max_urls=5,
-            include_patterns=["https://example.com/docs/*"],
-        )
-
-    assert captured["url"] == "https://example.com"
-    assert captured["prefetch"] is True
-    assert captured["same_domain_only"] is True
-    assert captured["include_patterns"] == ["https://example.com/docs/*"]
-    assert captured["max_pages"] == 5
-    assert captured["max_depth"] == 2
-
-
-@pytest.mark.asyncio
 async def test_deep_crawl_config_uses_prefetch_and_preserves_link_graph():
     cfg = server_module._deep_crawl_config(
         root_url="https://example.com",

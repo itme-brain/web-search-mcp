@@ -783,15 +783,19 @@ def _is_retryable_crawl_error(exc: BaseException) -> bool:
 )
 async def _crawl_post(
     client: httpx.AsyncClient,
-    url: str,
+    urls: list[str],
     priority: int,
     crawler_config: dict | None = None,
 ) -> dict:
-    """POST to Crawl4AI's stream endpoint and collect NDJSON results."""
+    """POST to Crawl4AI's stream endpoint and collect NDJSON results.
+
+    `urls` is the seed list. With a BFS deep_crawl_strategy in the
+    config, Crawl4AI expands each seed independently.
+    """
     resp = await client.post(
         f"{CRAWL4AI_URL}/crawl/stream",
         json={
-            "urls": [url],
+            "urls": urls,
             "priority": priority,
             "crawler_config": crawler_config or _DEFAULT_CRAWL_CONFIG,
         },
@@ -819,7 +823,7 @@ async def _crawl_post(
 async def _scrape_impl(url: str) -> dict:
     """Scrape a URL via Crawl4AI. Returns {content, title, metadata}."""
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-        data = await _crawl_post(client, url, priority=8)
+        data = await _crawl_post(client, [url], priority=8)
 
         result = _extract_crawl_result(data)
         content = _extract_markdown(result)
@@ -968,7 +972,7 @@ async def _extract_text_document(url: str, file_type: str) -> dict:
 
 async def _discover_page_links(url: str) -> dict:
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-        data = await _crawl_post(client, url, priority=6, crawler_config=_MAP_CRAWL_CONFIG)
+        data = await _crawl_post(client, [url], priority=6, crawler_config=_MAP_CRAWL_CONFIG)
 
         result = _extract_crawl_result(data)
         return {
@@ -980,7 +984,7 @@ async def _discover_page_links(url: str) -> dict:
 
 
 async def _deep_crawl(
-    url: str,
+    seeds: list[str],
     *,
     max_depth: int,
     max_pages: int,
@@ -988,8 +992,16 @@ async def _deep_crawl(
     include_patterns: list[str] | None = None,
     prefetch: bool = False,
 ) -> list[dict]:
+    """BFS deep crawl starting from every seed URL.
+
+    The BFS strategy's same_domain and include_pattern filters are keyed
+    off the first seed (as the "root") for domain-scope purposes, since
+    all seeds should already be in-scope at the call site.
+    """
+    if not seeds:
+        return []
     crawler_config = _deep_crawl_config(
-        root_url=url,
+        root_url=seeds[0],
         max_depth=max_depth,
         max_pages=max_pages,
         same_domain_only=same_domain_only,
@@ -997,7 +1009,7 @@ async def _deep_crawl(
         prefetch=prefetch,
     )
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-        data = await _crawl_post(client, url, priority=7, crawler_config=crawler_config)
+        data = await _crawl_post(client, seeds, priority=7, crawler_config=crawler_config)
         return _extract_crawl_results(data)
 
 

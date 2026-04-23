@@ -441,7 +441,7 @@ async def map_impl(
     warnings: list[dict] = []
     try:
         crawled_pages = await core._deep_crawl(
-            root_url,
+            [root_url],
             max_depth=_DISCOVERY_DEPTH,
             max_pages=max_urls,
             same_domain_only=True,
@@ -562,7 +562,7 @@ async def crawl_impl(
 
     try:
         crawled_pages = await core._deep_crawl(
-            root_url,
+            [root_url],
             max_depth=_DISCOVERY_DEPTH,
             max_pages=effective_max_urls,
             same_domain_only=True,
