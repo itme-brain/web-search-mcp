@@ -5,8 +5,6 @@ use_default_settings:
       - google news
       - bing
       - bing news
-      - brave
-      - brave.news
       - duckduckgo
       - duckduckgo news
       - startpage
@@ -22,14 +20,19 @@ use_default_settings:
 # field on the default engine definitions inherited above.
 #
 # Philosophy: lean on engines with stable scraping surfaces and/or public
-# APIs (DDG, Brave, Wikipedia, GitHub, Arxiv). Keep Google in the pool so
+# APIs (DDG, Wikipedia, GitHub, Arxiv). Keep Google in the pool so
 # its occasional successful pages still contribute, but don't rely on it —
 # Google's anti-bot measures will CAPTCHA a scraper under load, and any
 # single upstream going down should not dominate the ranking.
+#
+# Brave is intentionally absent: its scrape endpoint (search.brave.com)
+# rate-limits self-hosted SearXNG instances aggressively and persistently
+# (hours per trip). Once suspended its contribution to ranking is zero
+# but SearXNG still pays the timeout cost and emits warning noise. To
+# restore brave, sign up for its paid Search API and configure the
+# engine with a brave_key — the API variant has a real allowance.
 engines:
   - name: duckduckgo
-    weight: 1.5
-  - name: brave
     weight: 1.5
   - name: bing
     weight: 1.5
@@ -46,8 +49,6 @@ engines:
   - name: arxiv
     weight: 1.2
   - name: duckduckgo news
-    weight: 1.0
-  - name: brave.news
     weight: 1.0
   - name: bing news
     weight: 1.0
