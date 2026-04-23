@@ -848,24 +848,59 @@ async def _scrape(url: str) -> dict:
 
 
 async def _scrape_cached(url: str, cache: KVCache) -> dict:
-    """Scrape with shared cache. Returns {content, title, metadata}.
+    """Scrape with shared page cache. Returns the full envelope.
 
-    Cache key normalizes the URL so www./trailing-slash/tracking-param
-    variants collapse onto one entry — the search pipeline and direct
-    extract/crawl calls end up sharing cache hits for the same page.
+    The envelope is the same shape a fresh extract would cache, so the
+    search pipeline and user-facing extract calls share a single entry
+    per normalized URL. Callers that only need {content, title,
+    metadata} read those fields; callers that need status / file_type /
+    etc. read those too.
     """
     key = _normalize_url(url)
     if await cache.contains(key):
-        log.debug("scrape cache hit url=%s", url)
-        return await cache.get(key) or {"content": None, "title": None, "metadata": {}}
+        log.debug("page cache hit url=%s", url)
+        return await cache.get(key) or _page_entry(url=url, content=None, title=None, metadata={})
     result = await _scrape(url)
-    entry = {
-        "content": result.get("content"),
-        "title": result.get("title"),
-        "metadata": result.get("metadata") or {},
-    }
+    entry = _page_entry(
+        url=url,
+        content=result.get("content"),
+        title=result.get("title"),
+        metadata=result.get("metadata") or {},
+    )
     await cache.set(key, entry)
     return entry
+
+
+def _page_entry(
+    *,
+    url: str,
+    content: str | None,
+    title: str | None,
+    metadata: dict,
+    content_type: str = "text/html",
+    file_type: str = "html",
+    handoff: dict | None = None,
+    status: str | None = None,
+) -> dict:
+    """Construct a unified page-cache envelope.
+
+    Callers supply what they know; everything else is defaulted. `status`
+    defaults to 'ok' when content is non-empty and 'error' otherwise.
+    """
+    if status is None:
+        status = "ok" if content else "error"
+    return {
+        "_schema_version": 1,
+        "status": status,
+        "url": url,
+        "content_type": content_type,
+        "file_type": file_type,
+        "title": title,
+        "content": content,
+        "total_chars": len(content) if content else 0,
+        "metadata": metadata,
+        "handoff": handoff,
+    }
 
 
 async def _head_content_type(url: str) -> str | None:
@@ -1113,17 +1148,19 @@ async def _extract_url_document(
         # calls do not re-sniff/reclassify the same resource.
         raw = extracted.get("content", "")
         total_chars = extracted.get("total_chars", len(raw))
-        cached_entry = {
-            "status": extracted["status"],
-            "url": url,
-            "content_type": extracted.get("content_type"),
-            "file_type": extracted.get("file_type"),
-            "title": extracted.get("title"),
-            "content": raw,
-            "total_chars": total_chars,
-            "metadata": extracted.get("metadata") or {},
-            "handoff": extracted.get("handoff"),
-        }
+        cached_entry = _page_entry(
+            url=url,
+            content=raw,
+            title=extracted.get("title"),
+            metadata=extracted.get("metadata") or {},
+            content_type=extracted.get("content_type") or "text/html",
+            file_type=extracted.get("file_type") or "html",
+            handoff=extracted.get("handoff"),
+            status=extracted["status"],
+        )
+        # Preserve the upstream's total_chars (e.g. local text documents
+        # that know their own length) rather than deriving from content.
+        cached_entry["total_chars"] = total_chars
         await cache.set(key, cached_entry)
         content, top_chunks, chunks = await _rank_document_content(
             query, raw, offset=offset, chunk_ids=chunk_ids,

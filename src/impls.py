@@ -75,7 +75,7 @@ async def search_impl(
     timings_ms = {"search": 0, "scrape": 0, "rerank": 0, "total": 0}
 
     # --- shared cache (Valkey-backed, cross-session + cross-process) ---
-    scrape_cache = cache_module.scrape_cache
+    page_cache = cache_module.page_cache
     query_cache = cache_module.query_cache
     seen_urls = cache_module.seen_urls
 
@@ -159,7 +159,7 @@ async def search_impl(
     # --- scrape (cache-aware) ---
     to_scrape = min(scrape_budget, len(results))
     scrape_started = time.monotonic()
-    scrape_tasks = [core._scrape_cached(r["url"], scrape_cache) for r in results[:to_scrape]]
+    scrape_tasks = [core._scrape_cached(r["url"], page_cache) for r in results[:to_scrape]]
     scraped = await asyncio.gather(*scrape_tasks)
     timings_ms["scrape"] = int((time.monotonic() - scrape_started) * 1000)
     scrape_failures = sum(1 for s in scraped if s.get("content") is None)
@@ -365,11 +365,11 @@ async def extract_impl(
     normalized_query = query.strip() if query else None
     started = time.monotonic()
 
-    extract_cache = cache_module.extract_cache
+    page_cache = cache_module.page_cache
 
     documents = await asyncio.gather(*[
         core._extract_url_document(
-            url, normalized_query, extract_cache,
+            url, normalized_query, page_cache,
             offset=offset, chunk_ids=chunk_ids,
         )
         for url in urls
@@ -579,7 +579,7 @@ async def crawl_impl(
     # content-filter pruning; discovery keeps nav/footer so the link graph
     # survives).
     root_scrape, discovery = await asyncio.gather(
-        core._scrape_cached(root_url, cache_module.scrape_cache),
+        core._scrape_cached(root_url, cache_module.page_cache),
         core._discover_page_links(root_url),
         return_exceptions=True,
     )
@@ -630,7 +630,7 @@ async def crawl_impl(
 
     if seeds_to_fetch:
         seed_scrapes = await asyncio.gather(
-            *(core._scrape_cached(su[0], cache_module.scrape_cache) for su in seeds_to_fetch),
+            *(core._scrape_cached(su[0], cache_module.page_cache) for su in seeds_to_fetch),
             return_exceptions=True,
         )
         for (seed_url, normalized, link_info), scrape in zip(seeds_to_fetch, seed_scrapes):

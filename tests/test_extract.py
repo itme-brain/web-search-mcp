@@ -137,7 +137,7 @@ async def test_extract_url_document_handoffs_binary_file_types():
         result = await server_module._extract_url_document(
             "https://example.com/manual.pdf",
             query=None,
-            cache=cache_module.extract_cache,
+            cache=cache_module.page_cache,
         )
 
     assert result["status"] == "handoff"
@@ -148,7 +148,7 @@ async def test_extract_url_document_handoffs_binary_file_types():
 
 @pytest.mark.asyncio
 async def test_extract_cache_hit_preserves_handoff_metadata():
-    await cache_module.extract_cache.set("https://example.com/manual.pdf", {
+    await cache_module.page_cache.set("https://example.com/manual.pdf", {
         "status": "handoff",
         "url": "https://example.com/manual.pdf",
         "content_type": "application/pdf",
@@ -163,7 +163,7 @@ async def test_extract_cache_hit_preserves_handoff_metadata():
     })
 
     result = await server_module._extract_url_document(
-        "https://example.com/manual.pdf", query=None, cache=cache_module.extract_cache,
+        "https://example.com/manual.pdf", query=None, cache=cache_module.page_cache,
     )
 
     assert result["cached"] is True
@@ -220,7 +220,7 @@ async def test_extract_url_document_handoffs_unknown_types_by_default():
         result = await server_module._extract_url_document(
             "https://example.com/blob.bin",
             query=None,
-            cache=cache_module.extract_cache,
+            cache=cache_module.page_cache,
         )
 
     assert result["status"] == "handoff"
@@ -287,7 +287,7 @@ async def test_extract_no_signal_when_content_fits():
 async def test_extract_offset_bypasses_rerank_and_slices_raw():
     """offset>0 returns the raw content slice, skipping query rerank."""
     long_content = "A" * 20000
-    await cache_module.extract_cache.set("https://example.com/long", {
+    await cache_module.page_cache.set("https://example.com/long", {
         "status": "ok",
         "url": "https://example.com/long",
         "content_type": "text/html",
@@ -300,7 +300,7 @@ async def test_extract_offset_bypasses_rerank_and_slices_raw():
     result = await server_module._extract_url_document(
         "https://example.com/long",
         query="something",
-        cache=cache_module.extract_cache,
+        cache=cache_module.page_cache,
         offset=8000,
     )
     assert result["content"] == long_content[8000:16000]
@@ -337,7 +337,7 @@ async def test_extract_response_includes_chunks_with_stable_ids():
     """The full chunk list with ids is returned so callers can cherry-pick."""
     # Three paragraphs → three chunks with ids 0, 1, 2.
     content = "Alpha paragraph one.\n\nBeta paragraph two.\n\nGamma paragraph three."
-    await cache_module.extract_cache.set("https://example.com/chunked", {
+    await cache_module.page_cache.set("https://example.com/chunked", {
         "status": "ok",
         "url": "https://example.com/chunked",
         "content_type": "text/html",
@@ -350,12 +350,51 @@ async def test_extract_response_includes_chunks_with_stable_ids():
     result = await server_module._extract_url_document(
         "https://example.com/chunked",
         query=None,
-        cache=cache_module.extract_cache,
+        cache=cache_module.page_cache,
     )
 
     assert [c["id"] for c in result["chunks"]] == [0, 1, 2]
     assert result["chunks"][0]["text"] == "Alpha paragraph one."
     assert result["chunks"][2]["text"] == "Gamma paragraph three."
+
+
+@pytest.mark.asyncio
+async def test_extract_sees_search_scrape_as_cache_hit():
+    """Unified ws:page cache — search's scrape is an extract cache hit.
+
+    search_impl calls _scrape_cached which writes the full page-envelope
+    shape. extract_impl later reads that entry and must get cached=True,
+    full content, and no re-scrape.
+    """
+    url = "https://docs.example.com/shared"
+    # Populate via _scrape_cached the way search_impl does.
+    fake_scrape = AsyncMock(return_value={
+        "content": "# Shared\n\nbody used by both tools.",
+        "title": "Shared",
+        "metadata": {"word_count": 6},
+    })
+    with patch("core._scrape", fake_scrape):
+        envelope = await server_module._scrape_cached(url, cache_module.page_cache)
+
+    assert envelope["_schema_version"] == 1
+    assert envelope["status"] == "ok"
+    assert envelope["file_type"] == "html"
+
+    # Now extract_url_document on the same URL should hit the cache
+    # without calling _scrape or _detect_file_type again.
+    extract_scrape = AsyncMock(side_effect=AssertionError("should not re-scrape"))
+    extract_detect = AsyncMock(side_effect=AssertionError("should not re-detect"))
+    with (
+        patch("core._scrape", extract_scrape),
+        patch("core._detect_file_type", extract_detect),
+    ):
+        result = await server_module._extract_url_document(
+            url, query=None, cache=cache_module.page_cache,
+        )
+
+    assert result["cached"] is True
+    assert result["status"] == "ok"
+    assert "body used by both tools" in result["content"]
 
 
 @pytest.mark.asyncio
@@ -369,7 +408,7 @@ async def test_extract_cache_collapses_url_variants():
     content = "Once cached, any variant of this URL should hit."
     # Pre-populate with the canonical form.
     canonical = "https://example.com/docs/page"
-    await cache_module.extract_cache.set(canonical, {
+    await cache_module.page_cache.set(canonical, {
         "status": "ok",
         "url": canonical,
         "content_type": "text/html",
@@ -388,7 +427,7 @@ async def test_extract_cache_collapses_url_variants():
         result = await server_module._extract_url_document(
             variant,
             query=None,
-            cache=cache_module.extract_cache,
+            cache=cache_module.page_cache,
         )
         assert result["cached"] is True, f"variant missed cache: {variant!r}"
         assert result["title"] == "Shared"
@@ -398,7 +437,7 @@ async def test_extract_cache_collapses_url_variants():
 async def test_extract_chunk_ids_returns_only_selected_chunks():
     """chunk_ids=[0,2] joins chunks 0 and 2 into `content`, skips rerank."""
     content = "Alpha paragraph one.\n\nBeta paragraph two.\n\nGamma paragraph three."
-    await cache_module.extract_cache.set("https://example.com/chunked", {
+    await cache_module.page_cache.set("https://example.com/chunked", {
         "status": "ok",
         "url": "https://example.com/chunked",
         "content_type": "text/html",
@@ -411,7 +450,7 @@ async def test_extract_chunk_ids_returns_only_selected_chunks():
     result = await server_module._extract_url_document(
         "https://example.com/chunked",
         query="query that would otherwise rerank",
-        cache=cache_module.extract_cache,
+        cache=cache_module.page_cache,
         chunk_ids=[0, 2],
     )
 
