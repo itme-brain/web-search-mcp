@@ -76,33 +76,37 @@ async def search_impl(
 
     # --- shared cache (Valkey-backed, cross-session + cross-process) ---
     page_cache = cache_module.page_cache
-    query_cache = cache_module.query_cache
+    searxng_cache = cache_module.searxng_cache
     seen_urls = cache_module.seen_urls
 
-    # --- exact query cache ---
-    qkey = hashlib.sha256(
-        json.dumps(
-            [
-                query.lower().strip(),
-                num_results,
-                time_range,
-                language,
-                include_domains,
-                exclude_domains,
-            ],
-            sort_keys=True,
-        ).encode()
-    ).hexdigest()
-    cached_response = await query_cache.get(qkey)
-    if cached_response is not None:
-        log.info("query cache hit query=%r", query)
-        return cached_response
+    async def _searxng_cached(pageno: int) -> dict:
+        """SearXNG call cached on (query, time_range, language, pageno).
+
+        Filters (include_domains / exclude_domains) are NOT part of the
+        key — the cache holds raw SearXNG output and filters apply at
+        response-shaping time.
+        """
+        key = hashlib.sha256(
+            json.dumps(
+                [query.lower().strip(), time_range, language, pageno],
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
+        cached = await searxng_cache.get(key)
+        if cached is not None:
+            return cached
+        result = await core._search(
+            query, num_results=num_results, time_range=time_range,
+            language=language, pageno=pageno,
+        )
+        await searxng_cache.set(key, result)
+        return result
 
     # --- search (page 1, with reactive page-2 fallback on underflow) ---
     search_started = time.monotonic()
     unresponsive_engines: list = []
     try:
-        page1 = await core._search(query, num_results=num_results, time_range=time_range, language=language)
+        page1 = await _searxng_cached(pageno=1)
     except Exception as exc:
         degraded = True
         warnings.append(core._warning("search_failed", "searxng", str(exc)))
@@ -114,7 +118,7 @@ async def search_impl(
     results = core._dedup_results(core._filter_results_by_domain(raw_results, include_domains, exclude_domains))
     if raw_results and len(results) < num_results:
         try:
-            page2 = await core._search(query, num_results=num_results, time_range=time_range, language=language, pageno=2)
+            page2 = await _searxng_cached(pageno=2)
         except Exception as exc:
             warnings.append(core._warning("search_failed", "searxng", f"page 2: {exc}"))
         else:
@@ -152,9 +156,7 @@ async def search_impl(
                 },
             },
         }
-        response = _validated_response(models.SearchResponseModel, response)
-        await query_cache.set(qkey, response)
-        return response
+        return _validated_response(models.SearchResponseModel, response)
 
     # --- scrape (cache-aware) ---
     to_scrape = min(scrape_budget, len(results))
@@ -323,10 +325,10 @@ async def search_impl(
     }
 
     # --- persist to shared cache ---
-    await asyncio.gather(
-        query_cache.set(qkey, response),
-        *(seen_urls.set(url, 1) for url in new_urls),
-    )
+    if new_urls:
+        await asyncio.gather(
+            *(seen_urls.set(url, 1) for url in new_urls),
+        )
 
     log.info("query=%r chunks=%d pages=%d", query, len(all_chunks), len(entries))
 

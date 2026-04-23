@@ -79,32 +79,48 @@ def patched_backends():
 
 
 @pytest.mark.asyncio
-async def test_query_cache_hit_returns_same_output_without_calling_backends(patched_backends, fake_ctx):
-    payload1 = await server_module.search_impl("test query", num_results=3, ctx=fake_ctx)
+async def test_repeat_query_skips_searxng_and_scrape(patched_backends, fake_ctx):
+    """Same query twice: SearXNG and scrape both cached, rerank runs fresh.
 
+    The old query_cache memoized the full response; we now cache at two
+    layers (SearXNG results + page contents) so the expensive upstream
+    calls are skipped but rerank runs against the cached chunks each
+    time. Response content should match even though timings differ.
+    """
+    r1 = await server_module.search_impl("test query", num_results=3, ctx=fake_ctx)
     patched_backends["search"].reset_mock()
     patched_backends["scrape"].reset_mock()
     patched_backends["rerank"].reset_mock()
+    r2 = await server_module.search_impl("test query", num_results=3, ctx=fake_ctx)
 
-    payload2 = await server_module.search_impl("test query", num_results=3, ctx=fake_ctx)
-
-    assert payload1 == payload2
     patched_backends["search"].assert_not_called()
     patched_backends["scrape"].assert_not_called()
-    patched_backends["rerank"].assert_not_called()
+    patched_backends["rerank"].assert_called()  # rerank always runs now
+    assert [r["url"] for r in r1["results"]] == [r["url"] for r in r2["results"]]
 
 
 @pytest.mark.asyncio
-async def test_query_cache_key_normalizes_whitespace_and_case(patched_backends, fake_ctx):
-    payload1 = await server_module.search_impl("Test Query ", num_results=3, ctx=fake_ctx)
-
+async def test_searxng_cache_key_normalizes_whitespace_and_case(patched_backends, fake_ctx):
+    """Query text normalization (lower + strip) collapses to one searxng key."""
+    await server_module.search_impl("Test Query ", num_results=3, ctx=fake_ctx)
     patched_backends["search"].reset_mock()
-    patched_backends["scrape"].reset_mock()
-    patched_backends["rerank"].reset_mock()
+    await server_module.search_impl("  test query", num_results=3, ctx=fake_ctx)
+    patched_backends["search"].assert_not_called()
 
-    payload2 = await server_module.search_impl("  test query", num_results=3, ctx=fake_ctx)
 
-    assert payload1 == payload2
+@pytest.mark.asyncio
+async def test_searxng_cache_ignores_filter_changes(patched_backends, fake_ctx):
+    """Same query with different domain filters: SearXNG hit, no refetch.
+
+    The whole point of dropping filters from the cache key — filter
+    variations don't thrash the upstream call.
+    """
+    await server_module.search_impl("fixed query", num_results=3, ctx=fake_ctx)
+    patched_backends["search"].reset_mock()
+    await server_module.search_impl(
+        "fixed query", num_results=3,
+        include_domains=["example.com"], ctx=fake_ctx,
+    )
     patched_backends["search"].assert_not_called()
 
 
@@ -412,20 +428,18 @@ async def test_kvcache_hit_miss_counters():
 @pytest.mark.asyncio
 async def test_cache_survives_across_ctx_instances(patched_backends):
     """Cache state lives in Valkey, not per-Context. A fresh ctx in the same
-    process must still see the previous call's cached response."""
+    process hits the SearXNG cache and page cache from the prior run."""
     from tests.conftest import FakeContext
 
     ctx_a = FakeContext()
-    payload1 = await server_module.search_impl("cross-ctx query", num_results=2, ctx=ctx_a)
+    r1 = await server_module.search_impl("cross-ctx query", num_results=2, ctx=ctx_a)
 
     patched_backends["search"].reset_mock()
     patched_backends["scrape"].reset_mock()
-    patched_backends["rerank"].reset_mock()
 
     ctx_b = FakeContext()
-    payload2 = await server_module.search_impl("cross-ctx query", num_results=2, ctx=ctx_b)
+    r2 = await server_module.search_impl("cross-ctx query", num_results=2, ctx=ctx_b)
 
-    assert payload1 == payload2
     patched_backends["search"].assert_not_called()
     patched_backends["scrape"].assert_not_called()
-    patched_backends["rerank"].assert_not_called()
+    assert [r["url"] for r in r1["results"]] == [r["url"] for r in r2["results"]]

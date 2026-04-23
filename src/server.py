@@ -62,15 +62,15 @@ async def metrics(_: Request) -> JSONResponse:
 
     Plain INCR counters; no TTL. Reset by flushing Valkey.
     """
-    page, query, seen = await asyncio.gather(
+    page, searxng, seen = await asyncio.gather(
         cache.page_cache.stats(),
-        cache.query_cache.stats(),
+        cache.searxng_cache.stats(),
         cache.seen_urls.stats(),
     )
     return JSONResponse({
         "caches": {
             "page": page,
-            "query": query,
+            "searxng": searxng,
             "seen_urls": seen,
         },
     })

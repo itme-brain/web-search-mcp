@@ -1,11 +1,18 @@
 """Valkey-backed cache for the MCP server.
 
-Three named caches live here: `page_cache` (the single source of truth
-per scraped/extracted page), `query_cache` (memoized search responses),
-and `seen_urls` (previously-returned flags). They replace the
-per-session in-memory `cachetools.TTLCache` trio that used to hang off
-FastMCP Context state. A single connection pool backs all three; keys
-are prefixed per-cache and carry a 3600 s TTL.
+Named caches:
+- `page_cache`      — single source of truth per scraped/extracted page.
+- `searxng_cache`   — raw SearXNG responses keyed on (query, time_range,
+                      language, pageno). Filter-agnostic; filters apply
+                      at response-shaping time.
+- `seen_urls`       — previously-returned URLs for the `previously_seen`
+                      flag on search results.
+- `content_alias`   — content_hash → canonical URL, for exact-dupe
+                      aliasing inside page_cache.
+
+They replace the per-session in-memory `cachetools.TTLCache` trio that
+used to hang off FastMCP Context state. A single connection pool backs
+them all; keys are prefixed per-cache and carry a 3600 s TTL.
 
 Valkey is an internal compose service alongside searxng and crawl4ai. If
 the stack is up, Valkey is up — there is no in-request fallback path.
@@ -109,7 +116,11 @@ class KVCache:
 # both read/write here with the same envelope shape so a scrape by
 # `search` is an immediate hit for a later `extract` on the same URL.
 page_cache = KVCache("ws:page")
-query_cache = KVCache("ws:query")
+# Raw SearXNG responses keyed on (query, time_range, language, pageno) —
+# no filter params. Filters are applied at response-shaping time so a
+# query cached with no filters can still serve a follow-up that adds an
+# include_domains constraint without a cache miss.
+searxng_cache = KVCache("ws:searxng")
 # Stored as individual keys rather than a set so each URL carries its
 # own TTL, matching the per-entry expiry TTLCache used to give us.
 seen_urls = KVCache("ws:seen")
