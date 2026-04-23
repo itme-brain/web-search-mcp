@@ -35,7 +35,7 @@ from formatters import (
 from impls import crawl_impl, extract_impl, map_impl, search_impl  # noqa: F401
 
 
-mcp = FastMCP("Web Search", version="0.3.0")
+mcp = FastMCP("Web Search", version="0.3.1")
 
 __all__ = ["mcp", "search_impl", "extract_impl", "map_impl", "crawl_impl"]
 
