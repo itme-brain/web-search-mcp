@@ -14,7 +14,7 @@ services:
     environment:
       - SEARXNG_URL=http://searxng:8080
       - CRAWL4AI_URL=http://crawl4ai:11235
-      - REDIS_URL=redis://redis:6379/0
+      - VALKEY_URL=redis://valkey:6379/0
       - RERANK_MODEL=${RERANK_MODEL:-ms-marco-MiniLM-L-12-v2}
       - REQUEST_TIMEOUT=${REQUEST_TIMEOUT:-30}
       - MAX_RESULTS=${MAX_RESULTS:-10}
@@ -28,7 +28,7 @@ services:
         condition: service_healthy
       crawl4ai:
         condition: service_healthy
-      redis:
+      valkey:
         condition: service_healthy
 
   searxng:
@@ -57,19 +57,19 @@ services:
       <<: *healthcheck-defaults
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:11235/health', timeout=3).read()"]
 
-  redis:
-    image: ${REDIS_IMAGE:-redis:7.4-alpine}
-    container_name: web-search-redis
+  valkey:
+    image: ${VALKEY_IMAGE:-valkey/valkey:8-alpine}
+    container_name: web-search-valkey
     restart: unless-stopped
     # RDB snapshots are enough: the cache is regenerable — we don't need AOF durability.
     # Save after: 5m & ≥1 key, 1m & ≥100 keys, 30s & ≥10k keys.
-    command: ["redis-server", "--save", "300 1", "--save", "60 100", "--save", "30 10000", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    command: ["valkey-server", "--save", "300 1", "--save", "60 100", "--save", "30 10000", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
     volumes:
-      - redis-data:/data
+      - valkey-data:/data
     healthcheck:
       <<: *healthcheck-defaults
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "valkey-cli", "ping"]
 
 volumes:
   searxng-data:
-  redis-data:
+  valkey-data:
