@@ -473,8 +473,13 @@ def _extract_markdown(result: dict) -> str | None:
     html = result.get("html")
     if html:
         try:
+            # output_format="markdown" preserves structure the txt format
+            # throws away: code gets properly fenced with ```, headings
+            # carry their '#' prefix, bold/italic survive. This is what
+            # the LLM reads AND what _extract_structure walks for the
+            # structural metadata (headings, code_blocks, outgoing_links).
             extracted = trafilatura.extract(
-                html, output_format="txt", include_links=True, include_tables=True,
+                html, output_format="markdown", include_links=True, include_tables=True,
             )
             if extracted and len(extracted.strip()) >= 50:
                 return _strip_table_separator_rows(extracted)
