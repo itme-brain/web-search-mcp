@@ -2,8 +2,8 @@
 
 Everything that isn't a public impl or a markdown formatter lives here:
 settings + constants, HTTP + retry + polling, rerank (FlashRank model
-load and inference), text/URL utilities, cache helpers for ctx-backed
-session state, validators, and the per-file-type extractors.
+load and inference), text/URL utilities, validators, and the
+per-file-type extractors. Cache adapters live in cache.py.
 """
 
 import asyncio
@@ -14,7 +14,6 @@ import mimetypes
 import os
 import re
 from collections import defaultdict
-from inspect import isawaitable
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 
 import httpx
@@ -24,12 +23,12 @@ import magic
 from rapidfuzz import fuzz
 import tldextract
 import trafilatura
-from cachetools import TTLCache
-from fastmcp import Context
 from flashrank import Ranker, RerankRequest
 from pydantic_settings import BaseSettings
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 from url_normalize import url_normalize
+
+from cache import KVCache
 
 
 # ---------------------------------------------------------------------------
@@ -88,20 +87,6 @@ _MAX_MAP_URLS = 50
 # irrelevant.  0.05 is conservative: real content almost always exceeds
 # it, while garbage rarely reaches it.
 _MIN_RELEVANCE_SCORE = 0.05
-
-# Session cache bounds — prevent unbounded growth in long-lived sessions.
-_CACHE_MAXSIZE = 1000
-_CACHE_TTL_S = 3600
-
-STATE_SCRAPE_CACHE = "scrape_cache"
-STATE_QUERY_CACHE = "query_cache"
-STATE_SEEN_URLS = "seen_urls"
-STATE_EXTRACT_CACHE = "extract_cache"
-
-
-def _new_cache() -> TTLCache:
-    return TTLCache(maxsize=_CACHE_MAXSIZE, ttl=_CACHE_TTL_S)
-
 
 VALID_TIME_RANGES = frozenset({"day", "week", "month", "year"})
 
@@ -418,44 +403,6 @@ def _filter_results_by_domain(
 
 def _url_matches_patterns(url: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatch(url, pattern) for pattern in patterns)
-
-
-# ---------------------------------------------------------------------------
-# Context state helpers (cache round-trip + awaiting mixed sync/async APIs)
-# ---------------------------------------------------------------------------
-async def _maybe_await(value):
-    if isawaitable(value):
-        return await value
-    return value
-
-
-async def _ctx_get_state(ctx: Context, key: str):
-    return await _maybe_await(ctx.get_state(key))
-
-
-async def _ctx_set_state(ctx: Context, key: str, value) -> None:
-    await _maybe_await(ctx.set_state(key, value))
-
-
-async def _load_cache(ctx: Context | None, key: str) -> TTLCache:
-    """Load a cache from ctx state as a TTLCache.
-
-    FastMCP's ctx state requires values to be JSON-serializable, so we
-    persist as plain dicts and instantiate a TTLCache wrapper on read to
-    regain bounded-size + TTL semantics within the request.
-    """
-    cache = _new_cache()
-    if ctx:
-        stored = await _ctx_get_state(ctx, key)
-        if stored:
-            cache.update(stored)
-    return cache
-
-
-async def _save_cache(ctx: Context | None, key: str, cache: TTLCache) -> None:
-    """Persist a cache to ctx state as a plain dict."""
-    if ctx:
-        await _ctx_set_state(ctx, key, dict(cache))
 
 
 # ---------------------------------------------------------------------------
@@ -900,16 +847,16 @@ async def _scrape(url: str) -> dict:
     return empty
 
 
-async def _scrape_cached(url: str, cache: TTLCache) -> tuple[str | None, dict]:
-    """Scrape with per-session cache. Returns (content, metadata) tuple."""
-    if url in cache:
+async def _scrape_cached(url: str, cache: KVCache) -> tuple[str | None, dict]:
+    """Scrape with shared cache. Returns (content, metadata) tuple."""
+    if await cache.contains(url):
         log.debug("scrape cache hit url=%s", url)
-        cached = cache[url]
+        cached = await cache.get(url) or {}
         return cached.get("content"), cached.get("metadata") or {}
     result = await _scrape(url)
     content = result["content"]
     metadata = result.get("metadata") or {}
-    cache[url] = {"content": content, "metadata": metadata}
+    await cache.set(url, {"content": content, "metadata": metadata})
     return content, metadata
 
 
@@ -1076,11 +1023,11 @@ async def _rank_document_content(
 async def _extract_url_document(
     url: str,
     query: str | None,
-    cache: TTLCache,
+    cache: KVCache,
     offset: int = 0,
 ) -> dict:
-    if url in cache:
-        cached = cache[url]
+    if await cache.contains(url):
+        cached = await cache.get(url) or {}
         raw = cached.get("content", "")
         content, top_chunks = await _rank_document_content(query, raw, offset=offset)
         return {
@@ -1129,7 +1076,7 @@ async def _extract_url_document(
             "metadata": extracted.get("metadata") or {},
             "handoff": extracted.get("handoff"),
         }
-        cache[url] = cached_entry
+        await cache.set(url, cached_entry)
         content, top_chunks = await _rank_document_content(query, raw, offset=offset)
         extracted["content"] = content
         extracted["total_chars"] = total_chars

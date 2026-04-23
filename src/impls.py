@@ -19,16 +19,13 @@ from fastmcp import Context
 # import X` would bind X into impls's namespace, creating a second patch
 # target we'd have to mock separately.) Constants are safe to import
 # by-name since they're not patched.
+import cache as cache_module
 import core
 import models
 from core import (
     MAX_RESULTS,
     MAX_SCRAPE,
     RERANK_MODEL,
-    STATE_EXTRACT_CACHE,
-    STATE_QUERY_CACHE,
-    STATE_SCRAPE_CACHE,
-    STATE_SEEN_URLS,
     _CHUNK_GAP,
     _MAX_CONTENT_CHARS,
     _MAX_EXTRACT_URLS,
@@ -79,10 +76,10 @@ async def search_impl(
     degraded = False
     timings_ms = {"search": 0, "scrape": 0, "rerank": 0, "total": 0}
 
-    # --- session state (TTL-capped to prevent unbounded growth) ---
-    scrape_cache = await core._load_cache(ctx, STATE_SCRAPE_CACHE)
-    query_cache = await core._load_cache(ctx, STATE_QUERY_CACHE)
-    seen_urls = await core._load_cache(ctx, STATE_SEEN_URLS)
+    # --- shared cache (Valkey-backed, cross-session + cross-process) ---
+    scrape_cache = cache_module.scrape_cache
+    query_cache = cache_module.query_cache
+    seen_urls = cache_module.seen_urls
 
     # --- exact query cache ---
     qkey = hashlib.sha256(
@@ -98,9 +95,10 @@ async def search_impl(
             sort_keys=True,
         ).encode()
     ).hexdigest()
-    if qkey in query_cache:
+    cached_response = await query_cache.get(qkey)
+    if cached_response is not None:
         log.info("query cache hit query=%r", query)
-        return query_cache[qkey]
+        return cached_response
 
     # --- search (page 1, with reactive page-2 fallback on underflow) ---
     search_started = time.monotonic()
@@ -157,8 +155,7 @@ async def search_impl(
             },
         }
         response = _validated_response(models.SearchResponseModel, response)
-        query_cache[qkey] = response
-        await core._save_cache(ctx, STATE_QUERY_CACHE, query_cache)
+        await query_cache.set(qkey, response)
         return response
 
     # --- scrape (cache-aware) ---
@@ -265,10 +262,19 @@ async def search_impl(
     # --- format structured output ---
     structured_results: list[dict] = []
     new_urls: list[str] = []
-    for rank, eidx in enumerate(ranked_entry_idxs, 1):
+    # Pre-fetch "previously_seen" flags in one batch to avoid N sequential
+    # awaits inside the per-result loop.
+    ranked_normalized = [
+        core._normalize_url(entries[eidx]["url"]) for eidx in ranked_entry_idxs
+    ]
+    seen_flags = await asyncio.gather(
+        *(seen_urls.contains(u) for u in ranked_normalized)
+    )
+    for rank, (eidx, normalized_url, previously_seen) in enumerate(
+        zip(ranked_entry_idxs, ranked_normalized, seen_flags), 1
+    ):
         entry = entries[eidx]
         url = entry["url"]
-        normalized_url = core._normalize_url(url)
         top = entry_chunks.get(eidx, [])
         if top:
             content = _CHUNK_GAP.join(chunk for chunk, _ in top)
@@ -287,7 +293,7 @@ async def search_impl(
             "top_chunks": [{"text": chunk, "score": score} for chunk, score in top],
             "score": entry_best.get(eidx),
             "scraped": entry["scraped"],
-            "previously_seen": normalized_url in seen_urls,
+            "previously_seen": previously_seen,
         }
         metadata = entry.get("metadata") or {}
         if metadata:
@@ -316,18 +322,13 @@ async def search_impl(
         },
     }
 
-    # --- persist session state ---
-    for url in new_urls:
-        seen_urls[url] = True
-    query_cache[qkey] = response
-    await core._save_cache(ctx, STATE_SCRAPE_CACHE, scrape_cache)
-    await core._save_cache(ctx, STATE_QUERY_CACHE, query_cache)
-    await core._save_cache(ctx, STATE_SEEN_URLS, seen_urls)
-
-    log.info(
-        "query=%r chunks=%d pages=%d scrape_cache=%d query_cache=%d seen=%d",
-        query, len(all_chunks), len(entries), len(scrape_cache), len(query_cache), len(seen_urls),
+    # --- persist to shared cache ---
+    await asyncio.gather(
+        query_cache.set(qkey, response),
+        *(seen_urls.set(url, 1) for url in new_urls),
     )
+
+    log.info("query=%r chunks=%d pages=%d", query, len(all_chunks), len(entries))
 
     return _validated_response(models.SearchResponseModel, response)
 
@@ -355,7 +356,7 @@ async def extract_impl(
     normalized_query = query.strip() if query else None
     started = time.monotonic()
 
-    extract_cache = await core._load_cache(ctx, STATE_EXTRACT_CACHE)
+    extract_cache = cache_module.extract_cache
 
     documents = await asyncio.gather(*[
         core._extract_url_document(url, normalized_query, extract_cache, offset=offset)
@@ -394,8 +395,6 @@ async def extract_impl(
         if metadata:
             entry["metadata"] = metadata
         results.append(entry)
-
-    await core._save_cache(ctx, STATE_EXTRACT_CACHE, extract_cache)
 
     response = {
         "query": normalized_query,
