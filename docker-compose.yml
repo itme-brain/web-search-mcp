@@ -59,7 +59,7 @@ services:
 
   valkey:
     image: ${VALKEY_IMAGE:-valkey/valkey:8-alpine}
-    container_name: web-search-valkey
+    container_name: valkey
     restart: unless-stopped
     # RDB snapshots are enough: the cache is regenerable — we don't need AOF durability.
     # Save after: 5m & ≥1 key, 1m & ≥100 keys, 30s & ≥10k keys.
