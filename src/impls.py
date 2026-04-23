@@ -34,8 +34,6 @@ from core import (
     _TOP_CHUNKS,
 )
 
-_DISCOVERY_DEPTH = 2
-
 log = logging.getLogger("web-search-mcp")
 
 
@@ -539,48 +537,30 @@ async def crawl_impl(
     include_patterns = core._normalize_glob_patterns(include_patterns, field_name="include_patterns")
     warnings: list[dict] = []
 
-    try:
-        crawled_pages = await core._deep_crawl(
-            [root_url],
-            max_depth=_DISCOVERY_DEPTH,
-            max_pages=effective_max_urls,
-            same_domain_only=True,
-            include_patterns=include_patterns,
-        )
-    except Exception as exc:
-        warnings.append(core._warning("crawl_failed", "crawl4ai", str(exc)))
-        crawled_pages = []
-
-    entries: list[dict] = []
-    seen_normalized_urls: set[str] = set()
-    for page in crawled_pages:
-        page_url = page.get("url")
-        if not isinstance(page_url, str) or not page_url:
-            continue
-
-        normalized_url = core._normalize_url(page_url)
-        if normalized_url in seen_normalized_urls:
-            continue
-
-        seen_normalized_urls.add(normalized_url)
-        raw_content = (core._extract_markdown(page) or "").strip()
-        status_code = page.get("status_code")
+    def _entry(
+        *,
+        url: str,
+        normalized_url: str,
+        title: str | None,
+        content: str,
+        metadata: dict,
+        depth: int,
+        discovered_from: str | None,
+        link_type: str,
+        link_text: str | None = None,
+    ) -> dict:
+        raw_content = (content or "").strip()
         status = "ok" if raw_content else "error"
-        if isinstance(status_code, int) and status_code >= 400:
-            status = "error"
-
-        crawl_metadata = page.get("metadata") if isinstance(page.get("metadata"), dict) else {}
-        doc_metadata = core._build_document_metadata(page.get("html"), raw_content)
-        entry = {
-            "rank": len(entries) + 1,
-            "url": page_url,
+        e = {
+            "rank": 0,  # filled in after final dedup
+            "url": url,
             "normalized_url": normalized_url,
-            "domain": core._domain_from_url(page_url),
-            "title": core._extract_crawl_title(page),
-            "link_text": None,
-            "depth": crawl_metadata.get("depth", 0) or 0,
-            "discovered_from": crawl_metadata.get("parent_url"),
-            "link_type": "seed" if (crawl_metadata.get("depth", 0) or 0) == 0 else "internal",
+            "domain": core._domain_from_url(url),
+            "title": title,
+            "link_text": link_text,
+            "depth": depth,
+            "discovered_from": discovered_from,
+            "link_type": link_type,
             "status": status,
             "content_type": "text/html",
             "content": raw_content,
@@ -590,72 +570,129 @@ async def crawl_impl(
             "cached": False,
             "error": None if status == "ok" else "extraction failed",
         }
-        if doc_metadata:
-            entry["metadata"] = doc_metadata
-        entries.append(entry)
+        if metadata:
+            e["metadata"] = metadata
+        return e
 
-    # ----- Fallback: discover + scrape when deep crawl finds too few pages -----
-    if len(entries) <= 1 and len(entries) < effective_max_urls:
+    # Phase 1: root scrape + root link-graph discovery in parallel.
+    # Two Crawl4AI calls because they use different configs (scrape uses
+    # content-filter pruning; discovery keeps nav/footer so the link graph
+    # survives).
+    root_scrape, discovery = await asyncio.gather(
+        core._scrape_cached(root_url, cache_module.scrape_cache),
+        core._discover_page_links(root_url),
+        return_exceptions=True,
+    )
+    if isinstance(root_scrape, BaseException):
+        warnings.append(core._warning("scrape_failed", "crawl4ai", f"root: {root_scrape}"))
+        root_scrape = {"content": None, "title": None, "metadata": {}}
+    if isinstance(discovery, BaseException):
+        warnings.append(core._warning("link_discovery_failed", "crawl4ai", f"root: {discovery}"))
+        discovery = {"links": [], "title": None}
+
+    entries: list[dict] = []
+    seen: set[str] = set()
+
+    # Phase 2: root entry at depth 0.
+    root_normalized = core._normalize_url(root_url)
+    seen.add(root_normalized)
+    entries.append(_entry(
+        url=root_url,
+        normalized_url=root_normalized,
+        title=root_scrape.get("title") or discovery.get("title"),
+        content=root_scrape.get("content") or "",
+        metadata=root_scrape.get("metadata") or {},
+        depth=0,
+        discovered_from=None,
+        link_type="seed",
+    ))
+
+    # Phase 3: in-scope discovered links become depth-1 entries via
+    # parallel cache-aware scrape. Always fetched (not relying on BFS to
+    # cover them) — BFS is additive for depth-2 only.
+    domain_patterns = core._domain_filter_patterns(root_url, True)
+    seed_candidates: list[tuple[str, str, dict]] = []
+    for link in discovery.get("links", []):
+        link_url = link.get("url")
+        if not isinstance(link_url, str) or not link_url:
+            continue
+        normalized = core._normalize_url(link_url)
+        if normalized in seen:
+            continue
+        if domain_patterns and not core._url_matches_patterns(link_url, domain_patterns):
+            continue
+        if include_patterns and not core._url_matches_patterns(link_url, include_patterns):
+            continue
+        seed_candidates.append((link_url, normalized, link))
+
+    seed_budget = max(0, effective_max_urls - len(entries))
+    seeds_to_fetch = seed_candidates[:seed_budget]
+
+    if seeds_to_fetch:
+        seed_scrapes = await asyncio.gather(
+            *(core._scrape_cached(su[0], cache_module.scrape_cache) for su in seeds_to_fetch),
+            return_exceptions=True,
+        )
+        for (seed_url, normalized, link_info), scrape in zip(seeds_to_fetch, seed_scrapes):
+            if isinstance(scrape, BaseException):
+                warnings.append(core._warning("scrape_failed", "crawl4ai", f"{seed_url}: {scrape}"))
+                continue
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            entries.append(_entry(
+                url=seed_url,
+                normalized_url=normalized,
+                title=scrape.get("title") or link_info.get("title"),
+                content=scrape.get("content") or "",
+                metadata=scrape.get("metadata") or {},
+                depth=1,
+                discovered_from=root_url,
+                link_type=link_info.get("link_type", "internal"),
+                link_text=link_info.get("text"),
+            ))
+
+    # Phase 4: seeded BFS for depth-2 children, if budget remains.
+    # BFS is additive — we've already covered the seeds; we only add
+    # pages BFS discovered that we haven't already seen.
+    remaining_budget = effective_max_urls - len(entries)
+    if remaining_budget > 0 and seeds_to_fetch:
         try:
-            discovery = await core._discover_page_links(root_url)
-            domain_patterns = core._domain_filter_patterns(root_url, True)
-
-            candidates: list[dict] = []
-            for link in discovery.get("links", []):
-                link_url = link.get("url")
-                if not isinstance(link_url, str) or not link_url:
-                    continue
-                normalized_url = core._normalize_url(link_url)
-                if normalized_url in seen_normalized_urls:
-                    continue
-                if domain_patterns and not core._url_matches_patterns(link_url, domain_patterns):
-                    continue
-                if include_patterns:
-                    if not core._url_matches_patterns(link_url, include_patterns):
-                        continue
-                candidates.append({"url": link_url, "normalized_url": normalized_url, "link": link})
-                seen_normalized_urls.add(normalized_url)
-
-            scrape_limit = effective_max_urls - len(entries)
-            to_scrape = candidates[:scrape_limit]
-
-            if to_scrape:
-                scrape_results = await asyncio.gather(
-                    *(core._scrape_cached(c["url"], cache_module.scrape_cache) for c in to_scrape),
-                    return_exceptions=True,
-                )
-                for cand, scrape_result in zip(to_scrape, scrape_results):
-                    if isinstance(scrape_result, BaseException):
-                        continue
-                    raw_content = (scrape_result.get("content") or "").strip()
-                    status = "ok" if raw_content else "error"
-                    link = cand["link"]
-                    entry = {
-                        "rank": len(entries) + 1,
-                        "url": cand["url"],
-                        "normalized_url": cand["normalized_url"],
-                        "domain": core._domain_from_url(cand["url"]),
-                        "title": scrape_result.get("title") or link.get("title"),
-                        "link_text": link.get("text"),
-                        "depth": 1,
-                        "discovered_from": root_url,
-                        "link_type": link.get("link_type", "internal"),
-                        "status": status,
-                        "content_type": "text/html",
-                        "content": raw_content,
-                        "chars_shown": len(raw_content),
-                        "offset": 0,
-                        "total_chars": len(raw_content),
-                        "cached": False,
-                        "error": None if status == "ok" else "extraction failed",
-                    }
-                    doc_metadata = scrape_result.get("metadata") or {}
-                    if doc_metadata:
-                        entry["metadata"] = doc_metadata
-                    entries.append(entry)
+            bfs_pages = await core._deep_crawl(
+                [s[0] for s in seeds_to_fetch],
+                max_depth=1,
+                max_pages=remaining_budget + len(seeds_to_fetch),
+                same_domain_only=True,
+                include_patterns=include_patterns,
+            )
         except Exception as exc:
-            warnings.append(core._warning("fallback_discovery_failed", "crawl4ai", str(exc)))
+            warnings.append(core._warning("crawl_failed", "crawl4ai", f"bfs: {exc}"))
+            bfs_pages = []
 
+        for page in bfs_pages:
+            if len(entries) >= effective_max_urls:
+                break
+            page_url = page.get("url")
+            if not isinstance(page_url, str) or not page_url:
+                continue
+            normalized = core._normalize_url(page_url)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            raw_content = core._extract_markdown(page) or ""
+            crawl_md = page.get("metadata") if isinstance(page.get("metadata"), dict) else {}
+            entries.append(_entry(
+                url=page_url,
+                normalized_url=normalized,
+                title=core._extract_crawl_title(page),
+                content=raw_content,
+                metadata=core._build_document_metadata(page.get("html"), raw_content),
+                depth=2,
+                discovered_from=crawl_md.get("parent_url"),
+                link_type="internal",
+            ))
+
+    # Phase 5: near-duplicate body dedup (pages served at multiple URLs).
     entries, urls_deduplicated = core._dedup_pages(entries)
     for idx, entry in enumerate(entries, start=1):
         entry["rank"] = idx

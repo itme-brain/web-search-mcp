@@ -734,10 +734,8 @@ def _deep_crawl_config(
     max_pages: int,
     same_domain_only: bool,
     include_patterns: list[str] | None = None,
-    prefetch: bool = False,
 ) -> dict:
-    base_config = _MAP_CRAWL_CONFIG if prefetch else _DEFAULT_CRAWL_CONFIG
-    params = dict(base_config["params"])
+    params = dict(_DEFAULT_CRAWL_CONFIG["params"])
     strategy_params: dict = {
         "max_depth": max_depth,
         "include_external": not same_domain_only,
@@ -755,8 +753,6 @@ def _deep_crawl_config(
         "type": "BFSDeepCrawlStrategy",
         "params": strategy_params,
     }
-    if prefetch:
-        params["prefetch"] = True
     return {
         "type": "CrawlerRunConfig",
         "params": params,
@@ -990,7 +986,6 @@ async def _deep_crawl(
     max_pages: int,
     same_domain_only: bool,
     include_patterns: list[str] | None = None,
-    prefetch: bool = False,
 ) -> list[dict]:
     """BFS deep crawl starting from every seed URL.
 
@@ -1006,7 +1001,6 @@ async def _deep_crawl(
         max_pages=max_pages,
         same_domain_only=same_domain_only,
         include_patterns=include_patterns,
-        prefetch=prefetch,
     )
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
         data = await _crawl_post(client, seeds, priority=7, crawler_config=crawler_config)
