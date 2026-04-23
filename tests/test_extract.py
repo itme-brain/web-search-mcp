@@ -359,6 +359,43 @@ async def test_extract_response_includes_chunks_with_stable_ids():
 
 
 @pytest.mark.asyncio
+async def test_failure_entries_get_short_ttl():
+    """Rejected/failed page entries expire in FAILURE_TTL_S, not the
+    default 3600s, so transient upstream issues recover quickly."""
+    url = "https://example.com/failed"
+    fake_scrape = AsyncMock(return_value={"content": None, "title": None, "metadata": {}})
+    with patch("core._scrape", fake_scrape):
+        await server_module._scrape_cached(url, cache_module.page_cache)
+
+    # Inspect the raw Valkey TTL on the key.
+    normalized = server_module._normalize_url(url)
+    client = cache_module._get_client()
+    ttl_seconds = await client.ttl(f"ws:page:{normalized}")
+    assert 0 < ttl_seconds <= cache_module.FAILURE_TTL_S
+
+
+@pytest.mark.asyncio
+async def test_success_entries_get_default_ttl():
+    """Successful page entries keep the full default TTL."""
+    url = "https://example.com/success"
+    content = (
+        "# OK\n\nA useful page with enough content to clear the "
+        "minimum word count floor applied at cache admission time "
+        "so this entry becomes a full successful cache write."
+    )
+    fake_scrape = AsyncMock(return_value={"content": content, "title": "OK", "metadata": {}})
+    with patch("core._scrape", fake_scrape):
+        await server_module._scrape_cached(url, cache_module.page_cache)
+
+    normalized = server_module._normalize_url(url)
+    client = cache_module._get_client()
+    ttl_seconds = await client.ttl(f"ws:page:{normalized}")
+    assert ttl_seconds > cache_module.FAILURE_TTL_S
+    # And under the default to account for any small elapsed time.
+    assert ttl_seconds <= 3600
+
+
+@pytest.mark.asyncio
 async def test_scrape_cache_rejects_under_length_floor():
     """Speculative scrape (search path) caches short content as a failure.
 

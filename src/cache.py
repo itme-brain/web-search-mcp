@@ -35,6 +35,11 @@ import redis.asyncio as _resp_client
 
 _DEFAULT_URL = "redis://valkey:6379/0"
 _DEFAULT_TTL_S = 3600
+# Short TTL for failed / rejected page entries. Long enough to prevent
+# immediate retry thrash on bad URLs, short enough that a transient
+# upstream failure (CAPTCHA, 5xx, brief timeout) can recover in under a
+# minute instead of being locked out for an hour.
+FAILURE_TTL_S = 60
 
 _client: _resp_client.Redis | None = None
 
@@ -94,8 +99,14 @@ class KVCache:
         await client.incr(self._hits_key)
         return json.loads(raw)
 
-    async def set(self, key: str, value: Any) -> None:
-        await _get_client().set(self._key(key), json.dumps(value), ex=self._ttl)
+    async def set(self, key: str, value: Any, *, ttl: int | None = None) -> None:
+        """Write a value. `ttl` overrides the cache default when given
+        (used for failure entries that should expire faster)."""
+        await _get_client().set(
+            self._key(key),
+            json.dumps(value),
+            ex=ttl if ttl is not None else self._ttl,
+        )
 
     async def delete(self, key: str) -> None:
         await _get_client().delete(self._key(key))

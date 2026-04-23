@@ -933,12 +933,17 @@ async def _page_set(url: str, entry: dict, cache: KVCache) -> None:
     If another URL has already cached a page with this exact content,
     write a lightweight alias entry instead of a duplicate full entry.
     Dangling detection happens on read via _page_get.
+
+    Failed/rejected entries (status != "ok") get FAILURE_TTL_S so
+    transient upstream issues recover quickly instead of being cached
+    as broken for the full TTL.
     """
     key = _normalize_url(url)
     content_hash = (entry.get("metadata") or {}).get("content_hash")
     if not content_hash or entry.get("status") != "ok":
         # No hash (no content) or rejected entry → plain write, no dedup.
-        await cache.set(key, entry)
+        ttl = cache_module.FAILURE_TTL_S if entry.get("status") != "ok" else None
+        await cache.set(key, entry, ttl=ttl)
         return
 
     canonical_key = await cache_module.content_alias.get(content_hash)
