@@ -164,7 +164,7 @@ async def search_impl(
     scrape_tasks = [core._scrape_cached(r["url"], scrape_cache) for r in results[:to_scrape]]
     scraped = await asyncio.gather(*scrape_tasks)
     timings_ms["scrape"] = int((time.monotonic() - scrape_started) * 1000)
-    scrape_failures = sum(1 for content, _ in scraped if content is None)
+    scrape_failures = sum(1 for s in scraped if s.get("content") is None)
     if scrape_failures:
         degraded = True
         warnings.append(core._warning("scrape_failed", "crawl4ai", f"{scrape_failures} of {to_scrape} pages failed"))
@@ -172,14 +172,16 @@ async def search_impl(
     # --- build entries ---
     entries: list[dict] = []
     for i, result in enumerate(results[:to_scrape]):
-        content, metadata = scraped[i]
+        scrape = scraped[i]
+        content = scrape.get("content")
+        metadata = scrape.get("metadata") or {}
         raw = content[:_MAX_CONTENT_CHARS] if content else None
         entries.append({
             "title": result.get("title", "Untitled"),
             "url": result.get("url", ""),
             "content": raw or result.get("content", ""),
             "scraped": raw is not None,
-            "metadata": metadata or {},
+            "metadata": metadata,
         })
 
     for result in results[to_scrape:]:
@@ -640,7 +642,7 @@ async def crawl_impl(
 
             if to_scrape:
                 scrape_results = await asyncio.gather(
-                    *(core._scrape(c["url"]) for c in to_scrape),
+                    *(core._scrape_cached(c["url"], cache_module.scrape_cache) for c in to_scrape),
                     return_exceptions=True,
                 )
                 for cand, scrape_result in zip(to_scrape, scrape_results):

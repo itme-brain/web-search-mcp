@@ -847,17 +847,25 @@ async def _scrape(url: str) -> dict:
     return empty
 
 
-async def _scrape_cached(url: str, cache: KVCache) -> tuple[str | None, dict]:
-    """Scrape with shared cache. Returns (content, metadata) tuple."""
-    if await cache.contains(url):
+async def _scrape_cached(url: str, cache: KVCache) -> dict:
+    """Scrape with shared cache. Returns {content, title, metadata}.
+
+    Cache key normalizes the URL so www./trailing-slash/tracking-param
+    variants collapse onto one entry — the search pipeline and direct
+    extract/crawl calls end up sharing cache hits for the same page.
+    """
+    key = _normalize_url(url)
+    if await cache.contains(key):
         log.debug("scrape cache hit url=%s", url)
-        cached = await cache.get(url) or {}
-        return cached.get("content"), cached.get("metadata") or {}
+        return await cache.get(key) or {"content": None, "title": None, "metadata": {}}
     result = await _scrape(url)
-    content = result["content"]
-    metadata = result.get("metadata") or {}
-    await cache.set(url, {"content": content, "metadata": metadata})
-    return content, metadata
+    entry = {
+        "content": result.get("content"),
+        "title": result.get("title"),
+        "metadata": result.get("metadata") or {},
+    }
+    await cache.set(key, entry)
+    return entry
 
 
 async def _head_content_type(url: str) -> str | None:
@@ -1053,8 +1061,12 @@ async def _extract_url_document(
     offset: int = 0,
     chunk_ids: list[int] | None = None,
 ) -> dict:
-    if await cache.contains(url):
-        cached = await cache.get(url) or {}
+    # Normalized URL is the cache key so www./trailing-slash variants
+    # collapse. The stored entry keeps the caller's original URL for
+    # display (see cached_entry["url"] below).
+    key = _normalize_url(url)
+    if await cache.contains(key):
+        cached = await cache.get(key) or {}
         raw = cached.get("content", "")
         content, top_chunks, chunks = await _rank_document_content(
             query, raw, offset=offset, chunk_ids=chunk_ids,
@@ -1106,7 +1118,7 @@ async def _extract_url_document(
             "metadata": extracted.get("metadata") or {},
             "handoff": extracted.get("handoff"),
         }
-        await cache.set(url, cached_entry)
+        await cache.set(key, cached_entry)
         content, top_chunks, chunks = await _rank_document_content(
             query, raw, offset=offset, chunk_ids=chunk_ids,
         )

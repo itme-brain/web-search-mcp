@@ -359,6 +359,42 @@ async def test_extract_response_includes_chunks_with_stable_ids():
 
 
 @pytest.mark.asyncio
+async def test_extract_cache_collapses_url_variants():
+    """www./trailing-slash variants must share one cache entry.
+
+    Caching on raw URL strings means equivalent requests miss each other.
+    Normalized-URL cache keys collapse them so search's scrape cache and
+    a user-facing extract call can share hits.
+    """
+    content = "Once cached, any variant of this URL should hit."
+    # Pre-populate with the canonical form.
+    canonical = "https://example.com/docs/page"
+    await cache_module.extract_cache.set(canonical, {
+        "status": "ok",
+        "url": canonical,
+        "content_type": "text/html",
+        "file_type": "html",
+        "title": "Shared",
+        "content": content,
+        "total_chars": len(content),
+    })
+
+    variants = [
+        "https://www.example.com/docs/page",
+        "https://example.com/docs/page/",
+        "https://example.com/docs/page?utm_source=nope",
+    ]
+    for variant in variants:
+        result = await server_module._extract_url_document(
+            variant,
+            query=None,
+            cache=cache_module.extract_cache,
+        )
+        assert result["cached"] is True, f"variant missed cache: {variant!r}"
+        assert result["title"] == "Shared"
+
+
+@pytest.mark.asyncio
 async def test_extract_chunk_ids_returns_only_selected_chunks():
     """chunk_ids=[0,2] joins chunks 0 and 2 into `content`, skips rerank."""
     content = "Alpha paragraph one.\n\nBeta paragraph two.\n\nGamma paragraph three."
