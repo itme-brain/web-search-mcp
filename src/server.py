@@ -13,6 +13,7 @@ from starlette.responses import JSONResponse
 # Module-qualified imports so `unittest.mock.patch("impls.X")` catches
 # the calls made here — `from impls import X` would bind X locally and
 # require a second patch target.
+import cache
 import impls
 import models
 from core import (
@@ -57,12 +58,19 @@ async def health(_: Request) -> JSONResponse:
 async def ready(_: Request) -> JSONResponse:
     searxng = await _probe_dependency(f"{SEARXNG_URL}/healthz")
     crawl4ai = await _probe_dependency(f"{CRAWL4AI_URL}/health")
-    ready_ok = searxng["status"] == "ok" and crawl4ai["status"] == "ok"
+    valkey_ok = await cache.ping()
+    valkey = {"status": "ok"} if valkey_ok else {"status": "error"}
+    ready_ok = (
+        searxng["status"] == "ok"
+        and crawl4ai["status"] == "ok"
+        and valkey_ok
+    )
     payload = {
         "status": "ok" if ready_ok else "degraded",
         "dependencies": {
             "searxng": searxng,
             "crawl4ai": crawl4ai,
+            "valkey": valkey,
             "reranker": {"status": "ok", "name": "flashrank", "model": RERANK_MODEL},
         },
     }
