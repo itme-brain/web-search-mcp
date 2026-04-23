@@ -1,5 +1,6 @@
 from unittest.mock import AsyncMock, patch
 
+import core
 import pytest
 
 from tests.conftest import server_module
@@ -154,3 +155,19 @@ def test_registrable_domain_basic():
     assert rd("example.com") == "example.com"
     assert rd("www.example.com") == "example.com"
     assert rd("docs.service.example.co.uk") == "example.co.uk"
+
+
+def test_deep_crawl_config_uses_discovery_base_config():
+    config = core._deep_crawl_config(
+        root_url="https://docs.example.com",
+        max_depth=3,
+        max_pages=25,
+        same_domain_only=True,
+        include_patterns=None,
+    )
+
+    params = config["params"]
+    assert params["remove_overlay_elements"] is True
+    assert "excluded_tags" not in params
+    assert "markdown_generator" not in params
+    assert params["deep_crawl_strategy"]["type"] == "BFSDeepCrawlStrategy"

@@ -74,6 +74,23 @@ async def test_search_markdown_does_not_leak_metadata_fields():
         )
 
 
+def test_search_warning_lines_are_rendered_as_issues():
+    markdown = server_module._format_search_results({
+        "query": "web search tools tutorial",
+        "results": [],
+        "meta": {
+            "num_results_returned": 4,
+            "warnings": [
+                {"type": "scrape_failed", "detail": "2 of 5 pages failed"},
+                {"type": "low_relevance_filtered", "detail": "1 result(s) dropped below relevance threshold"},
+            ],
+        },
+    })
+
+    assert "issues: scrape failures: 2 of 5 pages failed; filtered low-relevance results: 1 result(s) dropped below relevance threshold" in markdown
+    assert "status: degraded" not in markdown
+
+
 # ---------------------------------------------------------------------------
 # extract
 # ---------------------------------------------------------------------------

@@ -36,6 +36,58 @@ def _render_kv_block(items: list[tuple[str, str | None]]) -> str:
     return "\n".join(lines)
 
 
+def _document_meta_line(r: dict) -> str | None:
+    meta_parts: list[str] = []
+    file_type = r.get("file_type")
+    content_type = r.get("content_type")
+    if file_type and file_type != "html":
+        meta_parts.append(f"type: {file_type}")
+    elif content_type and content_type != "text/html":
+        meta_parts.append(f"content_type: {content_type}")
+
+    shown_chunk_ids = r.get("shown_chunk_ids", []) or []
+    total_chunks = r.get("total_chunks")
+    chunk_mode = r.get("chunk_mode")
+    chunk_span = _chunk_range(shown_chunk_ids)
+    if total_chunks:
+        if chunk_span:
+            meta_parts.append(f"chunks: {chunk_span} of 0..{total_chunks - 1}")
+        else:
+            meta_parts.append(f"chunks: 0..{total_chunks - 1}")
+    if chunk_mode == "relevant":
+        meta_parts.append("mode: relevant")
+    elif chunk_mode == "document":
+        meta_parts.append("mode: document")
+    elif chunk_mode == "selected":
+        meta_parts.append("mode: selected")
+
+    total_chars = r.get("total_chars")
+    chars_shown = r.get("chars_shown", len(r.get("content", "")))
+    if total_chars and chars_shown:
+        meta_parts.append(f"{chars_shown:,} of {total_chars:,} chars")
+    if not meta_parts:
+        return None
+    return " | ".join(meta_parts)
+
+
+def _search_issue_line(warning: dict) -> str:
+    warning_type = warning.get("type")
+    detail = warning.get("detail", str(warning))
+    if warning_type == "scrape_failed":
+        return f"scrape failures: {detail}"
+    if warning_type == "low_relevance_filtered":
+        return f"filtered low-relevance results: {detail}"
+    if warning_type == "search_failed":
+        return f"search backend failed: {detail}"
+    if warning_type == "rerank_failed":
+        return f"reranker failed: {detail}"
+    if warning_type == "engine_unresponsive":
+        return f"upstream engine unavailable: {detail}"
+    if warning_type == "no_results":
+        return "no results found"
+    return detail
+
+
 def _tree_line(entry: dict) -> str:
     title = entry.get("title") or entry.get("link_text") or entry.get("url", "")
     url = entry.get("url", "")
@@ -56,11 +108,9 @@ def _format_search_results(response: dict) -> str:
         parts.append(("time_range", response["time_range"]))
     meta = response.get("meta", {})
     parts.append(("results", str(meta.get("num_results_returned", len(response.get("results", []))))))
-    if meta.get("degraded"):
-        parts.append(("status", "degraded"))
     warnings = meta.get("warnings", [])
     if warnings:
-        parts.append(("warnings", "; ".join(w.get("detail", str(w)) for w in warnings)))
+        parts.append(("issues", "; ".join(_search_issue_line(w) for w in warnings)))
     header = _render_kv_block(parts)
 
     sections = [header, "---"]
@@ -103,20 +153,25 @@ def _format_extract_results(response: dict) -> str:
     meta = response.get("meta", {})
     succeeded = meta.get("urls_succeeded", sum(1 for r in results if r.get("status") == "ok"))
     failed = meta.get("urls_failed", sum(1 for r in results if r.get("status") != "ok"))
+    single_result = results[0] if len(results) == 1 else None
     if len(results) != 1 or failed:
         parts.append(("succeeded", str(succeeded)))
     if failed:
         parts.append(("failed", str(failed)))
+    if single_result is not None:
+        meta_line = _document_meta_line(single_result)
+        if meta_line:
+            parts.append(("document", meta_line))
     header = _render_kv_block(parts) if parts else ""
 
     sections = [header, "---"] if header else []
     for r in results:
-        sections.append(_format_document_section(r))
+        sections.append(_format_document_section(r, show_meta_inline=single_result is None))
 
     return _render_markdown(sections)
 
 
-def _format_document_section(r: dict) -> str:
+def _format_document_section(r: dict, *, show_meta_inline: bool = True) -> str:
     """Render one extracted-document section as markdown.
 
     Shared by the extract + crawl formatters. Surfaces compact metadata
@@ -143,36 +198,11 @@ def _format_document_section(r: dict) -> str:
     else:
         section = f"## [{title}]({url})"
 
-    meta_parts: list[str] = []
-    file_type = r.get("file_type")
-    content_type = r.get("content_type")
-    if file_type and file_type != "html":
-        meta_parts.append(f"type: {file_type}")
-    elif content_type and content_type != "text/html":
-        meta_parts.append(f"content_type: {content_type}")
-
-    shown_chunk_ids = r.get("shown_chunk_ids", []) or []
-    total_chunks = r.get("total_chunks")
-    chunk_mode = r.get("chunk_mode")
-    chunk_span = _chunk_range(shown_chunk_ids)
-    if total_chunks:
-        if chunk_span:
-            meta_parts.append(f"chunks: {chunk_span} of 0..{total_chunks - 1}")
-        else:
-            meta_parts.append(f"chunks: 0..{total_chunks - 1}")
-    if chunk_mode == "relevant":
-        meta_parts.append("mode: relevant")
-    elif chunk_mode == "document":
-        meta_parts.append("mode: document")
-    elif chunk_mode == "selected":
-        meta_parts.append("mode: selected")
-
-    total_chars = r.get("total_chars")
-    chars_shown = r.get("chars_shown", len(content))
-    if total_chars and chars_shown:
-        meta_parts.append(f"{chars_shown:,} of {total_chars:,} chars")
-    if meta_parts:
-        meta_line = " | ".join(meta_parts)
+    if show_meta_inline:
+        meta_line = _document_meta_line(r)
+    else:
+        meta_line = None
+    if meta_line:
         if content or status in {"error", "handoff"}:
             section = section.replace("\n\n", f"\n\n_{meta_line}_\n\n", 1)
         else:

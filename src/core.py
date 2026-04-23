@@ -7,6 +7,7 @@ per-file-type extractors. Cache adapters live in cache.py.
 """
 
 import asyncio
+import copy
 import fnmatch
 import ipaddress
 import json
@@ -843,7 +844,10 @@ def _deep_crawl_config(
     same_domain_only: bool,
     include_patterns: list[str] | None = None,
 ) -> dict:
-    params = dict(_DEFAULT_CRAWL_CONFIG["params"])
+    # Discovery should keep the full page chrome where site topology
+    # often lives. Starting from the content-pruned default config can
+    # collapse map/crawl to the root page on real sites.
+    params = copy.deepcopy(_MAP_CRAWL_CONFIG["params"])
     strategy_params: dict = {
         "max_depth": max_depth,
         "include_external": not same_domain_only,

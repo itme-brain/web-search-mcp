@@ -327,9 +327,9 @@ async def test_extract_markdown_surfaces_chunk_range_summary():
         markdown = await server_module.extract.fn(["https://example.com/long"])
     markdown_text = markdown.content[0].text
 
-    assert "chunks: 0..2 of 0..8" in markdown_text
-    assert "mode: relevant" in markdown_text
-    assert "8,000 of 24,000 chars" in markdown_text
+    assert "document: chunks: 0..2 of 0..8 | mode: relevant | 8,000 of 24,000 chars" in markdown_text
+    assert markdown_text.index("document: chunks: 0..2 of 0..8 | mode: relevant | 8,000 of 24,000 chars") < markdown_text.index("## [Long Page](https://example.com/long)")
+    assert "_chunks: 0..2 of 0..8" not in markdown_text
 
 
 @pytest.mark.asyncio
@@ -656,5 +656,4 @@ async def test_extract_markdown_uses_compact_chunk_ranges():
         markdown = await server_module.extract.fn(["https://example.com/page"])
     markdown_text = markdown.content[0].text
 
-    assert "chunks: 3..5 of 0..8" in markdown_text
-    assert "mode: selected" in markdown_text
+    assert "document: chunks: 3..5 of 0..8 | mode: selected | 8,000 of 12,000 chars" in markdown_text
