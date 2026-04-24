@@ -682,3 +682,39 @@ async def test_extract_markdown_uses_compact_chunk_ranges():
     markdown_text = markdown.content[0].text
 
     assert "document: chunks: 3..5 of 0..8 | mode: selected | 8,000 of 12,000 chars" in markdown_text
+
+
+@pytest.mark.asyncio
+async def test_extract_markdown_renders_non_consecutive_chunks_as_list():
+    """Cherry-picked chunks like [5, 30, 60] must render as a comma list,
+    not `5..60` — the range form implies everything in between was pulled."""
+    extract_mock = AsyncMock(return_value={
+        "status": "ok",
+        "url": "https://example.com/page",
+        "content_type": "text/html",
+        "file_type": "html",
+        "title": "Page",
+        "content": "X" * 2000,
+        "total_chars": 30000,
+        "total_chunks": 100,
+        "shown_chunk_ids": [5, 30, 60],
+        "chunk_mode": "selected",
+    })
+
+    with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
+        markdown = await server_module.extract.fn(["https://example.com/page"])
+    markdown_text = markdown.content[0].text
+
+    assert "chunks: 5, 30, 60 of 0..99" in markdown_text
+    assert "5..60" not in markdown_text
+
+
+def test_chunk_range_collapses_runs_but_preserves_gaps():
+    r = server_module._chunk_range
+    assert r([]) is None
+    assert r([7]) == "7"
+    assert r([20, 21, 22, 23, 24]) == "20..24"
+    assert r([5, 30, 60]) == "5, 30, 60"
+    assert r([5, 6, 7, 30, 60, 61]) == "5..7, 30, 60..61"
+    # Unsorted and duplicated input normalizes the same way.
+    assert r([60, 5, 30, 5]) == "5, 30, 60"

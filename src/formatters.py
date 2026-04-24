@@ -15,12 +15,25 @@ def _render_markdown(sections: list[str]) -> str:
 
 
 def _chunk_range(ids: list[int]) -> str | None:
+    """Render chunk ids as comma-joined compact ranges.
+
+    Consecutive runs collapse to `a..b`; gaps are preserved so a caller
+    reading `5, 30, 60` knows those three chunks were pulled — not
+    everything between them (which `5..60` would imply).
+    """
     if not ids:
         return None
     ordered = sorted(set(ids))
-    if len(ordered) == 1:
-        return str(ordered[0])
-    return f"{ordered[0]}..{ordered[-1]}"
+    spans: list[str] = []
+    start = prev = ordered[0]
+    for n in ordered[1:]:
+        if n == prev + 1:
+            prev = n
+            continue
+        spans.append(str(start) if start == prev else f"{start}..{prev}")
+        start = prev = n
+    spans.append(str(start) if start == prev else f"{start}..{prev}")
+    return ", ".join(spans)
 
 
 def _rank_band(rank: int) -> str:
