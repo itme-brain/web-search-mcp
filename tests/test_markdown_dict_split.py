@@ -74,6 +74,46 @@ async def test_search_markdown_does_not_leak_metadata_fields():
         )
 
 
+def test_search_markdown_separates_results_with_horizontal_rules():
+    """Each result must be visually separated so the LLM reads them as
+    distinct units rather than one flowing document."""
+    markdown = server_module._format_search_results({
+        "query": "q",
+        "results": [
+            {"rank": 1, "title": "A", "url": "https://a", "domain": "a", "content": "Alpha body."},
+            {"rank": 2, "title": "B", "url": "https://b", "domain": "b", "content": "Beta body."},
+            {"rank": 3, "title": "C", "url": "https://c", "domain": "c", "content": "Gamma body."},
+        ],
+        "meta": {"num_results_returned": 3, "warnings": []},
+    })
+    # mdformat renders `---` as a run of underscores. Every adjacent pair
+    # of result headings should have a thematic break between them.
+    between_1_and_2 = markdown.split("## 1.")[1].split("## 2.")[0]
+    between_2_and_3 = markdown.split("## 2.")[1].split("## 3.")[0]
+    assert "___" in between_1_and_2
+    assert "___" in between_2_and_3
+
+
+def test_search_markdown_marks_snippet_fallback_results():
+    """When a page fails to scrape, the formatter should mark the
+    snippet-fallback result so the LLM can tell full-text from snippet."""
+    markdown = server_module._format_search_results({
+        "query": "q",
+        "results": [
+            {"rank": 1, "title": "Full", "url": "https://a", "domain": "a",
+             "content": "Full scraped body.", "scraped": True},
+            {"rank": 2, "title": "Snippet", "url": "https://b", "domain": "b",
+             "content": "Short snippet.", "scraped": False},
+        ],
+        "meta": {"num_results_returned": 2, "warnings": []},
+    })
+    # Snippet-fallback result is marked; fully-scraped one is not.
+    snippet_section = markdown.split("## 2.")[1]
+    full_section = markdown.split("## 1.")[1].split("## 2.")[0]
+    assert "snippet only" in snippet_section
+    assert "snippet only" not in full_section
+
+
 def test_search_warning_lines_are_rendered_as_issues():
     markdown = server_module._format_search_results({
         "query": "web search tools tutorial",
@@ -87,7 +127,7 @@ def test_search_warning_lines_are_rendered_as_issues():
         },
     })
 
-    assert "issues: scrape failures: 2 of 5 pages failed; filtered low-relevance results: 1 result(s) dropped below relevance threshold" in markdown
+    assert "issues: partial scrape: 2 of 5 pages failed — snippet used instead; filtered low-relevance results: 1 result(s) dropped below relevance threshold" in markdown
     assert "status: degraded" not in markdown
 
 

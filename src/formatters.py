@@ -74,7 +74,7 @@ def _search_issue_line(warning: dict) -> str:
     warning_type = warning.get("type")
     detail = warning.get("detail", str(warning))
     if warning_type == "scrape_failed":
-        return f"scrape failures: {detail}"
+        return f"partial scrape: {detail} — snippet used instead"
     if warning_type == "low_relevance_filtered":
         return f"filtered low-relevance results: {detail}"
     if warning_type == "search_failed":
@@ -113,7 +113,7 @@ def _format_search_results(response: dict) -> str:
         parts.append(("issues", "; ".join(_search_issue_line(w) for w in warnings)))
     header = _render_kv_block(parts)
 
-    sections = [header, "---"]
+    sections = [header]
     for r in response.get("results", []):
         title = r.get("title", "Untitled")
         url = r.get("url", "")
@@ -129,17 +129,16 @@ def _format_search_results(response: dict) -> str:
             meta_parts.append(str(metadata["date"]))
         if isinstance(rank, int):
             meta_parts.append(_rank_band(rank))
+        if r.get("scraped") is False and content:
+            meta_parts.append("snippet only")
         meta_line = "_{}_".format(" | ".join(meta_parts)) if meta_parts else ""
+        section_lines = [f"## {title_prefix}[{title}]({url})"]
+        if meta_line:
+            section_lines.append(meta_line)
         if content:
-            section = f"## {title_prefix}[{title}]({url})"
-            if meta_line:
-                section += f"\n\n{meta_line}"
-            section += f"\n\n{content}"
-        else:
-            section = f"## {title_prefix}[{title}]({url})"
-            if meta_line:
-                section += f"\n\n{meta_line}"
-        sections.append(section)
+            section_lines.append(content)
+        sections.append("---")
+        sections.append("\n\n".join(section_lines))
 
     return _render_markdown(sections)
 
