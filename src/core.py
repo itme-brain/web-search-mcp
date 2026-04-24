@@ -774,11 +774,16 @@ def _extract_crawl_links(result: dict, base_url: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Crawl4AI configs + HTTP layer (retry, poll, scrape, discover)
 # ---------------------------------------------------------------------------
+# `remove_overlay_elements` is deliberately OFF. Crawl4AI's overlay
+# heuristic mis-classifies Wikipedia's main article body as an overlay
+# and deletes it, leaving only <head> — trafilatura then returns 0
+# chars and the search path silently falls back to SearXNG snippets.
+# The heuristic is a net loss: trafilatura already drops boilerplate
+# on its own, and Crawl4AI's own content filter picks up what's left.
 _DEFAULT_CRAWL_CONFIG = {
     "type": "CrawlerRunConfig",
     "params": {
         "excluded_tags": ["nav", "footer", "header", "aside"],
-        "remove_overlay_elements": True,
         "markdown_generator": {
             "type": "DefaultMarkdownGenerator",
             "params": {
@@ -802,9 +807,7 @@ _DEFAULT_CRAWL_CONFIG = {
 # when we're only interested in hrefs.
 _MAP_CRAWL_CONFIG = {
     "type": "CrawlerRunConfig",
-    "params": {
-        "remove_overlay_elements": True,
-    },
+    "params": {},
 }
 
 

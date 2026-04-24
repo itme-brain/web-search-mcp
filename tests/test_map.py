@@ -167,7 +167,8 @@ def test_deep_crawl_config_uses_discovery_base_config():
     )
 
     params = config["params"]
-    assert params["remove_overlay_elements"] is True
+    # remove_overlay_elements is deliberately OFF — see _DEFAULT_CRAWL_CONFIG.
+    assert "remove_overlay_elements" not in params
     assert "excluded_tags" not in params
     assert "markdown_generator" not in params
     assert params["deep_crawl_strategy"]["type"] == "BFSDeepCrawlStrategy"
