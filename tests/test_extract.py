@@ -18,6 +18,31 @@ async def test_extract_urls_validates_input():
 
 
 @pytest.mark.asyncio
+async def test_extract_impl_treats_null_string_query_as_none():
+    """Buggy MCP clients sometimes serialize `query=None` as the string
+    "null". It must not be forwarded as a literal query to the reranker."""
+    extract_mock = AsyncMock(return_value={
+        "status": "ok",
+        "url": "https://example.com/page",
+        "content_type": "text/html",
+        "title": "Example",
+        "content": "# Example\n\nContent.",
+        "top_chunks": [],
+        "cached": False,
+    })
+
+    with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
+        payload = await server_module.extract_impl(
+            urls=["https://example.com/page"],
+            query="null",
+        )
+
+    assert payload["query"] is None
+    # `_extract_url_document` must receive None, not the string "null".
+    assert extract_mock.call_args.args[1] is None
+
+
+@pytest.mark.asyncio
 async def test_extract_urls_returns_structured_results():
     fake_ctx = FakeContext()
     extract_mock = AsyncMock(side_effect=[

@@ -6,7 +6,6 @@ the sibling modules live).
 """
 
 import asyncio
-from typing import Literal
 
 from fastmcp import Context, FastMCP
 from fastmcp.tools.tool import ToolResult
@@ -107,7 +106,7 @@ async def ready(_: Request) -> JSONResponse:
 async def search(
     query: str,
     num_results: int = 10,
-    time_range: Literal["day", "week", "month", "year"] | None = None,
+    time_range: str | None = None,
     language: str | None = "en",
     include_domains: list[str] | None = None,
     exclude_domains: list[str] | None = None,
@@ -127,7 +126,7 @@ async def search(
         query=query,
         num_results=num_results,
         time_range=time_range,
-        language=language or None,
+        language=language,
         include_domains=include_domains,
         exclude_domains=exclude_domains,
         ctx=ctx,

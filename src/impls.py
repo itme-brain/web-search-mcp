@@ -73,6 +73,7 @@ async def search_impl(
     query = core._validate_query(query)
     num_results = core._validate_positive_int("num_results", num_results, maximum=MAX_RESULTS)
     time_range = core._normalize_time_range(time_range)
+    language = core._coerce_optional_str(language)
     include_domains = core._normalize_domains(include_domains, field_name="include_domains")
     exclude_domains = core._normalize_domains(exclude_domains, field_name="exclude_domains")
     scrape_budget = min(num_results, MAX_SCRAPE)
@@ -373,7 +374,7 @@ async def extract_impl(
     urls = core._validate_urls(urls, maximum=_MAX_EXTRACT_URLS)
     if chunk_ids is not None and any(i < 0 for i in chunk_ids):
         raise ValueError("chunk_ids entries must be >= 0")
-    normalized_query = query.strip() if query else None
+    normalized_query = core._coerce_optional_str(query)
     started = time.monotonic()
 
     page_cache = cache_module.page_cache

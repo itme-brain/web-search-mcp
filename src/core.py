@@ -317,10 +317,26 @@ def _diversify_ranked_entries(ranked_entry_idxs: list[int], entries: list[dict])
 # ---------------------------------------------------------------------------
 # Validators + normalizers
 # ---------------------------------------------------------------------------
-def _normalize_time_range(time_range: str | None) -> str | None:
-    if time_range in (None, "null", "none", "None", ""):
+def _coerce_optional_str(value: str | None) -> str | None:
+    """Undo accidental JSON-quoting from buggy MCP clients.
+
+    Some clients over-serialize optional string args: `None` arrives as
+    the string `"null"`, and `"en"` arrives as `'"en"'` (literal quotes).
+    Strip that back so downstream code sees the values Python expects.
+    """
+    if value is None:
         return None
-    normalized = time_range.strip().strip('"').lower()
+    stripped = value.strip().strip('"').strip("'").strip()
+    if stripped.lower() in ("", "null", "none"):
+        return None
+    return stripped
+
+
+def _normalize_time_range(time_range: str | None) -> str | None:
+    coerced = _coerce_optional_str(time_range)
+    if coerced is None:
+        return None
+    normalized = coerced.lower()
     if normalized not in VALID_TIME_RANGES:
         raise ValueError(f"invalid time_range: {time_range!r}. Expected one of {sorted(VALID_TIME_RANGES)}")
     return normalized

@@ -232,6 +232,80 @@ async def test_search_omits_metadata_when_empty():
     assert "metadata" not in payload["results"][0]
 
 
+@pytest.mark.parametrize("raw,expected", [
+    ('"day"', "day"),
+    ("'week'", "week"),
+    ("  MONTH  ", "month"),
+    ('"year"', "year"),
+    (None, None),
+    ("", None),
+    ("null", None),
+    ("none", None),
+])
+def test_normalize_time_range_strips_json_quoting(raw, expected):
+    """Buggy MCP clients sometimes JSON-quote enum args or pass the literal
+    string "null". _normalize_time_range unwraps both."""
+    assert server_module._normalize_time_range(raw) == expected
+
+
+@pytest.mark.asyncio
+async def test_search_impl_accepts_json_quoted_time_range():
+    """End-to-end: `'"day"'` must reach SearXNG as `day`, not `'"day"'`."""
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"results": []}
+    mock_resp.raise_for_status = MagicMock()
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_resp)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("core.httpx.AsyncClient", return_value=mock_client):
+        await server_module.search_impl(query="test", num_results=1, time_range='"day"')
+
+    params = mock_client.get.call_args[1]["params"]
+    assert params.get("time_range") == "day"
+
+
+@pytest.mark.asyncio
+async def test_search_impl_treats_null_string_language_as_none():
+    """`language="null"` from a buggy client must become an omitted param,
+    not a literal `language=null` query string that SearXNG 400s on."""
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"results": []}
+    mock_resp.raise_for_status = MagicMock()
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_resp)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("core.httpx.AsyncClient", return_value=mock_client):
+        await server_module.search_impl(query="test", num_results=1, language="null")
+
+    params = mock_client.get.call_args[1]["params"]
+    assert "language" not in params
+
+
+@pytest.mark.asyncio
+async def test_search_impl_strips_json_quoted_language():
+    """`language='"en"'` must reach SearXNG as `en`."""
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"results": []}
+    mock_resp.raise_for_status = MagicMock()
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_resp)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("core.httpx.AsyncClient", return_value=mock_client):
+        await server_module.search_impl(query="test", num_results=1, language='"en"')
+
+    params = mock_client.get.call_args[1]["params"]
+    assert params.get("language") == "en"
+
+
 def test_dedup_unresponsive_engines_handles_list_and_dict_shapes():
     """SearXNG sometimes ships list pairs, sometimes dicts, sometimes dupes."""
     entries = [
