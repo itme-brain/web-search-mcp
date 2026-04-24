@@ -66,7 +66,7 @@ async def test_search_markdown_does_not_leak_metadata_fields():
         patch(PATCH_SCRAPE, scrape_mock),
         patch(PATCH_RERANK, rerank_mock),
     ):
-        markdown = await server_module.search.fn("test", num_results=2, ctx=None)
+        markdown = await server_module.search.fn("test", ctx=None)
 
     for field in _LEAKY_FIELDS:
         assert f"{field}:" not in markdown, (

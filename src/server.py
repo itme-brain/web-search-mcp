@@ -105,7 +105,6 @@ async def ready(_: Request) -> JSONResponse:
 @mcp.tool(output_schema=models.SearchResponseModel.model_json_schema())
 async def search(
     query: str,
-    num_results: int = 10,
     time_range: str | None = None,
     language: str | None = "en",
     include_domains: list[str] | None = None,
@@ -116,7 +115,6 @@ async def search(
 
     Args:
         query: Search query. Use normal search text. To scope to one site, prefix with `site:<domain>`.
-        num_results: Number of results to return, from `1` to `10`.
         time_range: Optional recency filter. One of `day`, `week`, `month`, or `year`. Prefer this over putting dates in the query.
         language: Optional language code such as `en`, `de`, or `fr`. Pass `None` or `\"\"` for no language filter.
         include_domains: Optional bare domains to keep, such as `["docs.python.org"]`.
@@ -124,7 +122,6 @@ async def search(
     """
     response = await impls.search_impl(
         query=query,
-        num_results=num_results,
         time_range=time_range,
         language=language,
         include_domains=include_domains,
