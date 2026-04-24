@@ -171,4 +171,13 @@ def test_deep_crawl_config_uses_discovery_base_config():
     assert "remove_overlay_elements" not in params
     assert "excluded_tags" not in params
     assert "markdown_generator" not in params
-    assert params["deep_crawl_strategy"]["type"] == "BFSDeepCrawlStrategy"
+    strategy = params["deep_crawl_strategy"]
+    assert strategy["type"] == "BFSDeepCrawlStrategy"
+    # filter_chain MUST be wrapped in a typed FilterChain object. A bare
+    # list fails at runtime with `'list' object has no attribute 'apply'`
+    # inside Crawl4AI's BFS, which aborts the stream after the root URL.
+    fc = strategy["params"]["filter_chain"]
+    assert fc["type"] == "FilterChain"
+    assert isinstance(fc["params"]["filters"], list)
+    assert all(f["type"] in {"URLPatternFilter", "ContentTypeFilter"}
+               for f in fc["params"]["filters"])

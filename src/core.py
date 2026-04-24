@@ -872,13 +872,20 @@ def _deep_crawl_config(
         "include_external": not same_domain_only,
         "max_pages": max_pages,
     }
-    filter_chain = _crawl_filter_chain(
+    filters = _crawl_filter_chain(
         root_url=root_url,
         same_domain_only=same_domain_only,
         include_patterns=include_patterns,
     )
-    if filter_chain:
-        strategy_params["filter_chain"] = filter_chain
+    if filters:
+        # Crawl4AI's BFS strategy calls `filter_chain.apply(url)`. A bare
+        # list has no .apply() and the server raises AttributeError mid-
+        # stream, so wrap the filters in a typed FilterChain object per
+        # Crawl4AI's type-tagged JSON schema.
+        strategy_params["filter_chain"] = {
+            "type": "FilterChain",
+            "params": {"filters": filters},
+        }
 
     params["deep_crawl_strategy"] = {
         "type": "BFSDeepCrawlStrategy",
