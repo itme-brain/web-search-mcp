@@ -94,6 +94,49 @@ def test_search_markdown_separates_results_with_horizontal_rules():
     assert "___" in between_2_and_3
 
 
+def test_extract_markdown_separates_multiple_pages_with_rules():
+    """Multi-page extract must put a horizontal rule between each page
+    section so the LLM reads them as distinct documents."""
+    markdown = server_module._format_extract_results({
+        "query": None,
+        "results": [
+            {"url": "https://a", "domain": "a", "status": "ok", "title": "A",
+             "content": "Body A.", "chars_shown": 7, "total_chars": 7,
+             "top_chunks": [], "cached": False},
+            {"url": "https://b", "domain": "b", "status": "ok", "title": "B",
+             "content": "Body B.", "chars_shown": 7, "total_chars": 7,
+             "top_chunks": [], "cached": False},
+        ],
+        "meta": {"urls_requested": 2, "urls_succeeded": 2, "urls_failed": 0,
+                 "timings_ms": {"total": 1}},
+    })
+    between = markdown.split("## [A]")[1].split("## [B]")[0]
+    assert "___" in between
+
+
+def test_crawl_markdown_separates_multiple_pages_with_rules():
+    """Same separator requirement for crawl's per-page sections."""
+    markdown = server_module._format_crawl_results({
+        "url": "https://root",
+        "results": [
+            {"rank": 1, "url": "https://root", "domain": "root", "title": "Root",
+             "link_text": None, "depth": 0, "discovered_from": None,
+             "link_type": "seed", "status": "ok", "content": "Root body.",
+             "chars_shown": 10, "total_chars": 10, "cached": False},
+            {"rank": 2, "url": "https://root/a", "domain": "root", "title": "A",
+             "link_text": None, "depth": 1, "discovered_from": "https://root",
+             "link_type": "internal", "status": "ok", "content": "Body A.",
+             "chars_shown": 7, "total_chars": 7, "cached": False},
+        ],
+        "meta": {"max_urls_requested": 2, "urls_discovered": 2, "urls_returned": 2,
+                 "urls_truncated_by_limit": 0, "urls_deduplicated": 0,
+                 "urls_succeeded": 2, "urls_failed": 0, "warnings": [],
+                 "timings_ms": {"total": 1}},
+    })
+    between = markdown.split("## [Root]")[1].split("## [A]")[0]
+    assert "___" in between
+
+
 def test_search_markdown_marks_snippet_fallback_results():
     """When a page fails to scrape, the formatter should mark the
     snippet-fallback result so the LLM can tell full-text from snippet."""
@@ -127,7 +170,10 @@ def test_search_warning_lines_are_rendered_as_issues():
         },
     })
 
-    assert "issues: partial scrape: 2 of 5 pages failed — snippet used instead; filtered low-relevance results: 1 result(s) dropped below relevance threshold" in markdown
+    # Warnings render as a labeled bullet list, not a semicolon-joined line.
+    assert "issues:" in markdown
+    assert "- partial scrape: 2 of 5 pages failed — snippet used instead" in markdown
+    assert "- filtered low-relevance results: 1 result(s) dropped below relevance threshold" in markdown
     assert "status: degraded" not in markdown
 
 

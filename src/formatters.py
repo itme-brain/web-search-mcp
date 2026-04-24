@@ -49,6 +49,19 @@ def _render_kv_block(items: list[tuple[str, str | None]]) -> str:
     return "\n".join(lines)
 
 
+def _render_issues_block(label: str, lines: list[str]) -> str | None:
+    """Render an issues/warnings block as a label followed by a bullet list.
+
+    mdformat normalizes this to `label:` then a blank line then an
+    unindented list, which is more readable than one long semicolon-
+    joined line once there's more than one issue.
+    """
+    if not lines:
+        return None
+    bullets = "\n".join(f"- {line}" for line in lines)
+    return f"{label}:\n{bullets}"
+
+
 def _document_meta_line(r: dict) -> str | None:
     meta_parts: list[str] = []
     file_type = r.get("file_type")
@@ -121,12 +134,15 @@ def _format_search_results(response: dict) -> str:
         parts.append(("time_range", response["time_range"]))
     meta = response.get("meta", {})
     parts.append(("results", str(meta.get("num_results_returned", len(response.get("results", []))))))
-    warnings = meta.get("warnings", [])
-    if warnings:
-        parts.append(("issues", "; ".join(_search_issue_line(w) for w in warnings)))
     header = _render_kv_block(parts)
+    warnings = meta.get("warnings", [])
+    issues_block = _render_issues_block(
+        "issues", [_search_issue_line(w) for w in warnings]
+    )
 
     sections = [header]
+    if issues_block:
+        sections.append(issues_block)
     for r in response.get("results", []):
         title = r.get("title", "Untitled")
         url = r.get("url", "")
@@ -176,8 +192,9 @@ def _format_extract_results(response: dict) -> str:
             parts.append(("document", meta_line))
     header = _render_kv_block(parts) if parts else ""
 
-    sections = [header, "---"] if header else []
+    sections = [header] if header else []
     for r in results:
+        sections.append("---")
         sections.append(_format_document_section(r, show_meta_inline=single_result is None))
 
     return _render_markdown(sections)
@@ -227,8 +244,11 @@ def _format_map_results(response: dict) -> str:
     sections: list[str] = []
     meta = response.get("meta", {})
     warnings = meta.get("warnings", [])
-    if warnings:
-        sections.append("warnings: " + "; ".join(w.get("detail", str(w)) for w in warnings))
+    warn_block = _render_issues_block(
+        "warnings", [w.get("detail", str(w)) for w in warnings]
+    )
+    if warn_block:
+        sections.append(warn_block)
         sections.append("---")
     sections.append(_tree_block(response.get("results", [])))
 
@@ -240,8 +260,11 @@ def _format_crawl_results(response: dict) -> str:
     meta = response.get("meta", {})
     warnings = meta.get("warnings", [])
     sections: list[str] = []
-    if warnings:
-        sections.append("warnings: " + "; ".join(w.get("detail", str(w)) for w in warnings))
+    warn_block = _render_issues_block(
+        "warnings", [w.get("detail", str(w)) for w in warnings]
+    )
+    if warn_block:
+        sections.append(warn_block)
 
     summary = _render_kv_block([
         ("discovered", str(meta.get("urls_discovered", 0))),
@@ -255,10 +278,8 @@ def _format_crawl_results(response: dict) -> str:
     if tree:
         sections.append("map:\n" + tree)
 
-    if sections:
-        sections.append("---")
-
     for r in response.get("results", []):
+        sections.append("---")
         sections.append(_format_document_section(r))
 
     return _render_markdown(sections)
