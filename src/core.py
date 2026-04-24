@@ -991,6 +991,36 @@ async def _scrape(url: str) -> dict:
 # doc snippets. User-directed extract bypasses this gate.
 _MIN_CACHE_WORDS = 20
 
+# Phrases that cluster on login walls / auth pages across most social and
+# SaaS sites. A real article that happens to mention logging in may hit
+# one or two; short pages dense with multiple hits are the content
+# Crawl4AI got when the page redirected to or rendered auth UI instead of
+# the post / thread / article the caller asked for.
+_LOGIN_WALL_RE = re.compile(
+    r"\b(log\s?in|sign\s?in|sign\s?up|"
+    r"forgot\s+(?:your\s+)?(?:password|account)|"
+    r"create\s+(?:new\s+)?account|"
+    r"email\s+or\s+phone(?:\s+number)?)\b",
+    re.IGNORECASE,
+)
+_LOGIN_WALL_MIN_HITS = 3
+_LOGIN_WALL_MAX_WORDS = 400
+
+
+def _is_login_wall(content: str | None) -> bool:
+    """Heuristic: scraped content is auth-chrome rather than real content.
+
+    Matches short pages that pack multiple login/signup phrases together
+    (e.g. Facebook post URLs served to logged-out users, some paywalled
+    sites, Twitter individual tweet pages). A real article with >400
+    words that mentions "log in" once stays below the threshold.
+    """
+    if not content:
+        return False
+    if len(content.split()) >= _LOGIN_WALL_MAX_WORDS:
+        return False
+    return len(_LOGIN_WALL_RE.findall(content)) >= _LOGIN_WALL_MIN_HITS
+
 
 async def _scrape_cached(url: str, cache: KVCache) -> dict:
     """Scrape with shared page cache. Returns the full envelope.
@@ -1015,6 +1045,13 @@ async def _scrape_cached(url: str, cache: KVCache) -> dict:
     # Length floor — only applied at speculative write time, not on user-
     # directed extract (which wants whatever it asked for).
     if content and len(content.split()) < _MIN_CACHE_WORDS:
+        content = None
+    # Login wall gate — only on speculative scrapes. A user-directed
+    # extract that explicitly points at e.g. a Facebook URL still gets
+    # whatever came back; search/crawl fall back to the SearXNG snippet
+    # so auth chrome doesn't crowd out a real result.
+    if _is_login_wall(content):
+        log.info("scrape returned login wall url=%s", url)
         content = None
     entry = _page_entry(
         url=url,

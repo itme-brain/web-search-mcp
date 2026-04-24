@@ -475,6 +475,50 @@ async def test_scrape_cache_rejects_under_length_floor():
 
 
 @pytest.mark.asyncio
+async def test_scrape_cache_rejects_login_wall():
+    """Scrape returns the login wall UI rather than the post/article.
+
+    Pages dense with `Log In` / `Forgot password` / `Create account`
+    phrases are auth chrome, not content. Without this gate they score
+    well at rerank (the post title still matches the query) and
+    pollute search results — see the Facebook post case."""
+    url = "https://www.facebook.com/groups/123/posts/456/"
+    facebook_wall = (
+        "Facebook\nLog In\nLog In\nForgot Account?\n"
+        "Artificial intelligence, Machine learning, Deep learning\n"
+        "Machine Learning Algorithms\n"
+        "Email or phone number\nPassword\nLog In\n"
+        "Forgot password?\nor\nCreate new account"
+    )
+    fake_scrape = AsyncMock(return_value={
+        "content": facebook_wall, "title": "Facebook", "metadata": {},
+    })
+    with patch("core._scrape", fake_scrape):
+        envelope = await server_module._scrape_cached(url, cache_module.page_cache)
+
+    assert envelope["status"] == "error"
+    assert envelope["content"] is None
+
+
+def test_is_login_wall_heuristic():
+    wall = (
+        "Log In\nForgot password?\nCreate new account\n"
+        "Email or phone number\nPassword\nLog In"
+    )
+    assert server_module._is_login_wall(wall) is True
+    # A real article that mentions login once or twice is not a wall.
+    article = (
+        "To sign up for the newsletter, enter your email. "
+        + "Body content. " * 200  # pushes past the 400-word cap
+    )
+    assert server_module._is_login_wall(article) is False
+    # Empty / None / no auth phrases at all.
+    assert server_module._is_login_wall("") is False
+    assert server_module._is_login_wall(None) is False
+    assert server_module._is_login_wall("A short unrelated blurb.") is False
+
+
+@pytest.mark.asyncio
 async def test_content_hash_alias_collapses_duplicate_content_at_different_urls():
     """Two URLs with byte-identical content share one full entry.
 
