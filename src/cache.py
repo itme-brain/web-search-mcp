@@ -34,12 +34,17 @@ import redis.asyncio as _resp_client
 
 
 _DEFAULT_URL = "redis://valkey:6379/0"
-_DEFAULT_TTL_S = 3600
+# Single operator-tunable TTL applied to every cache (page, searxng,
+# seen_urls, content_alias). Set `CACHE_TTL_S=0` to run caches as
+# no-ops — every request goes upstream fresh. Kept off the LLM-facing
+# tool schema deliberately; this is an ops knob, not a prompt knob.
+_DEFAULT_TTL_S = int(os.environ.get("CACHE_TTL_S", "3600"))
 # Short TTL for failed / rejected page entries. Long enough to prevent
 # immediate retry thrash on bad URLs, short enough that a transient
 # upstream failure (CAPTCHA, 5xx, brief timeout) can recover in under a
-# minute instead of being locked out for an hour.
-FAILURE_TTL_S = 60
+# minute instead of being locked out for an hour. Clamped to the global
+# TTL so CACHE_TTL_S=0 disables failure caching too.
+FAILURE_TTL_S = min(60, _DEFAULT_TTL_S) if _DEFAULT_TTL_S else 0
 
 _client: _resp_client.Redis | None = None
 
@@ -88,9 +93,13 @@ class KVCache:
         return f"{self._prefix}:{key}"
 
     async def contains(self, key: str) -> bool:
+        if self._ttl == 0:
+            return False
         return bool(await _get_client().exists(self._key(key)))
 
     async def get(self, key: str) -> Any | None:
+        if self._ttl == 0:
+            return None
         client = _get_client()
         raw = await client.get(self._key(key))
         if raw is None:
@@ -101,14 +110,21 @@ class KVCache:
 
     async def set(self, key: str, value: Any, *, ttl: int | None = None) -> None:
         """Write a value. `ttl` overrides the cache default when given
-        (used for failure entries that should expire faster)."""
+        (used for failure entries that should expire faster). A resolved
+        ttl of 0 short-circuits the write so CACHE_TTL_S=0 disables
+        the cache end-to-end."""
+        resolved = ttl if ttl is not None else self._ttl
+        if resolved == 0:
+            return
         await _get_client().set(
             self._key(key),
             json.dumps(value),
-            ex=ttl if ttl is not None else self._ttl,
+            ex=resolved,
         )
 
     async def delete(self, key: str) -> None:
+        if self._ttl == 0:
+            return
         await _get_client().delete(self._key(key))
 
     async def stats(self) -> dict[str, int]:

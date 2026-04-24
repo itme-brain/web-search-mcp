@@ -1,6 +1,7 @@
 import asyncio
 from unittest.mock import AsyncMock, patch
 
+import cache as cache_module
 import pytest
 from tests.conftest import SCRAPE_CONTENT, URLS_A, URLS_B, make_search_results, server_module
 
@@ -516,3 +517,34 @@ async def test_cache_survives_across_ctx_instances(patched_backends):
     patched_backends["search"].assert_not_called()
     patched_backends["scrape"].assert_not_called()
     assert [r["url"] for r in r1["results"]] == [r["url"] for r in r2["results"]]
+
+
+@pytest.mark.asyncio
+async def test_cache_ttl_zero_disables_reads_and_writes():
+    """CACHE_TTL_S=0 operator knob turns caches into no-ops.
+
+    Every request goes upstream. Reads always miss, writes are dropped,
+    so a second identical call does NOT reuse the first one's result.
+    """
+    cache = cache_module.KVCache("ws:test-zero", ttl=0)
+
+    await cache.set("k", {"v": 1})
+    assert await cache.get("k") is None
+    assert await cache.contains("k") is False
+
+    # A non-zero per-call override also gets short-circuited because the
+    # cache itself is disabled — the intent of CACHE_TTL_S=0 is "no cache
+    # anywhere", not "per-call defaults only". Failure-TTL writes from
+    # core._page_set pass `ttl=FAILURE_TTL_S`; when that resolves to 0
+    # (because CACHE_TTL_S=0 clamps FAILURE_TTL_S too), the write is
+    # dropped. Simulate that here directly.
+    await cache.set("k", {"v": 2}, ttl=0)
+    assert await cache.get("k") is None
+
+
+@pytest.mark.asyncio
+async def test_cache_ttl_nonzero_still_honors_per_call_override():
+    """A per-call ttl override still works when the cache itself is on."""
+    cache = cache_module.KVCache("ws:test-short", ttl=60)
+    await cache.set("k", {"v": 1}, ttl=5)
+    assert await cache.get("k") == {"v": 1}

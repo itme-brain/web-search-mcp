@@ -19,6 +19,7 @@ services:
       - REQUEST_TIMEOUT=${REQUEST_TIMEOUT:-30}
       - MAX_RESULTS=${MAX_RESULTS:-10}
       - MAX_SCRAPE=${MAX_SCRAPE:-5}
+      - CACHE_TTL_S=${CACHE_TTL_S:-3600}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     healthcheck:
       <<: *healthcheck-defaults
