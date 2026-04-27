@@ -164,6 +164,7 @@ class CrawlResultModel(StrictModel):
     content: str
     chars_shown: int
     total_chars: int
+    top_chunks: list[str] = []
     cached: bool
     error: str | None = None
     metadata: DocumentMetadataModel | None = None
@@ -183,6 +184,7 @@ class CrawlMetaModel(StrictModel):
 
 class CrawlResponseModel(StrictModel):
     url: str
+    query: str | None = None
     results: list[CrawlResultModel]
     meta: CrawlMetaModel
 

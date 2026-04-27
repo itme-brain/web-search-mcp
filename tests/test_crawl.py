@@ -191,6 +191,127 @@ async def test_crawl_surfaces_map_warnings_and_extract_failures():
 
 
 @pytest.mark.asyncio
+async def test_crawl_query_reorders_by_relevance():
+    map_payload = {
+        "url": "https://docs.example.com",
+        "results": [
+            _map_result("https://docs.example.com", depth=0, title="Root", link_type="seed", rank=1),
+            _map_result(
+                "https://docs.example.com/intro",
+                depth=1, title="Intro",
+                discovered_from="https://docs.example.com", rank=2,
+            ),
+            _map_result(
+                "https://docs.example.com/rate-limits",
+                depth=1, title="Rate Limits",
+                discovered_from="https://docs.example.com", rank=3,
+            ),
+            _map_result(
+                "https://docs.example.com/faq",
+                depth=1, title="FAQ",
+                discovered_from="https://docs.example.com", rank=4,
+            ),
+        ],
+        "meta": {"warnings": [], "urls_returned": 4, "pages_visited": 4},
+    }
+
+    # Per-URL extract docs with controlled best-chunk scores so the test
+    # is deterministic regardless of the FlashRank stub. The rate-limits
+    # page scores highest and must surface as rank 1.
+    score_by_url = {
+        "https://docs.example.com": 0.10,
+        "https://docs.example.com/intro": 0.20,
+        "https://docs.example.com/rate-limits": 0.95,
+        "https://docs.example.com/faq": 0.30,
+    }
+
+    def _doc(url: str) -> dict:
+        score = score_by_url[url]
+        return {
+            "status": "ok",
+            "url": url,
+            "content_type": "text/html",
+            "file_type": "html",
+            "title": url.rsplit("/", 1)[-1] or "root",
+            "content": f"top chunk text for {url}",
+            "total_chars": 200,
+            "metadata": {},
+            "top_chunks": [{"id": 0, "text": f"top chunk text for {url}", "score": score}],
+            "chunks": [{"id": 0, "text": "..."}],
+            "shown_chunk_ids": [0],
+            "total_chunks": 1,
+            "chunk_mode": "relevant",
+            "cached": False,
+        }
+
+    async def _fake_extract_url_document(url, query, cache, chunk_ids=None):
+        assert query == "rate limits"
+        return _doc(url)
+
+    with (
+        patch(PATCH_MAP_IMPL, AsyncMock(return_value=map_payload)),
+        patch("core._extract_url_document", AsyncMock(side_effect=_fake_extract_url_document)),
+    ):
+        payload = await server_module.crawl_impl(
+            "https://docs.example.com",
+            max_urls=4,
+            query="rate limits",
+        )
+
+    assert payload["query"] == "rate limits"
+    assert [r["url"] for r in payload["results"]][0] == "https://docs.example.com/rate-limits"
+    assert payload["results"][0]["rank"] == 1
+    assert payload["results"][0]["top_chunks"] == ["top chunk text for https://docs.example.com/rate-limits"]
+    # The seed page (lowest score) should land last.
+    assert payload["results"][-1]["url"] == "https://docs.example.com"
+
+
+@pytest.mark.asyncio
+async def test_crawl_without_query_preserves_bfs_order():
+    map_payload = {
+        "url": "https://docs.example.com",
+        "results": [
+            _map_result("https://docs.example.com", depth=0, title="Root", link_type="seed", rank=1),
+            _map_result(
+                "https://docs.example.com/a",
+                depth=1, title="A",
+                discovered_from="https://docs.example.com", rank=2,
+            ),
+            _map_result(
+                "https://docs.example.com/b",
+                depth=1, title="B",
+                discovered_from="https://docs.example.com", rank=3,
+            ),
+        ],
+        "meta": {"warnings": [], "urls_returned": 3, "pages_visited": 3},
+    }
+    extract_payload = {
+        "results": [
+            _extract_result("https://docs.example.com", title="Root", content="root body"),
+            _extract_result("https://docs.example.com/a", title="A", content="a body"),
+            _extract_result("https://docs.example.com/b", title="B", content="b body"),
+        ],
+        "meta": {"urls_requested": 3, "urls_succeeded": 3, "urls_failed": 0},
+    }
+
+    with (
+        patch(PATCH_MAP_IMPL, AsyncMock(return_value=map_payload)),
+        patch(PATCH_EXTRACT_IMPL, AsyncMock(return_value=extract_payload)),
+    ):
+        payload = await server_module.crawl_impl(
+            "https://docs.example.com", max_urls=3,
+        )
+
+    # No query → BFS discovery order preserved (matches map order).
+    assert [r["url"] for r in payload["results"]] == [
+        "https://docs.example.com",
+        "https://docs.example.com/a",
+        "https://docs.example.com/b",
+    ]
+    assert payload.get("query") in (None, "")
+
+
+@pytest.mark.asyncio
 async def test_crawl_markdown_renders_tree_and_error_state():
     map_payload = {
         "url": "https://docs.example.com",

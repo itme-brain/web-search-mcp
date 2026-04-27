@@ -177,6 +177,7 @@ async def crawl(
     url: str,
     max_urls: int = 10,
     include_patterns: list[str] | None = None,
+    query: str | None = None,
 ) -> ToolResult:
     """Map a site tree and read its pages.
 
@@ -184,11 +185,13 @@ async def crawl(
         url: URL to use as the root of the crawl.
         max_urls: Maximum pages to include, from `1` to `20`.
         include_patterns: Optional shell-glob patterns matched against the full URL. Only matching URLs are kept.
+        query: Optional query. When set, results are reordered by relevance and each page returns its top-K most relevant chunks instead of the document head.
     """
     response = await impls.crawl_impl(
         url=url,
         max_urls=max_urls,
         include_patterns=include_patterns,
+        query=query,
     )
     return _tool_result(response, _format_crawl_results)
 

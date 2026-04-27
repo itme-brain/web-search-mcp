@@ -267,6 +267,7 @@ def _format_crawl_results(response: dict) -> str:
         sections.append(warn_block)
 
     summary = _render_kv_block([
+        ("query", response.get("query")),
         ("discovered", str(meta.get("urls_discovered", 0))),
         ("extracted", str(meta.get("urls_succeeded", 0))),
         ("failed", str(meta.get("urls_failed", 0)) if meta.get("urls_failed") else None),

@@ -553,13 +553,21 @@ async def crawl_impl(
     url: str,
     max_urls: int = 10,
     include_patterns: list[str] | None = None,
+    query: str | None = None,
 ) -> dict:
-    """Discover a site tree, then extract content for each discovered node."""
+    """Discover a site tree, then extract content for each discovered node.
+
+    When `query` is set, results are reordered by per-page best-chunk
+    relevance score (FlashRank cross-encoder) instead of BFS discovery
+    order, and each result's `content` carries the joined top chunks
+    rather than the document head.
+    """
     effective_max_urls = core._validate_positive_int(
         "max_urls",
         max_urls,
         maximum=min(_MAX_MAP_URLS, _MAX_EXTRACT_URLS),
     )
+    normalized_query = core._coerce_optional_str(query)
     started = time.monotonic()
     tree = await map_impl(
         url=url,
@@ -567,18 +575,46 @@ async def crawl_impl(
         include_patterns=include_patterns,
     )
     root_url = tree["url"]
-    extracted = await extract_impl(
-        urls=[entry["url"] for entry in tree["results"]],
-        query=None,
-        chunk_ids=None,
-    )
+    urls = [entry["url"] for entry in tree["results"]]
 
-    extract_by_url = {entry["url"]: entry for entry in extracted["results"]}
+    # Query-driven path bypasses extract_impl to retain per-chunk scores
+    # for cross-page ranking; non-query path keeps using extract_impl so
+    # existing call-sites and test mocks remain unchanged.
+    score_by_url: dict[str, float | None] = {}
+    if normalized_query:
+        page_cache = cache_module.page_cache
+        documents = await asyncio.gather(*[
+            core._extract_url_document(u, normalized_query, page_cache, chunk_ids=None)
+            for u in urls
+        ])
+        urls_succeeded = sum(1 for d in documents if d["status"] in {"ok", "handoff"})
+        urls_failed = len(documents) - urls_succeeded
+        doc_by_url: dict[str, dict] = dict(zip(urls, documents))
+        for u, doc in doc_by_url.items():
+            top = doc.get("top_chunks") or []
+            score_by_url[u] = (
+                top[0].get("score") if top and isinstance(top[0], dict) else None
+            )
+    else:
+        extracted = await extract_impl(
+            urls=urls,
+            query=None,
+            chunk_ids=None,
+        )
+        urls_succeeded = extracted["meta"]["urls_succeeded"]
+        urls_failed = extracted["meta"]["urls_failed"]
+        doc_by_url = {entry["url"]: entry for entry in extracted["results"]}
+
     results: list[dict] = []
-    for rank, node in enumerate(tree["results"], start=1):
-        document = extract_by_url.get(node["url"], {})
+    for node in tree["results"]:
+        document = doc_by_url.get(node["url"], {})
+        top_chunks_raw = document.get("top_chunks", []) or []
+        top_chunks = [
+            c["text"] if isinstance(c, dict) else c
+            for c in top_chunks_raw
+        ]
+        content = document.get("content", "")
         merged = {
-            "rank": rank,
             "url": node["url"],
             "domain": node["domain"],
             "title": document.get("title") or node.get("title"),
@@ -588,9 +624,10 @@ async def crawl_impl(
             "link_type": node["link_type"],
             "status": document.get("status", "error"),
             "content_type": document.get("content_type"),
-            "content": document.get("content", ""),
-            "chars_shown": document.get("chars_shown", 0),
+            "content": content,
+            "chars_shown": document.get("chars_shown", len(content)),
             "total_chars": document.get("total_chars", 0),
+            "top_chunks": top_chunks,
             "cached": document.get("cached", False),
             "error": document.get("error"),
         }
@@ -599,9 +636,21 @@ async def crawl_impl(
             merged["metadata"] = metadata
         results.append(merged)
 
+    if normalized_query:
+        # Pages with a real score sort by score desc; pages without one
+        # (extract failures, no chunks) trail in stable order.
+        results.sort(key=lambda r: (
+            score_by_url.get(r["url"]) is None,
+            -(score_by_url.get(r["url"]) or 0.0),
+        ))
+
+    for rank, entry in enumerate(results, start=1):
+        entry["rank"] = rank
+
     warnings = list(tree["meta"].get("warnings", []))
     response = {
         "url": root_url,
+        "query": normalized_query,
         "results": results,
         "meta": {
             "max_urls_requested": effective_max_urls,
@@ -609,8 +658,8 @@ async def crawl_impl(
             "urls_returned": len(results),
             "urls_truncated_by_limit": 0,
             "urls_deduplicated": 0,
-            "urls_succeeded": extracted["meta"]["urls_succeeded"],
-            "urls_failed": extracted["meta"]["urls_failed"],
+            "urls_succeeded": urls_succeeded,
+            "urls_failed": urls_failed,
             "warnings": warnings,
             "timings_ms": {
                 "total": int((time.monotonic() - started) * 1000),
@@ -618,12 +667,13 @@ async def crawl_impl(
         },
     }
     log.info(
-        "crawl url=%s discovered=%d returned=%d dedup=%d succeeded=%d failed=%d",
+        "crawl url=%s query=%r discovered=%d returned=%d dedup=%d succeeded=%d failed=%d",
         root_url,
+        normalized_query,
         response["meta"]["urls_discovered"],
         len(results),
         response["meta"]["urls_deduplicated"],
-        response["meta"]["urls_succeeded"],
-        response["meta"]["urls_failed"],
+        urls_succeeded,
+        urls_failed,
     )
     return _validated_response(models.CrawlResponseModel, response)
