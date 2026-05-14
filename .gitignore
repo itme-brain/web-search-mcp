@@ -1,6 +1,7 @@
 # AI
 .claude
 .codex
+.cache
 
 __pycache__/
 *.py[cod]
