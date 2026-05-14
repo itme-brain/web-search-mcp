@@ -71,6 +71,7 @@ RERANK_MODEL = settings.rerank_model
 REQUEST_TIMEOUT = settings.request_timeout
 MAX_RESULTS = settings.max_results
 MAX_SCRAPE = settings.max_scrape
+SEARCH_MODES = frozenset({"fast", "deep", "research"})
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +79,7 @@ MAX_SCRAPE = settings.max_scrape
 # ---------------------------------------------------------------------------
 _RERANK_MAX_LENGTH = 512
 _HTTP_TIMEOUT = max(REQUEST_TIMEOUT // 2, 10)
-_MAX_CONTENT_CHARS = 8000
+_MAX_CONTENT_CHARS = 20000
 _DEDUP_SIMILARITY = 0.75
 _DEDUP_NUM_PERM = 128
 _TITLE_DEDUP_THRESHOLD = 97.0
@@ -330,6 +331,16 @@ def _coerce_optional_str(value: str | None) -> str | None:
     if stripped.lower() in ("", "null", "none"):
         return None
     return stripped
+
+
+def _normalize_search_mode(mode: str | None) -> str:
+    coerced = _coerce_optional_str(mode)
+    if coerced is None:
+        return "deep"
+    normalized = coerced.lower()
+    if normalized not in SEARCH_MODES:
+        raise ValueError(f"invalid mode: {mode!r}. Expected one of {sorted(SEARCH_MODES)}")
+    return normalized
 
 
 def _normalize_time_range(time_range: str | None) -> str | None:

@@ -17,10 +17,14 @@ services:
       - VALKEY_URL=redis://valkey:6379/0
       - RERANK_MODEL=${RERANK_MODEL:-ms-marco-MiniLM-L-12-v2}
       - REQUEST_TIMEOUT=${REQUEST_TIMEOUT:-30}
-      - MAX_RESULTS=${MAX_RESULTS:-10}
-      - MAX_SCRAPE=${MAX_SCRAPE:-5}
+      - MAX_RESULTS=${MAX_RESULTS:-20}
+      - MAX_SCRAPE=${MAX_SCRAPE:-10}
       - CACHE_TTL_S=${CACHE_TTL_S:-3600}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ENABLE_SEMANTIC_INDEX=${ENABLE_SEMANTIC_INDEX:-0}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}
+      - EMBEDDING_DEVICE=${EMBEDDING_DEVICE:-cpu}
+      - SEMANTIC_TOP_K=${SEMANTIC_TOP_K:-20}
     healthcheck:
       <<: *healthcheck-defaults
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready', timeout=3).read()"]

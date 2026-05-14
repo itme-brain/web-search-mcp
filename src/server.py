@@ -40,6 +40,19 @@ mcp = FastMCP("Web Search", version="0.3.2")
 __all__ = ["mcp", "search_impl", "extract_impl", "map_impl", "crawl_impl"]
 
 
+def _semantic_status() -> dict:
+    """Return semantic-index config without importing heavy deps at startup."""
+    try:
+        import semantic
+    except Exception as exc:
+        return {"enabled": False, "status": "error", "detail": str(exc)}
+    return {
+        "enabled": semantic.ENABLED,
+        "model": semantic.MODEL_NAME,
+        "device": semantic.DEVICE,
+    }
+
+
 def _tool_result(response: dict, formatter) -> ToolResult:
     """Return curated markdown plus the structured dict payload."""
     return ToolResult(
@@ -94,6 +107,7 @@ async def ready(_: Request) -> JSONResponse:
             "crawl4ai": crawl4ai,
             "valkey": valkey,
             "reranker": {"status": "ok", "name": "flashrank", "model": RERANK_MODEL},
+            "semantic_index": _semantic_status(),
         },
     }
     return JSONResponse(payload, status_code=200 if ready_ok else 503)
@@ -105,23 +119,41 @@ async def ready(_: Request) -> JSONResponse:
 @mcp.tool(output_schema=models.SearchResponseModel.model_json_schema())
 async def search(
     query: str,
+    num_results: int = 5,
+    mode: str = "deep",
+    max_passages: int | None = None,
+    max_chars_per_result: int | None = None,
+    include_raw_content: bool = False,
+    source_types: list[str] | None = None,
     time_range: str | None = None,
     language: str | None = "en",
     include_domains: list[str] | None = None,
     exclude_domains: list[str] | None = None,
     ctx: Context | None = None,
  ) -> ToolResult:
-    """Search the web.
+    """Find answer-ready web sources. Use first for unknown/current facts.
 
     Args:
-        query: Search query. Use normal search text. To scope to one site, prefix with `site:<domain>`.
-        time_range: Optional recency filter. One of `day`, `week`, `month`, or `year`. Prefer this over putting dates in the query.
-        language: Optional language code such as `en`, `de`, or `fr`. Pass `None` or `\"\"` for no language filter.
-        include_domains: Optional bare domains to keep, such as `["docs.python.org"]`.
-        exclude_domains: Optional bare domains to exclude.
+        query: Plain search text; use `site:domain.com` to limit a site.
+        num_results: Sources to return. Use 3-5 normally; 10+ only for broad research.
+        mode: `fast`=links/snippets, `deep`=default evidence, `research`=more sources/slower.
+        max_passages: Evidence passages per source. Default: fast 1, deep 2, research 4.
+        max_chars_per_result: Evidence char cap per source. Raise if reranking may miss context.
+        include_raw_content: Also return larger cleaned page text, capped by max_chars_per_result.
+        source_types: Keep source kinds: docs, repo, issue, mailing_list, qa, blog, web.
+        time_range: Optional: `day`, `week`, `month`, or `year`.
+        language: Optional language code. Use `None` for any language.
+        include_domains: Keep only these bare domains.
+        exclude_domains: Drop these bare domains.
     """
     response = await impls.search_impl(
         query=query,
+        num_results=num_results,
+        mode=mode,
+        max_passages=max_passages,
+        max_chars_per_result=max_chars_per_result,
+        include_raw_content=include_raw_content,
+        source_types=source_types,
         time_range=time_range,
         language=language,
         include_domains=include_domains,
@@ -138,12 +170,12 @@ async def extract(
     chunk_ids: list[int] | None = None,
     ctx: Context | None = None,
 ) -> ToolResult:
-    """Read content from one or more URLs.
+    """Read known URLs. Use after search when a source needs more detail.
 
     Args:
-        urls: URLs to read. Always pass a list, even for one URL.
-        query: Optional query used to return the most relevant chunks from each document.
-        chunk_ids: Optional chunk ids from a prior response. When provided, returns those exact chunks instead of reranking.
+        urls: URL list, even for one URL.
+        query: Return chunks relevant to this question.
+        chunk_ids: Return exact chunks from an earlier extract response.
     """
     response = await impls.extract_impl(
         urls=urls, query=query, chunk_ids=chunk_ids, ctx=ctx,
@@ -157,12 +189,12 @@ async def map(
     max_urls: int = 25,
     include_patterns: list[str] | None = None,
 ) -> ToolResult:
-    """Discover a site tree.
+    """List URLs on a site without reading pages. Use to find docs/pages.
 
     Args:
-        url: URL to use as the root of the returned tree.
-        max_urls: Maximum URLs to include, from `1` to `50`.
-        include_patterns: Optional shell-glob patterns matched against the full URL. Only matching URLs are kept.
+        url: Site/root URL.
+        max_urls: URLs to return, 1-50.
+        include_patterns: Optional URL globs to keep, e.g. `*docs*`.
     """
     response = await impls.map_impl(
         url=url,
@@ -172,6 +204,36 @@ async def map(
     return _tool_result(response, _format_map_results)
 
 
+@mcp.tool(output_schema=models.SearchResponseModel.model_json_schema())
+async def research(
+    query: str,
+    num_results: int = 8,
+    max_passages: int | None = None,
+    max_chars_per_result: int | None = None,
+    source_types: list[str] | None = None,
+    ctx: Context | None = None,
+) -> ToolResult:
+    """Hard web research. Slower search with more sources and compact brief.
+
+    Args:
+        query: Research question.
+        num_results: Sources to return. Default 8.
+        max_passages: Evidence passages per source. Default 4.
+        max_chars_per_result: Evidence char cap per source.
+        source_types: Optional source kinds to keep.
+    """
+    response = await impls.search_impl(
+        query=query,
+        num_results=num_results,
+        mode="research",
+        max_passages=max_passages,
+        max_chars_per_result=max_chars_per_result,
+        source_types=source_types,
+        ctx=ctx,
+    )
+    return _tool_result(response, _format_search_results)
+
+
 @mcp.tool(output_schema=models.CrawlResponseModel.model_json_schema())
 async def crawl(
     url: str,
@@ -179,13 +241,13 @@ async def crawl(
     include_patterns: list[str] | None = None,
     query: str | None = None,
 ) -> ToolResult:
-    """Map a site tree and read its pages.
+    """Read several pages from one site. Use for docs/tutorial sections.
 
     Args:
-        url: URL to use as the root of the crawl.
-        max_urls: Maximum pages to include, from `1` to `20`.
-        include_patterns: Optional shell-glob patterns matched against the full URL. Only matching URLs are kept.
-        query: Optional query. When set, results are reordered by relevance and each page returns its top-K most relevant chunks instead of the document head.
+        url: Site/root URL.
+        max_urls: Pages to read, 1-20.
+        include_patterns: Optional URL globs to keep.
+        query: If set, rank pages/chunks by relevance.
     """
     response = await impls.crawl_impl(
         url=url,
@@ -196,7 +258,7 @@ async def crawl(
     return _tool_result(response, _format_crawl_results)
 
 
-for _tool in (search, extract, map, crawl):
+for _tool in (search, extract, map, research, crawl):
     if not hasattr(_tool, "fn"):
         _tool.fn = _tool
 

@@ -75,6 +75,10 @@ eval: setup-python
 eval-score run_file: setup-python
     .venv/bin/python eval/score.py {{ run_file }}
 
+# Lightweight retrieval smoke focused on small-model output shape.
+small-eval: setup-python
+    .venv/bin/python eval/small_model_eval.py
+
 # Live end-to-end smoke: one call per tool against the running stack.
 # Pass --full to include PDF extraction and a degraded-mode engine spike.
 smoke *args: setup-python

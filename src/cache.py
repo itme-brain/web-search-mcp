@@ -127,6 +127,14 @@ class KVCache:
             return
         await _get_client().delete(self._key(key))
 
+    async def keys(self, pattern: str = "*") -> list[str]:
+        """Return unprefixed keys matching pattern within this cache prefix."""
+        if self._ttl == 0:
+            return []
+        prefix = f"{self._prefix}:"
+        raw_keys = await _get_client().keys(f"{prefix}{pattern}")
+        return [key[len(prefix):] for key in raw_keys]
+
     async def stats(self) -> dict[str, int]:
         """Return this cache's lifetime hit/miss counts."""
         client = _get_client()
@@ -155,3 +163,9 @@ seen_urls = KVCache("ws:seen")
 # identical content we write only one full entry and alias the rest
 # through this map. See core._page_set / core._page_get.
 content_alias = KVCache("ws:content")
+# Lightweight local retrieval index entries. Stored in Valkey as
+# normalized_url -> {url,title,domain,source_type,content,metadata,updated_at}.
+# Search can re-rank cached pages alongside live SearXNG candidates to
+# reduce repeat scraping and approximate a local semantic memory without
+# adding a vector database dependency.
+semantic_cache = KVCache("ws:semantic")

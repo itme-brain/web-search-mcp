@@ -10,7 +10,7 @@ import hashlib
 import json
 import logging
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 from fastmcp import Context
 
@@ -22,6 +22,7 @@ from fastmcp import Context
 import cache as cache_module
 import core
 import models
+import semantic
 from core import (
     MAX_RESULTS,
     MAX_SCRAPE,
@@ -31,7 +32,6 @@ from core import (
     _MAX_EXTRACT_URLS,
     _MAX_MAP_URLS,
     _MIN_RELEVANCE_SCORE,
-    _TOP_CHUNKS,
 )
 
 log = logging.getLogger("web-search-mcp")
@@ -51,9 +51,209 @@ def _validated_response(model_cls, response: dict) -> dict:
     return models.dump_response(model_cls, response)
 
 
+def _search_mode_budget(mode: str, num_results: int) -> tuple[int, int, int]:
+    """Return (searx_pages, scrape_budget, default_passages) for a search mode."""
+    if mode == "fast":
+        return 1, min(num_results, 5, MAX_SCRAPE), 1
+    if mode == "research":
+        return 3, min(max(num_results * 2, 10), MAX_SCRAPE), 4
+    return 2, min(num_results, MAX_SCRAPE), 2
+
+
+def _validate_optional_positive_int(name: str, value: int | None, *, maximum: int) -> int | None:
+    if value is None:
+        return None
+    return core._validate_positive_int(name, value, maximum=maximum)
+
+
+def _query_terms(query: str) -> list[str]:
+    stop = {
+        "a", "an", "and", "are", "as", "at", "by", "for", "from", "how", "in", "is",
+        "it", "of", "on", "or", "the", "to", "used", "using", "what", "when", "where",
+        "which", "who", "why", "with",
+    }
+    terms = [term for term in core.re.findall(r"[A-Za-z0-9_.+-]{3,}", query) if term.lower() not in stop]
+    return terms[:8]
+
+
+def _keyphrase(query: str) -> str:
+    terms = _query_terms(query)
+    return " ".join(terms[:5]) or query
+
+
+def _search_queries(query: str, mode: str) -> list[str]:
+    """Small, deterministic research expansion without an LLM/API."""
+    if mode != "research":
+        return [query]
+    keyphrase = _keyphrase(query)
+    quoted = f'"{keyphrase}"' if keyphrase != query or len(query) <= 80 else query
+    variants = [
+        query,
+        quoted,
+        f'{keyphrase} documentation docs official',
+        f'{keyphrase} github gitlab repository',
+        f'{keyphrase} issue discussion mailing list',
+        f'{keyphrase} example case study',
+    ]
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for variant in variants:
+        key = variant.lower()
+        if key not in seen:
+            seen.add(key)
+            deduped.append(variant)
+    return deduped
+
+
+_SOURCE_TYPE_ALIASES = {
+    "docs": "official_docs",
+    "official_docs": "official_docs",
+    "repo": "repo",
+    "github": "repo",
+    "gitlab": "repo",
+    "issue": "issue_tracker",
+    "issues": "issue_tracker",
+    "issue_tracker": "issue_tracker",
+    "mail": "mailing_list",
+    "mailing_list": "mailing_list",
+    "qa": "qa",
+    "stackoverflow": "qa",
+    "blog": "blog",
+    "pdf": "pdf",
+    "paper": "pdf",
+    "web": "web",
+}
+
+
+def _normalize_source_types(source_types: list[str] | None) -> list[str] | None:
+    if not source_types:
+        return None
+    normalized: list[str] = []
+    for value in source_types:
+        key = value.strip().lower()
+        if not key:
+            continue
+        mapped = _SOURCE_TYPE_ALIASES.get(key)
+        if mapped is None:
+            raise ValueError(f"invalid source_type: {value!r}. Expected one of {sorted(_SOURCE_TYPE_ALIASES)}")
+        if mapped not in normalized:
+            normalized.append(mapped)
+    return normalized or None
+
+
+def _source_boost(source_type: str) -> float:
+    return {
+        "official_docs": 0.06,
+        "repo": 0.05,
+        "issue_tracker": 0.04,
+        "mailing_list": 0.035,
+        "qa": 0.015,
+        "pdf": 0.01,
+        "web": 0.0,
+        "blog": -0.015,
+    }.get(source_type, 0.0)
+
+
+def _matches_source_types(url: str, source_types: list[str] | None) -> bool:
+    return not source_types or _source_type(url) in source_types
+
+
+def _entry_sort_score(eidx: int, entries: list[dict], entry_best: dict[int, float | None]) -> float:
+    return (entry_best.get(eidx) or 0.0) + _source_boost(_source_type(entries[eidx]["url"]))
+
+
+def _diversify_by_source_type(ranked_entry_idxs: list[int], entries: list[dict]) -> list[int]:
+    """Avoid giving small models several same-kind sources before variety."""
+    by_type: dict[str, list[int]] = defaultdict(list)
+    order: list[str] = []
+    for eidx in ranked_entry_idxs:
+        source_type = _source_type(entries[eidx]["url"])
+        if source_type not in by_type:
+            order.append(source_type)
+        by_type[source_type].append(eidx)
+    diversified: list[int] = []
+    while by_type:
+        next_order: list[str] = []
+        for source_type in order:
+            queue = by_type.get(source_type)
+            if not queue:
+                continue
+            diversified.append(queue.pop(0))
+            if queue:
+                next_order.append(source_type)
+            else:
+                by_type.pop(source_type, None)
+        order = next_order
+    return diversified
+
+
+def _brief_from_results(results: list[dict]) -> list[str]:
+    brief: list[str] = []
+    for result in results[:3]:
+        passages = result.get("passages") or []
+        if not passages:
+            continue
+        text = passages[0].get("text", "").replace("\n", " ").strip()
+        if len(text) > 220:
+            text = text[:219].rstrip() + "…"
+        if text:
+            brief.append(f"[{result['rank']}] {text}")
+    return brief
+
+
+def _next_actions(mode: str, degraded: bool, results: list[dict], warnings: list[dict]) -> list[str]:
+    actions: list[str] = []
+    if degraded or any(w.get("type") in {"search_failed", "scrape_failed", "rerank_failed"} for w in warnings):
+        actions.append("Results are degraded; retry or use mode=research for more coverage.")
+    if results:
+        actions.append("Use extract on the best URL if more context is needed.")
+    if mode != "research" and len(results) < 3:
+        actions.append("Use mode=research or broaden the query if coverage is too thin.")
+    return actions[:3]
+
+
+def _limit_passages(passages: list[tuple[str, float]], max_passages: int, max_chars: int) -> list[tuple[str, float]]:
+    kept: list[tuple[str, float]] = []
+    used = 0
+    for text, score in passages:
+        remaining = max_chars - used
+        if remaining <= 0 or len(kept) >= max_passages:
+            break
+        clipped = text if len(text) <= remaining else text[: max(0, remaining - 1)].rstrip() + "…"
+        if clipped:
+            kept.append((clipped, score))
+            used += len(clipped)
+    return kept
+
+
+def _source_type(url: str) -> str:
+    domain = core._domain_from_url(url).lower()
+    path = core.urlparse(url).path.lower()
+    if domain in {"github.com", "gitlab.com", "bitbucket.org", "sourceforge.net"}:
+        if "/issues" in path or "/-/issues" in path:
+            return "issue_tracker"
+        return "repo"
+    if path.endswith(".pdf"):
+        return "pdf"
+    if any(part in domain for part in ("docs.", "readthedocs", "documentation", "developer.")) or any(part in path for part in ("/docs", "/documentation", "/reference", "/api/")):
+        return "official_docs"
+    if any(part in domain for part in ("lists.", "mail.", "mailman", "groups.google")):
+        return "mailing_list"
+    if "stackoverflow.com" in domain or "stackexchange.com" in domain:
+        return "qa"
+    if any(part in domain for part in ("medium.com", "substack.com", "blog")) or "/blog" in path:
+        return "blog"
+    return "web"
+
+
 async def search_impl(
     query: str,
-    num_results: int = 10,
+    num_results: int = 5,
+    mode: str = "deep",
+    max_passages: int | None = None,
+    max_chars_per_result: int | None = None,
+    include_raw_content: bool = False,
+    source_types: list[str] | None = None,
     time_range: str | None = None,
     language: str | None = "en",
     include_domains: list[str] | None = None,
@@ -72,11 +272,19 @@ async def search_impl(
     """
     query = core._validate_query(query)
     num_results = core._validate_positive_int("num_results", num_results, maximum=MAX_RESULTS)
+    mode = core._normalize_search_mode(mode)
     time_range = core._normalize_time_range(time_range)
     language = core._coerce_optional_str(language)
     include_domains = core._normalize_domains(include_domains, field_name="include_domains")
     exclude_domains = core._normalize_domains(exclude_domains, field_name="exclude_domains")
-    scrape_budget = min(num_results, MAX_SCRAPE)
+    source_types = _normalize_source_types(source_types)
+    searx_pages, scrape_budget, default_passages = _search_mode_budget(mode, num_results)
+    max_passages = _validate_optional_positive_int("max_passages", max_passages, maximum=8) or default_passages
+    default_chars = 900 if mode == "fast" else 1800 if mode == "deep" else 3200
+    max_chars_per_result = _validate_optional_positive_int(
+        "max_chars_per_result", max_chars_per_result, maximum=8000
+    ) or default_chars
+    search_queries = _search_queries(query, mode)
     started = time.monotonic()
     warnings: list[dict] = []
     degraded = False
@@ -86,8 +294,9 @@ async def search_impl(
     page_cache = cache_module.page_cache
     searxng_cache = cache_module.searxng_cache
     seen_urls = cache_module.seen_urls
+    semantic_cache = cache_module.semantic_cache
 
-    async def _searxng_cached(pageno: int) -> dict:
+    async def _searxng_cached(search_query: str, pageno: int) -> dict:
         """SearXNG call cached on (query, num_results, time_range, language, pageno).
 
         Filters (include_domains / exclude_domains) are NOT part of the
@@ -100,7 +309,7 @@ async def search_impl(
         """
         key = hashlib.sha256(
             json.dumps(
-                [query.lower().strip(), num_results, time_range, language, pageno],
+                [search_query.lower().strip(), num_results, time_range, language, pageno],
                 sort_keys=True,
             ).encode()
         ).hexdigest()
@@ -114,7 +323,7 @@ async def search_impl(
         _searxng_inflight[key] = fut
         try:
             result = await core._search(
-                query, num_results=num_results, time_range=time_range,
+                search_query, num_results=num_results, time_range=time_range,
                 language=language, pageno=pageno,
             )
             await searxng_cache.set(key, result)
@@ -126,30 +335,32 @@ async def search_impl(
         finally:
             _searxng_inflight.pop(key, None)
 
-    # --- search (page 1, with reactive page-2 fallback on underflow) ---
+    # --- search (mode-aware multi-page retrieval) ---
     search_started = time.monotonic()
     unresponsive_engines: list = []
-    try:
-        page1 = await _searxng_cached(pageno=1)
-    except Exception as exc:
-        degraded = True
-        warnings.append(core._warning("search_failed", "searxng", str(exc)))
-        raw_results: list[dict] = []
-    else:
-        raw_results = page1["results"]
-        unresponsive_engines.extend(page1.get("unresponsive_engines", []))
+    raw_results: list[dict] = []
+    for search_query in search_queries:
+        for pageno in range(1, searx_pages + 1):
+            try:
+                page = await _searxng_cached(search_query, pageno=pageno)
+            except Exception as exc:
+                if not raw_results and pageno == 1:
+                    degraded = True
+                    warnings.append(core._warning("search_failed", "searxng", str(exc)))
+                else:
+                    warnings.append(core._warning("search_failed", "searxng", f"{search_query} page {pageno}: {exc}"))
+                break
+            raw_results.extend(page["results"])
+            unresponsive_engines.extend(page.get("unresponsive_engines", []))
+            filtered_so_far = core._dedup_results(core._filter_results_by_domain(raw_results, include_domains, exclude_domains))
+            if mode == "fast" or (mode == "deep" and len(filtered_so_far) >= num_results):
+                break
+        if mode != "research":
+            break
 
     results = core._dedup_results(core._filter_results_by_domain(raw_results, include_domains, exclude_domains))
-    if raw_results and len(results) < num_results:
-        try:
-            page2 = await _searxng_cached(pageno=2)
-        except Exception as exc:
-            warnings.append(core._warning("search_failed", "searxng", f"page 2: {exc}"))
-        else:
-            raw_results = raw_results + page2["results"]
-            unresponsive_engines.extend(page2.get("unresponsive_engines", []))
-            results = core._dedup_results(core._filter_results_by_domain(raw_results, include_domains, exclude_domains))
-    results = results[:num_results]
+    results = [r for r in results if _matches_source_types(r.get("url", ""), source_types)]
+    results = results[:max(num_results, scrape_budget)]
 
     # Surface per-engine failures from SearXNG (e.g. "google: CAPTCHA").
     # Does NOT flip `degraded` — the multi-engine hedge means a single
@@ -167,9 +378,17 @@ async def search_impl(
             "exclude_domains": exclude_domains,
             "results": [],
             "meta": {
+                "mode": mode,
+                "brief": [],
+                "next_actions": ["No results found; broaden the query or remove filters."],
                 "num_results_requested": num_results,
                 "num_results_returned": 0,
                 "scrape_top": scrape_budget,
+                "max_passages": max_passages,
+                "max_chars_per_result": max_chars_per_result,
+                "search_queries": search_queries,
+                "source_types": source_types,
+                "include_raw_content": include_raw_content,
                 "search_backend": "searxng",
                 "reranker": {"name": "flashrank", "model": RERANK_MODEL},
                 "degraded": degraded,
@@ -217,6 +436,49 @@ async def search_impl(
             "metadata": {},
         })
 
+    # Add recently cached pages for local-memory retrieval. This uses
+    # Valkey as a lightweight semantic cache when enabled, plus page-level
+    # cached entries, reducing repeat web fetches and giving small/local
+    # models better continuity.
+    cached_entries = await asyncio.gather(
+        *(semantic_cache.get(core._normalize_url(r.get("url", ""))) for r in results)
+    )
+    semantic_hits = await semantic.search(query)
+    by_cached_url: dict[str, list[dict]] = defaultdict(list)
+    for hit in semantic_hits:
+        by_cached_url[core._normalize_url(hit["url"])].append(hit)
+    existing_urls = {core._normalize_url(entry["url"]) for entry in entries if entry.get("url")}
+    for normalized, hits in by_cached_url.items():
+        if normalized in existing_urls:
+            continue
+        first = hits[0]
+        url = first["url"]
+        if not _matches_source_types(url, source_types):
+            continue
+        text = _CHUNK_GAP.join(hit["text"] for hit in hits[:max_passages])
+        entries.append({
+            "title": first.get("title", "Untitled"),
+            "url": url,
+            "content": text,
+            "scraped": True,
+            "metadata": first.get("metadata") or {},
+        })
+        existing_urls.add(normalized)
+    for cached in cached_entries:
+        if not cached or not cached.get("content"):
+            continue
+        normalized = core._normalize_url(cached.get("url", ""))
+        if normalized in existing_urls or not _matches_source_types(cached.get("url", ""), source_types):
+            continue
+        entries.append({
+            "title": cached.get("title", "Untitled"),
+            "url": cached.get("url", ""),
+            "content": cached.get("content", ""),
+            "scraped": True,
+            "metadata": cached.get("metadata") or {},
+        })
+        existing_urls.add(normalized)
+
     # --- chunk scraped pages, keep snippets as single chunks ---
     all_chunks: list[str] = []
     chunk_to_entry: list[int] = []
@@ -253,7 +515,7 @@ async def search_impl(
 
     for eidx in entry_chunks:
         entry_chunks[eidx].sort(key=lambda x: x[1], reverse=True)
-        entry_chunks[eidx] = entry_chunks[eidx][:_TOP_CHUNKS]
+        entry_chunks[eidx] = _limit_passages(entry_chunks[eidx], max_passages, max_chars_per_result)
 
     # --- rank pages by best chunk score, drop noise below threshold ---
     entry_best: dict[int, float | None] = {
@@ -262,7 +524,11 @@ async def search_impl(
     if rerank_failed:
         ranked_entry_idxs = list(range(len(entries)))
     else:
-        ranked_entry_idxs = sorted(entry_best, key=entry_best.get, reverse=True)
+        ranked_entry_idxs = sorted(
+            entry_best,
+            key=lambda eidx: _entry_sort_score(eidx, entries, entry_best),
+            reverse=True,
+        )
         for i in range(len(entries)):
             if i not in entry_best:
                 ranked_entry_idxs.append(i)
@@ -283,7 +549,9 @@ async def search_impl(
                 "low_relevance_filtered", "flashrank",
                 f"{noise_count} result(s) dropped below relevance threshold",
             ))
-    ranked_entry_idxs = core._diversify_ranked_entries(ranked_entry_idxs, entries)
+    ranked_entry_idxs = _diversify_by_source_type(
+        core._diversify_ranked_entries(ranked_entry_idxs, entries), entries
+    )[:num_results]
 
     # --- format structured output ---
     structured_results: list[dict] = []
@@ -307,22 +575,32 @@ async def search_impl(
         else:
             content = entry["content"]
 
+        source_type = _source_type(url)
+        passages = [{"text": chunk, "score": score} for chunk, score in top]
         structured = {
             "rank": rank,
             "title": entry["title"],
             "url": url,
             "domain": core._domain_from_url(url),
-            "snippet": results[eidx].get("content", ""),
+            "source_type": source_type,
+            "snippet": results[eidx].get("content", "") if eidx < len(results) else "",
             "content": content,
+            "passages": passages,
+            "highlights": passages,
             "top_chunks": [chunk for chunk, _ in top],
             "scraped": entry["scraped"],
             "previously_seen": previously_seen,
         }
+        if include_raw_content:
+            structured["raw_content"] = entry["content"][:max_chars_per_result]
         metadata = entry.get("metadata") or {}
         if metadata:
             structured["metadata"] = metadata
         structured_results.append(structured)
         new_urls.append(normalized_url)
+
+    brief = _brief_from_results(structured_results)
+    next_actions = _next_actions(mode, degraded, structured_results, warnings)
 
     response = {
         "query": query,
@@ -331,9 +609,17 @@ async def search_impl(
         "exclude_domains": exclude_domains,
         "results": structured_results,
         "meta": {
+            "mode": mode,
+            "brief": brief,
+            "next_actions": next_actions,
             "num_results_requested": num_results,
             "num_results_returned": len(structured_results),
             "scrape_top": to_scrape,
+            "max_passages": max_passages,
+            "max_chars_per_result": max_chars_per_result,
+            "search_queries": search_queries,
+            "source_types": source_types,
+            "include_raw_content": include_raw_content,
             "search_backend": "searxng",
             "reranker": {"name": "flashrank", "model": RERANK_MODEL},
             "degraded": degraded,
@@ -347,8 +633,25 @@ async def search_impl(
 
     # --- persist to shared cache ---
     if new_urls:
+        semantic_writes = []
+        for result in structured_results:
+            if result.get("scraped") and result.get("content"):
+                content_for_cache = result.get("raw_content") or result.get("content")
+                semantic_writes.append(semantic_cache.set(core._normalize_url(result["url"]), {
+                    "url": result["url"],
+                    "title": result["title"],
+                    "domain": result["domain"],
+                    "source_type": result.get("source_type"),
+                    "content": content_for_cache,
+                    "metadata": result.get("metadata") or {},
+                    "updated_at": int(time.time()),
+                }))
+                semantic_writes.append(semantic.index_page(
+                    result["url"], result["title"], content_for_cache, result.get("metadata") or {}
+                ))
         await asyncio.gather(
             *(seen_urls.set(url, 1) for url in new_urls),
+            *semantic_writes,
         )
 
     log.info("query=%r chunks=%d pages=%d", query, len(all_chunks), len(entries))

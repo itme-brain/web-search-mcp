@@ -51,10 +51,13 @@ claude mcp add --transport http web-search http://localhost:8002/mcp
 
 | Tool | Purpose |
 |---|---|
-| `search` | Find sources on the open web |
-| `extract` | Fetch full content for URLs you already have |
-| `map` | Discover URLs on a site (links only, no content) |
-| `crawl` | `map` + `extract` in one call |
+| `search` | Start here for unknown/current facts. Returns ranked sources with evidence passages. |
+| `extract` | Read known URLs in more detail after `search`. |
+| `map` | List URLs on one site; does not read page content. |
+| `research` | Hard/broad questions. Multi-query search, compact brief, cited highlights. |
+| `crawl` | Read several pages from one site/docs tree. |
+
+Small-model agent rule of thumb: use `search` first with `num_results=3..5`; use `extract` only for sources that need more context. Use `mode=fast` for cheap link checks, `mode=deep` by default, and `research` for hard/broad questions. Raise `max_passages`, `max_chars_per_result`, or `include_raw_content` when compact evidence may omit needed context. Use `source_types=["docs","repo"]` to reduce noise.
 
 ## Configuration
 

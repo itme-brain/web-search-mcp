@@ -58,13 +58,22 @@ class DocumentMetadataModel(StrictModel):
     word_count: int | None = None
 
 
+class SearchPassageModel(StrictModel):
+    text: str
+    score: float | None = None
+
+
 class SearchResultModel(StrictModel):
     rank: int
     title: str
     url: str
     domain: str
+    source_type: str | None = None
     snippet: str
     content: str
+    raw_content: str | None = None
+    passages: list[SearchPassageModel] = []
+    highlights: list[SearchPassageModel] = []
     top_chunks: list[str]
     scraped: bool
     previously_seen: bool
@@ -72,9 +81,17 @@ class SearchResultModel(StrictModel):
 
 
 class SearchMetaModel(StrictModel):
+    mode: str = "deep"
+    brief: list[str] = []
+    next_actions: list[str] = []
     num_results_requested: int
     num_results_returned: int
     scrape_top: int
+    max_passages: int | None = None
+    max_chars_per_result: int | None = None
+    search_queries: list[str] = []
+    source_types: list[str] | None = None
+    include_raw_content: bool = False
     search_backend: str
     reranker: RerankerModel
     degraded: bool

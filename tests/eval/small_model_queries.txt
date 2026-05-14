@@ -1,0 +1,8 @@
+# Small-model tool-use smoke cases
+# Expected: search first, extract only for more context, map/crawl only for one-site exploration.
+
+current Python pathlib Path.walk docs
+which projects used reposurgeon for SVN to Git migration
+find FastMCP streamable HTTP client configuration docs
+what changed in Crawl4AI 0.8 release
+site:docs.python.org asyncio TaskGroup cancellation behavior

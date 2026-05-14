@@ -133,7 +133,10 @@ def _format_search_results(response: dict) -> str:
     if response.get("time_range"):
         parts.append(("time_range", response["time_range"]))
     meta = response.get("meta", {})
+    parts.append(("mode", meta.get("mode", "deep")))
     parts.append(("results", str(meta.get("num_results_returned", len(response.get("results", []))))))
+    if meta.get("max_passages"):
+        parts.append(("passages/source", str(meta["max_passages"])))
     header = _render_kv_block(parts)
     warnings = meta.get("warnings", [])
     issues_block = _render_issues_block(
@@ -141,6 +144,12 @@ def _format_search_results(response: dict) -> str:
     )
 
     sections = [header]
+    brief = meta.get("brief") or []
+    if brief:
+        sections.append("brief:\n" + "\n".join(f"- {line}" for line in brief))
+    next_actions = meta.get("next_actions") or []
+    if next_actions:
+        sections.append("next:\n" + "\n".join(f"- {line}" for line in next_actions))
     if issues_block:
         sections.append(issues_block)
     for r in response.get("results", []):
@@ -153,6 +162,9 @@ def _format_search_results(response: dict) -> str:
         domain = r.get("domain")
         if domain:
             meta_parts.append(domain)
+        source_type = r.get("source_type")
+        if source_type:
+            meta_parts.append(f"source: {source_type}")
         metadata = r.get("metadata") or {}
         if isinstance(metadata, dict) and metadata.get("date"):
             meta_parts.append(str(metadata["date"]))
@@ -160,12 +172,26 @@ def _format_search_results(response: dict) -> str:
             meta_parts.append(_rank_band(rank))
         if r.get("scraped") is False and content:
             meta_parts.append("snippet only")
+        else:
+            meta_parts.append("scraped page evidence")
         meta_line = "_{}_".format(" | ".join(meta_parts)) if meta_parts else ""
         section_lines = [f"## {title_prefix}[{title}]({url})"]
         if meta_line:
             section_lines.append(meta_line)
-        if content:
+        passages = r.get("highlights") or r.get("passages") or []
+        if passages:
+            evidence_lines = []
+            for passage in passages:
+                text = passage.get("text", "") if isinstance(passage, dict) else str(passage)
+                score = passage.get("score") if isinstance(passage, dict) else None
+                prefix = f"score {score:.3f}: " if isinstance(score, (int, float)) else ""
+                evidence_lines.append(f"- {prefix}{text}")
+            section_lines.append("\n".join(evidence_lines))
+        elif content:
             section_lines.append(content)
+        raw_content = r.get("raw_content")
+        if raw_content:
+            section_lines.append("raw_content:\n" + raw_content)
         sections.append("---")
         sections.append("\n\n".join(section_lines))
 
