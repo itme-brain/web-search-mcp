@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 import cache as cache_module
-from tests.conftest import FakeContext, server_module
+from tests.conftest import server_module
 
 PATCH_EXTRACT_URL_DOCUMENT = "core._extract_url_document"
 
@@ -11,10 +11,10 @@ PATCH_EXTRACT_URL_DOCUMENT = "core._extract_url_document"
 @pytest.mark.asyncio
 async def test_extract_urls_validates_input():
     with pytest.raises(ValueError, match="urls must not be empty"):
-        await server_module.extract.fn([], ctx=None)
+        await server_module.extract.fn([])
 
     with pytest.raises(ValueError, match="invalid URL"):
-        await server_module.extract.fn(["notaurl"], ctx=None)
+        await server_module.extract.fn(["notaurl"])
 
 
 @pytest.mark.asyncio
@@ -44,7 +44,6 @@ async def test_extract_impl_treats_null_string_query_as_none():
 
 @pytest.mark.asyncio
 async def test_extract_urls_returns_structured_results():
-    fake_ctx = FakeContext()
     extract_mock = AsyncMock(side_effect=[
         {
             "status": "ok",
@@ -56,7 +55,7 @@ async def test_extract_urls_returns_structured_results():
             "cached": False,
         },
         {
-            "status": "handoff",
+            "status": "unsupported",
             "url": "https://example.com/file.pdf",
             "content_type": "application/pdf",
             "file_type": "pdf",
@@ -64,10 +63,7 @@ async def test_extract_urls_returns_structured_results():
             "content": "",
             "top_chunks": [],
             "cached": True,
-            "handoff": {
-                "handler": "files",
-                "reason": "pdf extraction is delegated to the files MCP",
-            },
+            "error": "local pdf extraction is not supported yet",
         },
     ])
 
@@ -75,16 +71,16 @@ async def test_extract_urls_returns_structured_results():
         payload = await server_module.extract_impl(
             urls=["https://example.com/page", "https://example.com/file.pdf"],
             query="example query",
-            ctx=fake_ctx,
+            
         )
 
     assert payload["query"] == "example query"
     assert payload["meta"]["urls_requested"] == 2
-    assert payload["meta"]["urls_succeeded"] == 2
-    assert payload["meta"]["urls_failed"] == 0
+    assert payload["meta"]["urls_succeeded"] == 1
+    assert payload["meta"]["urls_failed"] == 1
     assert payload["results"][0]["status"] == "ok"
     assert payload["results"][0]["content_type"] == "text/html"
-    assert payload["results"][1]["status"] == "handoff"
+    assert payload["results"][1]["status"] == "unsupported"
     assert payload["results"][1]["content_type"] == "application/pdf"
     assert payload["results"][1]["cached"] is True
 
@@ -126,9 +122,8 @@ async def test_extract_urls_reports_partial_failures():
 
 @pytest.mark.asyncio
 async def test_extract_urls_single_url_returns_markdown():
-    fake_ctx = FakeContext()
     extract_mock = AsyncMock(return_value={
-        "status": "handoff",
+        "status": "unsupported",
         "url": "https://example.com/file.docx",
         "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "file_type": "docx",
@@ -136,24 +131,21 @@ async def test_extract_urls_single_url_returns_markdown():
         "content": "",
         "top_chunks": [],
         "cached": False,
-        "handoff": {
-            "handler": "files",
-            "reason": "docx extraction is delegated to the files MCP",
-        },
+        "error": "local docx extraction is not supported yet",
     })
 
     with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
         payload = await server_module.extract.fn(
             ["https://example.com/file.docx"],
             query="example query",
-            ctx=fake_ctx,
+            
         )
     payload_text = payload.content[0].text
 
     assert "example query" in payload_text
     assert "https://example.com/file.docx" in payload_text
-    assert "`files` MCP" in payload_text
-    assert "docx extraction is delegated" in payload_text
+    assert "Unsupported" in payload_text
+    assert "local docx extraction is not supported" in payload_text
 
 
 @pytest.mark.asyncio
@@ -174,7 +166,7 @@ async def test_single_extract_markdown_omits_redundant_success_header():
     })
 
     with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
-        payload = await server_module.extract.fn(["https://example.com/page"], ctx=None)
+        payload = await server_module.extract.fn(["https://example.com/page"])
 
     payload_text = payload.content[0].text
     assert not payload_text.startswith("succeeded:")
@@ -182,7 +174,7 @@ async def test_single_extract_markdown_omits_redundant_success_header():
 
 
 @pytest.mark.asyncio
-async def test_extract_url_document_handoffs_binary_file_types():
+async def test_extract_url_document_reports_unsupported_binary_file_types():
     with patch("core._detect_file_type", AsyncMock(return_value=("pdf", "application/pdf"))):
         result = await server_module._extract_url_document(
             "https://example.com/manual.pdf",
@@ -190,26 +182,23 @@ async def test_extract_url_document_handoffs_binary_file_types():
             cache=cache_module.page_cache,
         )
 
-    assert result["status"] == "handoff"
+    assert result["status"] == "unsupported"
     assert result["file_type"] == "pdf"
-    assert result["handoff"]["handler"] == "files"
+    assert "local pdf extraction" in result["error"]
     assert result["content"] == ""
 
 
 @pytest.mark.asyncio
-async def test_extract_cache_hit_preserves_handoff_metadata():
+async def test_extract_cache_hit_preserves_unsupported_metadata():
     await cache_module.page_cache.set("https://example.com/manual.pdf", {
-        "status": "handoff",
+        "status": "unsupported",
         "url": "https://example.com/manual.pdf",
         "content_type": "application/pdf",
         "file_type": "pdf",
         "title": None,
         "content": "",
         "total_chars": 0,
-        "handoff": {
-            "handler": "files",
-            "reason": "pdf extraction is delegated to the files MCP",
-        },
+        "error": "local pdf extraction is not supported yet",
     })
 
     result = await server_module._extract_url_document(
@@ -217,12 +206,12 @@ async def test_extract_cache_hit_preserves_handoff_metadata():
     )
 
     assert result["cached"] is True
-    assert result["status"] == "handoff"
+    assert result["status"] == "unsupported"
     assert result["file_type"] == "pdf"
-    assert result["handoff"]["handler"] == "files"
+    assert "local pdf extraction" in result["error"]
 
 
-def test_guess_file_type_supports_handoff_and_text_formats():
+def test_guess_file_type_supports_binary_and_text_formats():
     assert server_module._guess_file_type(
         "https://example.com/file.docx",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -313,7 +302,7 @@ async def test_sniff_content_type_bails_when_range_is_ignored():
 
 
 @pytest.mark.asyncio
-async def test_extract_url_document_handoffs_unknown_types_by_default():
+async def test_extract_url_document_reports_unknown_types_unsupported_by_default():
     with patch("core._detect_file_type", AsyncMock(return_value=("unknown", "application/octet-stream"))):
         result = await server_module._extract_url_document(
             "https://example.com/blob.bin",
@@ -321,9 +310,9 @@ async def test_extract_url_document_handoffs_unknown_types_by_default():
             cache=cache_module.page_cache,
         )
 
-    assert result["status"] == "handoff"
+    assert result["status"] == "unsupported"
     assert result["file_type"] == "unknown"
-    assert result["handoff"]["handler"] == "files"
+    assert "local unknown extraction" in result["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -448,8 +437,8 @@ async def test_success_entries_get_default_ttl():
     client = cache_module._get_client()
     ttl_seconds = await client.ttl(f"ws:page:{normalized}")
     assert ttl_seconds > cache_module.FAILURE_TTL_S
-    # And under the default to account for any small elapsed time.
-    assert ttl_seconds <= 3600
+    # And under the page-cache default to account for any small elapsed time.
+    assert ttl_seconds <= cache_module.PAGE_CACHE_TTL_S
 
 
 @pytest.mark.asyncio

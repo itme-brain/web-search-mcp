@@ -23,12 +23,6 @@ import httpx
 from datasketch import MinHash, MinHashLSH
 from langchain_text_splitters import MarkdownTextSplitter
 import magic
-# Kept available even though no current consumer uses it — markdown-it-py
-# is already installed as a transitive dep through mdformat, and any
-# future feature that wants structured access to our markdown (section
-# extraction, AST-aware formatting) should use this parser rather than
-# hand-rolled regex.
-from markdown_it import MarkdownIt  # noqa: F401
 from rapidfuzz import fuzz
 import tldextract
 import trafilatura
@@ -71,7 +65,6 @@ RERANK_MODEL = settings.rerank_model
 REQUEST_TIMEOUT = settings.request_timeout
 MAX_RESULTS = settings.max_results
 MAX_SCRAPE = settings.max_scrape
-SEARCH_MODES = frozenset({"fast", "deep", "research"})
 
 
 # ---------------------------------------------------------------------------
@@ -333,16 +326,6 @@ def _coerce_optional_str(value: str | None) -> str | None:
     return stripped
 
 
-def _normalize_search_mode(mode: str | None) -> str:
-    coerced = _coerce_optional_str(mode)
-    if coerced is None:
-        return "deep"
-    normalized = coerced.lower()
-    if normalized not in SEARCH_MODES:
-        raise ValueError(f"invalid mode: {mode!r}. Expected one of {sorted(SEARCH_MODES)}")
-    return normalized
-
-
 def _normalize_time_range(time_range: str | None) -> str | None:
     coerced = _coerce_optional_str(time_range)
     if coerced is None:
@@ -417,7 +400,11 @@ def _reject_non_public_target(hostname: str | None, *, url: str) -> None:
 
     try:
         resolved = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
-    except socket.gaierror:
+    except OSError:
+        # Treat DNS/OS resolver failures as non-actionable here. The
+        # actual fetch layer will surface connection failures; this guard
+        # exists only to reject targets that definitely resolve to private
+        # or reserved address space.
         return
 
     for family, _, _, _, sockaddr in resolved:
@@ -642,13 +629,46 @@ def _content_hash(content: str) -> str:
     return "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
-def _build_document_metadata(html: str | None, content: str | None) -> dict:
+def _extract_canonical_url(html: str | None) -> str | None:
+    if not html:
+        return None
+    match = re.search(r'<link[^>]+rel=["\']canonical["\'][^>]+href=["\']([^"\']+)["\']', html, re.IGNORECASE)
+    return match.group(1).strip() if match else None
+
+
+def _detect_language(content: str | None) -> str | None:
+    """Tiny no-dependency language hint for diagnostics, not ranking."""
+    if not content:
+        return None
+    sample = content[:4000]
+    ascii_letters = sum(1 for ch in sample if ch.isascii() and ch.isalpha())
+    letters = sum(1 for ch in sample if ch.isalpha())
+    if letters and ascii_letters / letters > 0.85:
+        return "en"
+    return None
+
+
+def _build_document_metadata(
+    html: str | None,
+    content: str | None,
+    *,
+    requested_url: str | None = None,
+    final_url: str | None = None,
+) -> dict:
     """Citation metadata for the response. Structural info (headings,
     code blocks, links) is intentionally not duplicated here — it's
     already present inline in the markdown body the LLM receives."""
     metadata = _extract_html_metadata(html)
+    canonical_url = _extract_canonical_url(html)
+    if canonical_url:
+        metadata["canonical_url"] = urljoin(final_url or requested_url or "", canonical_url)
+    if final_url and requested_url and _normalize_url(final_url) != _normalize_url(requested_url):
+        metadata["final_url"] = final_url
     if content:
         metadata["word_count"] = len(content.split())
+        language = _detect_language(content)
+        if language:
+            metadata["language"] = language
     return {k: v for k, v in metadata.items() if v is not None}
 
 
@@ -972,10 +992,13 @@ async def _scrape_impl(url: str) -> dict:
 
         result = _extract_crawl_result(data)
         content = _extract_markdown(result)
+        final_url = result.get("url") if isinstance(result.get("url"), str) else url
         return {
             "content": content,
             "title": _extract_crawl_title(result),
-            "metadata": _build_document_metadata(result.get("html"), content),
+            "metadata": _build_document_metadata(
+                result.get("html"), content, requested_url=url, final_url=final_url,
+            ),
         }
 
 
@@ -1016,6 +1039,22 @@ _LOGIN_WALL_RE = re.compile(
 )
 _LOGIN_WALL_MIN_HITS = 3
 _LOGIN_WALL_MAX_WORDS = 400
+_CAPTCHA_RE = re.compile(r"\b(captcha|robot check|verify you are human|unusual traffic|automated queries)\b", re.IGNORECASE)
+_PAYWALL_RE = re.compile(r"\b(subscribe to continue|subscription required|paywall|members only|sign in to continue)\b", re.IGNORECASE)
+
+
+def _content_diagnostic(content: str | None) -> str | None:
+    if not content:
+        return None
+    if _CAPTCHA_RE.search(content):
+        return "captcha_or_bot_check"
+    if _PAYWALL_RE.search(content):
+        return "paywall_or_subscription_wall"
+    if _is_login_wall(content):
+        return "login_wall"
+    if len(content.split()) < _MIN_CACHE_WORDS:
+        return "content_too_short"
+    return None
 
 
 def _is_login_wall(content: str | None) -> bool:
@@ -1053,22 +1092,21 @@ async def _scrape_cached(url: str, cache: KVCache) -> dict:
         return existing
     result = await _scrape(url)
     content = result.get("content")
-    # Length floor — only applied at speculative write time, not on user-
-    # directed extract (which wants whatever it asked for).
-    if content and len(content.split()) < _MIN_CACHE_WORDS:
-        content = None
-    # Login wall gate — only on speculative scrapes. A user-directed
-    # extract that explicitly points at e.g. a Facebook URL still gets
-    # whatever came back; search/crawl fall back to the SearXNG snippet
-    # so auth chrome doesn't crowd out a real result.
-    if _is_login_wall(content):
-        log.info("scrape returned login wall url=%s", url)
+    metadata = result.get("metadata") or {}
+    # Length/auth/CAPTCHA/paywall gates — only applied at speculative
+    # write time, not on user-directed extract (which wants whatever it
+    # asked for). Search/crawl fall back to snippets so walls don't crowd
+    # out real results.
+    diagnostic = _content_diagnostic(content)
+    if diagnostic:
+        log.info("scrape rejected url=%s reason=%s", url, diagnostic)
+        metadata = {**metadata, "diagnostic": diagnostic}
         content = None
     entry = _page_entry(
         url=url,
         content=content,
         title=result.get("title"),
-        metadata=result.get("metadata") or {},
+        metadata=metadata,
     )
     await _page_set(url, entry, cache)
     return entry
@@ -1144,7 +1182,6 @@ def _page_entry(
     metadata: dict,
     content_type: str = "text/html",
     file_type: str = "html",
-    handoff: dict | None = None,
     status: str | None = None,
 ) -> dict:
     """Construct a unified page-cache envelope.
@@ -1164,7 +1201,6 @@ def _page_entry(
         "content": content,
         "total_chars": len(content) if content else 0,
         "metadata": metadata,
-        "handoff": handoff,
     }
     # Internal-only field: content fingerprint used by _page_set /
     # _page_get for exact-dupe aliasing. Prefixed with '_' so it never
@@ -1232,14 +1268,14 @@ async def _detect_file_type(url: str) -> tuple[str, str | None]:
 
 
 # ---------------------------------------------------------------------------
-# Per-file-type extractors / handoff
+# Per-file-type extractors
 # ---------------------------------------------------------------------------
 _LOCAL_EXTRACT_TYPES = {"text", "markdown", "json", "yaml", "xml", "csv"}
 
 
-def _handoff_file_document(url: str, file_type: str, content_type: str | None) -> dict:
+def _unsupported_file_document(url: str, file_type: str, content_type: str | None) -> dict:
     return {
-        "status": "handoff",
+        "status": "unsupported",
         "url": url,
         "content_type": content_type,
         "file_type": file_type,
@@ -1247,10 +1283,7 @@ def _handoff_file_document(url: str, file_type: str, content_type: str | None) -
         "content": "",
         "total_chars": 0,
         "metadata": {},
-        "handoff": {
-            "handler": "files",
-            "reason": f"{file_type} extraction is delegated to the files MCP",
-        },
+        "error": f"local {file_type} extraction is not supported yet",
     }
 
 
@@ -1436,7 +1469,7 @@ async def _extract_url_document(
         elif file_type in _LOCAL_EXTRACT_TYPES:
             extracted = await _extract_text_document(url, file_type)
         else:
-            extracted = _handoff_file_document(url, file_type, content_type)
+            extracted = _unsupported_file_document(url, file_type, content_type)
     except Exception as exc:
         extracted = {
             "status": "error",
@@ -1450,9 +1483,9 @@ async def _extract_url_document(
             "error": str(exc),
         }
 
-    if extracted["status"] in {"ok", "handoff"}:
-        # Cache successful local extracts and file handoffs so repeated
-        # calls do not re-sniff/reclassify the same resource.
+    if extracted["status"] == "ok":
+        # Cache successful local extracts so repeated calls do not
+        # re-sniff/reclassify the same resource.
         raw = extracted.get("content", "")
         total_chars = extracted.get("total_chars", len(raw))
         cached_entry = _page_entry(
@@ -1462,7 +1495,6 @@ async def _extract_url_document(
             metadata=extracted.get("metadata") or {},
             content_type=extracted.get("content_type") or "text/html",
             file_type=extracted.get("file_type") or "html",
-            handoff=extracted.get("handoff"),
             status=extracted["status"],
         )
         # Preserve the upstream's total_chars (e.g. local text documents

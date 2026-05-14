@@ -5,14 +5,14 @@ Named caches:
 - `searxng_cache`   — raw SearXNG responses keyed on (query, time_range,
                       language, pageno). Filter-agnostic; filters apply
                       at response-shaping time.
-- `seen_urls`       — previously-returned URLs for the `previously_seen`
+- `seen_urls`       — recently-returned URLs for the `seen_recently`
                       flag on search results.
 - `content_alias`   — content_hash → canonical URL, for exact-dupe
                       aliasing inside page_cache.
 
 They replace the per-session in-memory `cachetools.TTLCache` trio that
 used to hang off FastMCP Context state. A single connection pool backs
-them all; keys are prefixed per-cache and carry a 3600 s TTL.
+them all; keys are prefixed per-cache and carry sane default TTLs.
 
 Valkey is an internal compose service alongside searxng and crawl4ai. If
 the stack is up, Valkey is up — there is no in-request fallback path.
@@ -34,17 +34,27 @@ import redis.asyncio as _resp_client
 
 
 _DEFAULT_URL = "redis://valkey:6379/0"
-# Single operator-tunable TTL applied to every cache (page, searxng,
-# seen_urls, content_alias). Set `CACHE_TTL_S=0` to run caches as
-# no-ops — every request goes upstream fresh. Kept off the LLM-facing
-# tool schema deliberately; this is an ops knob, not a prompt knob.
-_DEFAULT_TTL_S = int(os.environ.get("CACHE_TTL_S", "3600"))
+def _ttl_env(name: str, default: int) -> int:
+    """Read an optional TTL env var, falling back to a sane default."""
+    return int(os.environ.get(name, str(default)))
+
+
+# CACHE_TTL_S remains the coarse global default. Per-cache TTL env vars
+# are optional overrides for operators who want fresher SearXNG results
+# but longer-lived page/semantic caches. Set CACHE_TTL_S=0 to run all
+# caches as no-ops unless a per-cache override is explicitly set.
+_DEFAULT_TTL_S = _ttl_env("CACHE_TTL_S", 3600)
+SEARXNG_CACHE_TTL_S = _ttl_env("SEARXNG_CACHE_TTL_S", min(_DEFAULT_TTL_S, 900) if _DEFAULT_TTL_S else 0)
+PAGE_CACHE_TTL_S = _ttl_env("PAGE_CACHE_TTL_S", max(_DEFAULT_TTL_S, 86400) if _DEFAULT_TTL_S else 0)
+SEEN_URL_TTL_S = _ttl_env("SEEN_URL_TTL_S", _DEFAULT_TTL_S)
+CONTENT_ALIAS_TTL_S = _ttl_env("CONTENT_ALIAS_TTL_S", PAGE_CACHE_TTL_S)
+SEMANTIC_CACHE_TTL_S = _ttl_env("SEMANTIC_CACHE_TTL_S", PAGE_CACHE_TTL_S)
 # Short TTL for failed / rejected page entries. Long enough to prevent
 # immediate retry thrash on bad URLs, short enough that a transient
 # upstream failure (CAPTCHA, 5xx, brief timeout) can recover in under a
-# minute instead of being locked out for an hour. Clamped to the global
-# TTL so CACHE_TTL_S=0 disables failure caching too.
-FAILURE_TTL_S = min(60, _DEFAULT_TTL_S) if _DEFAULT_TTL_S else 0
+# minute instead of being locked out for an hour. Clamped to the page
+# cache TTL so disabling page caching disables failure caching too.
+FAILURE_TTL_S = min(60, PAGE_CACHE_TTL_S) if PAGE_CACHE_TTL_S else 0
 
 _client: _resp_client.Redis | None = None
 
@@ -150,22 +160,22 @@ class KVCache:
 # Single source of truth per page. The scrape path and the extract path
 # both read/write here with the same envelope shape so a scrape by
 # `search` is an immediate hit for a later `extract` on the same URL.
-page_cache = KVCache("ws:page")
+page_cache = KVCache("ws:page", ttl=PAGE_CACHE_TTL_S)
 # Raw SearXNG responses keyed on (query, time_range, language, pageno) —
 # no filter params. Filters are applied at response-shaping time so a
 # query cached with no filters can still serve a follow-up that adds an
 # include_domains constraint without a cache miss.
-searxng_cache = KVCache("ws:searxng")
+searxng_cache = KVCache("ws:searxng", ttl=SEARXNG_CACHE_TTL_S)
 # Stored as individual keys rather than a set so each URL carries its
 # own TTL, matching the per-entry expiry TTLCache used to give us.
-seen_urls = KVCache("ws:seen")
+seen_urls = KVCache("ws:seen", ttl=SEEN_URL_TTL_S)
 # content_hash → canonical normalized URL. When two URLs scrape byte-
 # identical content we write only one full entry and alias the rest
 # through this map. See core._page_set / core._page_get.
-content_alias = KVCache("ws:content")
+content_alias = KVCache("ws:content", ttl=CONTENT_ALIAS_TTL_S)
 # Lightweight local retrieval index entries. Stored in Valkey as
 # normalized_url -> {url,title,domain,source_type,content,metadata,updated_at}.
 # Search can re-rank cached pages alongside live SearXNG candidates to
 # reduce repeat scraping and approximate a local semantic memory without
 # adding a vector database dependency.
-semantic_cache = KVCache("ws:semantic")
+semantic_cache = KVCache("ws:semantic", ttl=SEMANTIC_CACHE_TTL_S)

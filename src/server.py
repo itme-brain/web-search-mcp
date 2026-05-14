@@ -32,12 +32,12 @@ from formatters import (
 )
 # Re-export the four impls as server-level attributes so `from server
 # import search_impl` still works for Python scripters.
-from impls import crawl_impl, extract_impl, map_impl, search_impl  # noqa: F401
+from impls import crawl_impl, extract_impl, map_impl, research_impl, search_impl  # noqa: F401
 
 
 mcp = FastMCP("Web Search", version="0.3.2")
 
-__all__ = ["mcp", "search_impl", "extract_impl", "map_impl", "crawl_impl"]
+__all__ = ["mcp", "search_impl", "research_impl", "extract_impl", "map_impl", "crawl_impl"]
 
 
 def _semantic_status() -> dict:
@@ -50,6 +50,10 @@ def _semantic_status() -> dict:
         "enabled": semantic.ENABLED,
         "model": semantic.MODEL_NAME,
         "device": semantic.DEVICE,
+        "top_k": semantic.TOP_K,
+        "max_scan": semantic.MAX_SCAN,
+        "min_score": semantic.MIN_SCORE,
+        "max_chunks_per_page": semantic.MAX_CHUNKS_PER_PAGE,
     }
 
 
@@ -75,10 +79,11 @@ async def metrics(_: Request) -> JSONResponse:
 
     Plain INCR counters; no TTL. Reset by flushing Valkey.
     """
-    page, searxng, seen = await asyncio.gather(
+    page, searxng, seen, semantic_cache = await asyncio.gather(
         cache.page_cache.stats(),
         cache.searxng_cache.stats(),
         cache.seen_urls.stats(),
+        __import__("semantic").stats(),
     )
     return JSONResponse({
         "caches": {
@@ -86,6 +91,7 @@ async def metrics(_: Request) -> JSONResponse:
             "searxng": searxng,
             "seen_urls": seen,
         },
+        "semantic_cache": semantic_cache,
     })
 
 
@@ -107,7 +113,7 @@ async def ready(_: Request) -> JSONResponse:
             "crawl4ai": crawl4ai,
             "valkey": valkey,
             "reranker": {"status": "ok", "name": "flashrank", "model": RERANK_MODEL},
-            "semantic_index": _semantic_status(),
+            "semantic_cache": _semantic_status(),
         },
     }
     return JSONResponse(payload, status_code=200 if ready_ok else 503)
@@ -120,45 +126,27 @@ async def ready(_: Request) -> JSONResponse:
 async def search(
     query: str,
     num_results: int = 5,
-    mode: str = "deep",
-    max_passages: int | None = None,
-    max_chars_per_result: int | None = None,
-    include_raw_content: bool = False,
-    source_types: list[str] | None = None,
     time_range: str | None = None,
-    language: str | None = "en",
     include_domains: list[str] | None = None,
     exclude_domains: list[str] | None = None,
     ctx: Context | None = None,
- ) -> ToolResult:
-    """Find answer-ready web sources. Use first for unknown/current facts.
+) -> ToolResult:
+    """Find web sources with compact evidence. Use first.
 
     Args:
         query: Plain search text; use `site:domain.com` to limit a site.
-        num_results: Sources to return. Use 3-5 normally; 10+ only for broad research.
-        mode: `fast`=links/snippets, `deep`=default evidence, `research`=more sources/slower.
-        max_passages: Evidence passages per source. Default: fast 1, deep 2, research 4.
-        max_chars_per_result: Evidence char cap per source. Raise if reranking may miss context.
-        include_raw_content: Also return larger cleaned page text, capped by max_chars_per_result.
-        source_types: Keep source kinds: docs, repo, issue, mailing_list, qa, blog, web.
+        num_results: Sources to return. Use 3-5 normally.
         time_range: Optional: `day`, `week`, `month`, or `year`.
-        language: Optional language code. Use `None` for any language.
         include_domains: Keep only these bare domains.
         exclude_domains: Drop these bare domains.
     """
     response = await impls.search_impl(
         query=query,
         num_results=num_results,
-        mode=mode,
-        max_passages=max_passages,
-        max_chars_per_result=max_chars_per_result,
-        include_raw_content=include_raw_content,
-        source_types=source_types,
+        profile="search",
         time_range=time_range,
-        language=language,
         include_domains=include_domains,
         exclude_domains=exclude_domains,
-        ctx=ctx,
     )
     return _tool_result(response, _format_search_results)
 
@@ -167,18 +155,16 @@ async def search(
 async def extract(
     urls: list[str],
     query: str | None = None,
-    chunk_ids: list[int] | None = None,
     ctx: Context | None = None,
 ) -> ToolResult:
-    """Read known URLs. Use after search when a source needs more detail.
+    """Read known URLs. Use after search for more context.
 
     Args:
         urls: URL list, even for one URL.
-        query: Return chunks relevant to this question.
-        chunk_ids: Return exact chunks from an earlier extract response.
+        query: Optional focus question for relevant chunks.
     """
     response = await impls.extract_impl(
-        urls=urls, query=query, chunk_ids=chunk_ids, ctx=ctx,
+        urls=urls, query=query, chunk_ids=None,
     )
     return _tool_result(response, _format_extract_results)
 
@@ -187,19 +173,17 @@ async def extract(
 async def map(
     url: str,
     max_urls: int = 25,
-    include_patterns: list[str] | None = None,
 ) -> ToolResult:
-    """List URLs on a site without reading pages. Use to find docs/pages.
+    """List URLs on one site. Does not read page content.
 
     Args:
         url: Site/root URL.
         max_urls: URLs to return, 1-50.
-        include_patterns: Optional URL globs to keep, e.g. `*docs*`.
     """
     response = await impls.map_impl(
         url=url,
         max_urls=max_urls,
-        include_patterns=include_patterns,
+        include_patterns=None,
     )
     return _tool_result(response, _format_map_results)
 
@@ -208,28 +192,23 @@ async def map(
 async def research(
     query: str,
     num_results: int = 8,
-    max_passages: int | None = None,
-    max_chars_per_result: int | None = None,
+    time_range: str | None = None,
     source_types: list[str] | None = None,
     ctx: Context | None = None,
 ) -> ToolResult:
-    """Hard web research. Slower search with more sources and compact brief.
+    """Broader/slower search for hard questions.
 
     Args:
         query: Research question.
         num_results: Sources to return. Default 8.
-        max_passages: Evidence passages per source. Default 4.
-        max_chars_per_result: Evidence char cap per source.
-        source_types: Optional source kinds to keep.
+        time_range: Optional: `day`, `week`, `month`, or `year`.
+        source_types: Optional kinds to keep: docs, repo, issue, mailing_list, qa, blog, web.
     """
-    response = await impls.search_impl(
+    response = await impls.research_impl(
         query=query,
         num_results=num_results,
-        mode="research",
-        max_passages=max_passages,
-        max_chars_per_result=max_chars_per_result,
+        time_range=time_range,
         source_types=source_types,
-        ctx=ctx,
     )
     return _tool_result(response, _format_search_results)
 
@@ -237,22 +216,20 @@ async def research(
 @mcp.tool(output_schema=models.CrawlResponseModel.model_json_schema())
 async def crawl(
     url: str,
-    max_urls: int = 10,
-    include_patterns: list[str] | None = None,
     query: str | None = None,
+    max_urls: int = 10,
 ) -> ToolResult:
-    """Read several pages from one site. Use for docs/tutorial sections.
+    """Read several pages from one site/docs tree.
 
     Args:
         url: Site/root URL.
+        query: Optional focus question for ranking pages/chunks.
         max_urls: Pages to read, 1-20.
-        include_patterns: Optional URL globs to keep.
-        query: If set, rank pages/chunks by relevance.
     """
     response = await impls.crawl_impl(
         url=url,
         max_urls=max_urls,
-        include_patterns=include_patterns,
+        include_patterns=None,
         query=query,
     )
     return _tool_result(response, _format_crawl_results)

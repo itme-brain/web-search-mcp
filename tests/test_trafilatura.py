@@ -129,11 +129,11 @@ class TestDocumentMetadata:
     def test_build_document_metadata_adds_word_count(self):
         with patch("core.trafilatura.extract_metadata", return_value=self._doc()):
             metadata = server_module._build_document_metadata("<html/>", "one two three four five")
-        assert metadata == {"word_count": 5}
+        assert metadata == {"word_count": 5, "language": "en"}
 
     def test_build_document_metadata_strips_none_fields(self):
         metadata = server_module._build_document_metadata(None, "one two three")
-        assert metadata == {"word_count": 3}
+        assert metadata == {"word_count": 3, "language": "en"}
 
     def test_build_document_metadata_keeps_populated_fields(self):
         doc = self._doc(author="Alice", date="2024-03-01")
@@ -143,6 +143,7 @@ class TestDocumentMetadata:
             "author": "Alice",
             "date": "2024-03-01",
             "word_count": 2,
+            "language": "en",
         }
 
     def test_build_document_metadata_does_not_duplicate_structure_already_in_markdown(self):

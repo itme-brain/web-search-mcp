@@ -19,9 +19,8 @@ PATCH_EXTRACT_IMPL = "impls.extract_impl"
 # (normalized_url / search_rank / score were trimmed from the response
 # entirely — they're internal bookkeeping, not agent-facing data.)
 _LEAKY_FIELDS = [
-    "previously_seen",
+    "seen_recently",
     "cached",
-    "top_chunks",
 ]
 
 
@@ -45,14 +44,14 @@ async def test_search_dict_carries_full_structured_fields():
         patch(PATCH_SCRAPE, scrape_mock),
         patch(PATCH_RERANK, rerank_mock),
     ):
-        payload = await server_module.search_impl("test", num_results=2, ctx=None)
+        payload = await server_module.search_impl("test", num_results=2)
 
     first = payload["results"][0]
-    # search dict carries these for scripting access
-    for field in ["previously_seen", "top_chunks", "scraped"]:
+    # search dict carries compact scripting metadata without duplicate chunk fields.
+    for field in ["seen_recently", "scraped", "passages"]:
         assert field in first, f"dict should carry {field} for scripting access"
-    # top_chunks is a flat list[str] now — the LLM reads ordering as relevance.
-    assert all(isinstance(c, str) for c in first["top_chunks"])
+    assert "top_chunks" not in first
+    assert "highlights" not in first
 
 
 @pytest.mark.asyncio
@@ -66,7 +65,7 @@ async def test_search_markdown_does_not_leak_metadata_fields():
         patch(PATCH_SCRAPE, scrape_mock),
         patch(PATCH_RERANK, rerank_mock),
     ):
-        markdown = await server_module.search.fn("test", ctx=None)
+        markdown = await server_module.search.fn("test")
 
     for field in _LEAKY_FIELDS:
         assert f"{field}:" not in markdown, (

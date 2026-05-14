@@ -39,11 +39,6 @@ class RerankerModel(StrictModel):
     model: str
 
 
-class HandoffModel(StrictModel):
-    handler: str
-    reason: str
-
-
 class DocumentMetadataModel(StrictModel):
     """Citation metadata that accompanies a page response.
 
@@ -56,6 +51,10 @@ class DocumentMetadataModel(StrictModel):
     site_name: str | None = None
     description: str | None = None
     word_count: int | None = None
+    language: str | None = None
+    canonical_url: str | None = None
+    final_url: str | None = None
+    diagnostic: str | None = None
 
 
 class SearchPassageModel(StrictModel):
@@ -71,18 +70,19 @@ class SearchResultModel(StrictModel):
     source_type: str | None = None
     snippet: str
     content: str
-    raw_content: str | None = None
     passages: list[SearchPassageModel] = []
-    highlights: list[SearchPassageModel] = []
-    top_chunks: list[str]
     scraped: bool
-    previously_seen: bool
+    seen_recently: bool
     metadata: DocumentMetadataModel | None = None
 
 
 class SearchMetaModel(StrictModel):
-    mode: str = "deep"
+    profile: str = "search"
     brief: list[str] = []
+    findings: list[str] = []
+    answer: list[str] = []
+    key_evidence: list[str] = []
+    gaps: list[str] = []
     next_actions: list[str] = []
     num_results_requested: int
     num_results_returned: int
@@ -91,7 +91,6 @@ class SearchMetaModel(StrictModel):
     max_chars_per_result: int | None = None
     search_queries: list[str] = []
     source_types: list[str] | None = None
-    include_raw_content: bool = False
     search_backend: str
     reranker: RerankerModel
     degraded: bool
@@ -125,7 +124,6 @@ class ExtractResultModel(StrictModel):
     chunks: list[ChunkSpecModel] = []
     cached: bool
     error: str | None = None
-    handoff: HandoffModel | None = None
     metadata: DocumentMetadataModel | None = None
 
 

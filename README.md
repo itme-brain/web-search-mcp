@@ -54,10 +54,10 @@ claude mcp add --transport http web-search http://localhost:8002/mcp
 | `search` | Start here for unknown/current facts. Returns ranked sources with evidence passages. |
 | `extract` | Read known URLs in more detail after `search`. |
 | `map` | List URLs on one site; does not read page content. |
-| `research` | Hard/broad questions. Multi-query search, compact brief, cited highlights. |
+| `research` | Hard/broad questions. Multi-query search, compact brief, cited evidence. |
 | `crawl` | Read several pages from one site/docs tree. |
 
-Small-model agent rule of thumb: use `search` first with `num_results=3..5`; use `extract` only for sources that need more context. Use `mode=fast` for cheap link checks, `mode=deep` by default, and `research` for hard/broad questions. Raise `max_passages`, `max_chars_per_result`, or `include_raw_content` when compact evidence may omit needed context. Use `source_types=["docs","repo"]` to reduce noise.
+Small-model agent rule of thumb: use `search` first with `num_results=3..5`; use `extract` only for sources that need more context. Use `research` for hard/broad/current questions. Use `map` to plan a docs/site read, then `crawl` a small tree. Use `site:domain.com terms` in `search` for focused docs/site lookup. The MCP tools expose few knobs on purpose; retrieval depth, passage limits, and raw-content fallbacks are sane internal defaults.
 
 ## Configuration
 

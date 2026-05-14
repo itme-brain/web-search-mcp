@@ -89,11 +89,11 @@ async def test_repeat_query_skips_searxng_and_scrape(patched_backends, fake_ctx)
     calls are skipped but rerank runs against the cached chunks each
     time. Response content should match even though timings differ.
     """
-    r1 = await server_module.search_impl("test query", num_results=3, ctx=fake_ctx)
+    r1 = await server_module.search_impl("test query", num_results=3)
     patched_backends["search"].reset_mock()
     patched_backends["scrape"].reset_mock()
     patched_backends["rerank"].reset_mock()
-    r2 = await server_module.search_impl("test query", num_results=3, ctx=fake_ctx)
+    r2 = await server_module.search_impl("test query", num_results=3)
 
     patched_backends["search"].assert_not_called()
     patched_backends["scrape"].assert_not_called()
@@ -104,9 +104,9 @@ async def test_repeat_query_skips_searxng_and_scrape(patched_backends, fake_ctx)
 @pytest.mark.asyncio
 async def test_searxng_cache_key_normalizes_whitespace_and_case(patched_backends, fake_ctx):
     """Query text normalization (lower + strip) collapses to one searxng key."""
-    await server_module.search_impl("Test Query ", num_results=3, ctx=fake_ctx)
+    await server_module.search_impl("Test Query ", num_results=3)
     patched_backends["search"].reset_mock()
-    await server_module.search_impl("  test query", num_results=3, ctx=fake_ctx)
+    await server_module.search_impl("  test query", num_results=3)
     patched_backends["search"].assert_not_called()
 
 
@@ -127,8 +127,8 @@ async def test_searxng_cache_key_includes_num_results(fake_ctx):
         patch(PATCH_SCRAPE, scrape_mock),
         patch(PATCH_RERANK, rerank_mock),
     ):
-        small = await server_module.search_impl("cached query", num_results=1, ctx=fake_ctx)
-        large = await server_module.search_impl("cached query", num_results=3, ctx=fake_ctx)
+        small = await server_module.search_impl("cached query", num_results=1)
+        large = await server_module.search_impl("cached query", num_results=3)
 
     assert len(small["results"]) == 1
     assert len(large["results"]) == 3
@@ -166,10 +166,10 @@ async def test_concurrent_searches_single_flight_to_searxng(fake_ctx):
     ):
         # Fire two concurrent searches for the same query.
         task_a = asyncio.create_task(
-            server_module.search_impl("concurrent query", num_results=3, ctx=fake_ctx)
+            server_module.search_impl("concurrent query", num_results=3)
         )
         task_b = asyncio.create_task(
-            server_module.search_impl("concurrent query", num_results=3, ctx=fake_ctx)
+            server_module.search_impl("concurrent query", num_results=3)
         )
         # Yield enough turns so both tasks reach the in-flight gate.
         for _ in range(5):
@@ -189,11 +189,11 @@ async def test_searxng_cache_ignores_filter_changes(patched_backends, fake_ctx):
     The whole point of dropping filters from the cache key — filter
     variations don't thrash the upstream call.
     """
-    await server_module.search_impl("fixed query", num_results=3, ctx=fake_ctx)
+    await server_module.search_impl("fixed query", num_results=3)
     patched_backends["search"].reset_mock()
     await server_module.search_impl(
         "fixed query", num_results=3,
-        include_domains=["example.com"], ctx=fake_ctx,
+        include_domains=["example.com"],
     )
     patched_backends["search"].assert_not_called()
 
@@ -218,13 +218,13 @@ async def test_query_cache_miss_on_different_query_triggers_fresh_pipeline(fake_
         patch(PATCH_SCRAPE, scrape_mock),
         patch(PATCH_RERANK, rerank_mock),
     ):
-        await server_module.search_impl("test query", num_results=3, ctx=fake_ctx)
+        await server_module.search_impl("test query", num_results=3)
 
         search_mock.reset_mock()
         scrape_mock.reset_mock()
         rerank_mock.reset_mock()
 
-        await server_module.search_impl("different query", num_results=3, ctx=fake_ctx)
+        await server_module.search_impl("different query", num_results=3)
 
     search_mock.assert_called_once()
     assert scrape_mock.call_count == 3
@@ -251,12 +251,12 @@ async def test_scrape_cache_reuse_skips_already_scraped_urls(fake_ctx):
         patch(PATCH_SCRAPE, scrape_mock),
         patch(PATCH_RERANK, rerank_mock),
     ):
-        await server_module.search_impl("query alpha", num_results=3, ctx=fake_ctx)
+        await server_module.search_impl("query alpha", num_results=3)
         assert scrape_mock.call_count == 3
 
         scrape_mock.reset_mock()
 
-        await server_module.search_impl("query beta", num_results=3, ctx=fake_ctx)
+        await server_module.search_impl("query beta", num_results=3)
 
     scrape_urls_second = [call.args[0] for call in scrape_mock.call_args_list]
     assert "https://example.com/a2" not in scrape_urls_second
@@ -265,7 +265,7 @@ async def test_scrape_cache_reuse_skips_already_scraped_urls(fake_ctx):
 
 
 @pytest.mark.asyncio
-async def test_previously_seen_urls_annotated_in_subsequent_results(fake_ctx):
+async def test_seen_recently_urls_annotated_in_subsequent_results(fake_ctx):
     search_call_count = 0
 
     async def _search_side_effect(query, **kwargs):
@@ -284,12 +284,12 @@ async def test_previously_seen_urls_annotated_in_subsequent_results(fake_ctx):
         patch(PATCH_SCRAPE, scrape_mock),
         patch(PATCH_RERANK, rerank_mock),
     ):
-        payload1 = await server_module.search_impl("first search", num_results=3, ctx=fake_ctx)
-        assert all(not item["previously_seen"] for item in payload1["results"])
+        payload1 = await server_module.search_impl("first search", num_results=3)
+        assert all(not item["seen_recently"] for item in payload1["results"])
 
-        payload2 = await server_module.search_impl("second search", num_results=3, ctx=fake_ctx)
+        payload2 = await server_module.search_impl("second search", num_results=3)
 
-    seen_flags = {item["url"]: item["previously_seen"] for item in payload2["results"]}
+    seen_flags = {item["url"]: item["seen_recently"] for item in payload2["results"]}
     assert seen_flags["https://example.com/a2"] is True
     assert seen_flags["https://example.com/b1"] is False
     assert seen_flags["https://example.com/b2"] is False
@@ -309,7 +309,7 @@ async def test_none_scrape_result_cached_so_broken_url_not_retried(fake_ctx):
         patch(PATCH_SCRAPE, scrape_mock),
         patch(PATCH_RERANK, rerank_mock),
     ):
-        await server_module.search_impl("fail test", num_results=3, ctx=fake_ctx)
+        await server_module.search_impl("fail test", num_results=3)
         assert scrape_mock.call_count == 3
 
         scrape_mock.reset_mock()
@@ -318,7 +318,7 @@ async def test_none_scrape_result_cached_so_broken_url_not_retried(fake_ctx):
             ["https://example.com/a2", "https://example.com/new1"], prefix="Retry"
         )
 
-        await server_module.search_impl("retry test", num_results=2, ctx=fake_ctx)
+        await server_module.search_impl("retry test", num_results=2)
 
     scrape_urls = [call.args[0] for call in scrape_mock.call_args_list]
     assert "https://example.com/a2" not in scrape_urls
@@ -336,7 +336,7 @@ async def test_tool_works_without_session_context():
         patch(PATCH_SCRAPE, scrape_mock),
         patch(PATCH_RERANK, rerank_mock),
     ):
-        result = await server_module.search_impl("direct call", num_results=2, ctx=None)
+        result = await server_module.search_impl("direct call", num_results=2)
 
     assert result["query"] == "direct call"
     assert result["results"][0]["url"] == "https://example.com/a1"
@@ -354,7 +354,7 @@ async def test_rerank_failure_falls_back_to_search_order():
         patch(PATCH_SCRAPE, scrape_mock),
         patch(PATCH_RERANK, rerank_mock),
     ):
-        payload = await server_module.search_impl("fallback query", num_results=2, ctx=None)
+        payload = await server_module.search_impl("fallback query", num_results=2)
 
     assert payload["meta"]["degraded"] is True
     assert any(w["type"] == "rerank_failed" for w in payload["meta"]["warnings"])
@@ -372,7 +372,7 @@ async def test_search_failure_returns_empty_degraded_payload():
         patch(PATCH_SCRAPE, scrape_mock),
         patch(PATCH_RERANK, rerank_mock),
     ):
-        payload = await server_module.search_impl("failed query", num_results=2, ctx=None)
+        payload = await server_module.search_impl("failed query", num_results=2)
 
     assert payload["results"] == []
     assert payload["meta"]["degraded"] is True
@@ -396,7 +396,7 @@ async def test_include_domains_filters_results(fake_ctx):
             "python tutorial",
             num_results=2,
             include_domains=["docs.python.org"],
-            ctx=fake_ctx,
+            
         )
 
     assert [item["domain"] for item in payload["results"]] == ["docs.python.org"]
@@ -420,7 +420,7 @@ async def test_exclude_domains_filters_results(fake_ctx):
             "python tutorial",
             num_results=3,
             exclude_domains=["example.com"],
-            ctx=fake_ctx,
+            
         )
 
     assert [item["domain"] for item in payload["results"]] == ["docs.python.org"]
@@ -439,7 +439,7 @@ async def test_scrape_top_is_auto_bounded_by_num_results(fake_ctx):
         patch(PATCH_RERANK, rerank_mock),
     ):
         payload = await server_module.search_impl(
-            "bounded", num_results=2, ctx=fake_ctx,
+            "bounded", num_results=2,
         )
 
     assert payload["meta"]["scrape_top"] == 2
@@ -468,7 +468,7 @@ async def test_final_results_are_domain_diversified(fake_ctx):
         payload = await server_module.search_impl(
             "diverse query",
             num_results=4,
-            ctx=fake_ctx,
+            
         )
 
     assert [item["domain"] for item in payload["results"][:4]] == [
@@ -500,19 +500,14 @@ async def test_kvcache_hit_miss_counters():
 
 
 @pytest.mark.asyncio
-async def test_cache_survives_across_ctx_instances(patched_backends):
-    """Cache state lives in Valkey, not per-Context. A fresh ctx in the same
-    process hits the SearXNG cache and page cache from the prior run."""
-    from tests.conftest import FakeContext
-
-    ctx_a = FakeContext()
-    r1 = await server_module.search_impl("cross-ctx query", num_results=2, ctx=ctx_a)
+async def test_cache_survives_across_calls(patched_backends):
+    """Cache state lives in Valkey and survives across impl calls."""
+    r1 = await server_module.search_impl("cross-call query", num_results=2)
 
     patched_backends["search"].reset_mock()
     patched_backends["scrape"].reset_mock()
 
-    ctx_b = FakeContext()
-    r2 = await server_module.search_impl("cross-ctx query", num_results=2, ctx=ctx_b)
+    r2 = await server_module.search_impl("cross-call query", num_results=2)
 
     patched_backends["search"].assert_not_called()
     patched_backends["scrape"].assert_not_called()

@@ -133,7 +133,7 @@ def _format_search_results(response: dict) -> str:
     if response.get("time_range"):
         parts.append(("time_range", response["time_range"]))
     meta = response.get("meta", {})
-    parts.append(("mode", meta.get("mode", "deep")))
+    parts.append(("profile", meta.get("profile", "search")))
     parts.append(("results", str(meta.get("num_results_returned", len(response.get("results", []))))))
     if meta.get("max_passages"):
         parts.append(("passages/source", str(meta["max_passages"])))
@@ -144,9 +144,20 @@ def _format_search_results(response: dict) -> str:
     )
 
     sections = [header]
-    brief = meta.get("brief") or []
-    if brief:
-        sections.append("brief:\n" + "\n".join(f"- {line}" for line in brief))
+    if meta.get("profile") == "research":
+        findings = meta.get("findings") or meta.get("answer") or []
+        if findings:
+            sections.append("findings:\n" + "\n".join(f"- {line}" for line in findings))
+        key_evidence = meta.get("key_evidence") or []
+        if key_evidence:
+            sections.append("evidence:\n" + "\n".join(f"- {line}" for line in key_evidence))
+        gaps = meta.get("gaps") or []
+        if gaps:
+            sections.append("gaps:\n" + "\n".join(f"- {line}" for line in gaps))
+    else:
+        brief = meta.get("brief") or []
+        if brief:
+            sections.append("brief:\n" + "\n".join(f"- {line}" for line in brief))
     next_actions = meta.get("next_actions") or []
     if next_actions:
         sections.append("next:\n" + "\n".join(f"- {line}" for line in next_actions))
@@ -178,20 +189,15 @@ def _format_search_results(response: dict) -> str:
         section_lines = [f"## {title_prefix}[{title}]({url})"]
         if meta_line:
             section_lines.append(meta_line)
-        passages = r.get("highlights") or r.get("passages") or []
+        passages = r.get("passages") or []
         if passages:
             evidence_lines = []
             for passage in passages:
                 text = passage.get("text", "") if isinstance(passage, dict) else str(passage)
-                score = passage.get("score") if isinstance(passage, dict) else None
-                prefix = f"score {score:.3f}: " if isinstance(score, (int, float)) else ""
-                evidence_lines.append(f"- {prefix}{text}")
+                evidence_lines.append(f"- {text}")
             section_lines.append("\n".join(evidence_lines))
         elif content:
             section_lines.append(content)
-        raw_content = r.get("raw_content")
-        if raw_content:
-            section_lines.append("raw_content:\n" + raw_content)
         sections.append("---")
         sections.append("\n\n".join(section_lines))
 
@@ -238,14 +244,12 @@ def _format_document_section(r: dict, *, show_meta_inline: bool = True) -> str:
     if status == "error":
         error = r.get("error", "extraction failed")
         section = f"## [{title}]({url})\n\n**Error:** {error}"
-    elif status == "handoff":
-        handoff = r.get("handoff") or {}
-        handler = handoff.get("handler", "files")
-        reason = handoff.get("reason", "delegated to another MCP")
+    elif status == "unsupported":
         file_type = r.get("file_type") or "file"
+        reason = r.get("error") or f"{file_type} extraction is not supported yet"
         section = (
             f"## [{title}]({url})\n\n"
-            f"**Handoff:** `{file_type}` content should be handled by the `{handler}` MCP.\n\n"
+            f"**Unsupported:** `{file_type}` content could not be extracted locally.\n\n"
             f"{reason}"
         )
     elif content:
@@ -258,7 +262,7 @@ def _format_document_section(r: dict, *, show_meta_inline: bool = True) -> str:
     else:
         meta_line = None
     if meta_line:
-        if content or status in {"error", "handoff"}:
+        if content or status in {"error", "unsupported"}:
             section = section.replace("\n\n", f"\n\n_{meta_line}_\n\n", 1)
         else:
             section += f"\n\n_{meta_line}_"

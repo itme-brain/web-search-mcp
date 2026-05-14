@@ -30,7 +30,7 @@ QUERIES = [
 async def main() -> None:
     rows = []
     for query in QUERIES:
-        result = await search_impl(query, num_results=5, mode="deep")
+        result = await search_impl(query, num_results=5)
         rendered_chars = sum(len(r.get("content", "")) for r in result.get("results", []))
         rows.append({
             "query": query,

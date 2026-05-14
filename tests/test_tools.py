@@ -60,25 +60,25 @@ async def test_extract_urls_returns_structured_result_from_tool():
 @pytest.mark.asyncio
 async def test_search_validates_time_range():
     with pytest.raises(ValueError, match="invalid time_range"):
-        await server_module.search_impl("test query", time_range="decade", ctx=None)
+        await server_module.search_impl("test query", time_range="decade")
 
 
 @pytest.mark.asyncio
 async def test_search_validates_num_results():
     with pytest.raises(ValueError, match="num_results must be <= 10"):
-        await server_module.search_impl("test query", num_results=50, ctx=None)
+        await server_module.search_impl("test query", num_results=50)
 
 
 @pytest.mark.asyncio
 async def test_search_validates_domain_filters():
     with pytest.raises(ValueError, match="bare domains"):
-        await server_module.search_impl("test query", include_domains=["example.com/path"], ctx=None)
+        await server_module.search_impl("test query", include_domains=["example.com/path"])
 
 
 @pytest.mark.asyncio
 async def test_extract_rejects_private_ip_urls():
     with pytest.raises(ValueError, match="private or reserved target"):
-        await server_module.extract_impl(urls=["http://127.0.0.1/admin"], ctx=None)
+        await server_module.extract_impl(urls=["http://127.0.0.1/admin"])
 
 
 @pytest.mark.asyncio
@@ -88,7 +88,7 @@ async def test_extract_rejects_hostnames_that_resolve_private():
         patch("core.socket.getaddrinfo", return_value=fake_addrinfo),
         pytest.raises(ValueError, match="private or reserved target"),
     ):
-        await server_module.extract_impl(urls=["http://internal.example.test/secret"], ctx=None)
+        await server_module.extract_impl(urls=["http://internal.example.test/secret"])
 
 
 @pytest.mark.asyncio
@@ -101,7 +101,7 @@ async def test_search_returns_structured_json():
         patch("core._scrape", AsyncMock(return_value={"content": "# Page\n\nfull page body text with at least enough words to clear the speculative cache admission floor for tests.", "title": None, "screenshot": None})),
         patch(PATCH_RERANK, rerank_mock),
     ):
-        payload = await server_module.search_impl("test query", num_results=2, ctx=None)
+        payload = await server_module.search_impl("test query", num_results=2)
 
     assert payload["query"] == "test query"
     assert payload["meta"]["reranker"]["name"] == "flashrank"
