@@ -1,22 +1,29 @@
 # web-search-mcp
 
-Self-hosted MCP web search for LLMs — no API keys, no per-query costs.
+Self-hosted MCP web search for local and hosted LLM agents.
 
-SearXNG searches configurable engines in parallel (9 by default), Crawl4AI scrapes the results, and a local reranker orders evidence. Everything runs in `docker compose`.
+What it does:
+- web search with compact evidence and citations
+- full-page document extraction for known URLs
+- site mapping and small-tree crawling
+- local reranking, caching, and optional semantic retrieval
+- no paid search API required
+
+The server is designed for small tool-using models: few tools, sane defaults, transparent output, and minimal knobs exposed to the model.
+
+*This server is intended to run behind a reverse proxy that handles TLS or on a trusted local network.*
+*It is not recommended to expose the raw MCP port directly to the internet.*
 
 ## Install
 
-```sh
-git clone https://github.com/itme-brain/web-search-mcp && cd web-search-mcp
-```
+Tags:
+- https://github.com/itme-brain/web-search-mcp/tags
 
-**With Nix:**
+Download a tagged version from GitHub, extract it, and `cd` into the extracted directory.
 
-```sh
-nix run .#deploy
-```
+**Without Nix**
 
-**Without Nix** (requires `docker compose`, `just`, `uv`):
+Requires `docker compose`, `just`, and `uv`.
 
 ```sh
 uv venv .venv && uv pip sync --python .venv/bin/python requirements.txt
@@ -24,11 +31,23 @@ just setup
 docker compose up -d --build
 ```
 
-## Connect your MCP client
+**With Nix**
 
-The server speaks streamable HTTP at `http://localhost:8002/mcp`.
+```sh
+nix run .#deploy
+```
 
-**Claude Desktop** — add to `claude_desktop_config.json`:
+The MCP endpoint will be available at:
+
+```text
+http://localhost:8002/mcp
+```
+
+## Connect
+
+### Pi
+
+Add this to your Pi MCP server config:
 
 ```json
 {
@@ -41,72 +60,47 @@ The server speaks streamable HTTP at `http://localhost:8002/mcp`.
 }
 ```
 
-**Claude Code:**
+## Tool guide
 
-```sh
-claude mcp add --transport http web-search http://localhost:8002/mcp
-```
-
-## Tools
-
-| Tool | Purpose |
+| Tool | Use it for |
 |---|---|
-| `search` | Start here for unknown/current facts. Returns ranked sources with evidence passages. |
-| `extract` | Read the full cleaned body of one known URL after `search`. |
-| `map` | List URLs on one site; does not read page content. |
-| `research` | Hard/broad questions. Multi-query search, compact brief, cited evidence. |
-| `crawl` | Read several pages from one site/docs tree. |
+| `search` | Default first step. Find sources and compact evidence for a question. |
+| `extract` | Read one known URL as a full cleaned document. |
+| `map` | List URLs under one site/root without reading page content. |
+| `research` | Broader, slower, multi-source search for harder questions. |
+| `crawl` | Read a small site/docs subtree, optionally ranked for a query. |
 
-Small-model agent rule of thumb: use `search` first with `num_results=3..5`; use `extract` to read one selected source as a full document, calling it again for additional URLs. Use `research` for hard/broad/current questions. Use `map` to plan a docs/site read, then `crawl` a small tree. Use `site:domain.com terms` in `search` for focused docs/site lookup. The MCP tools expose few knobs on purpose; retrieval depth, passage limits, and raw-content fallbacks are sane internal defaults.
+Rule of thumb:
+- use `search` first
+- use `extract` to read the best page in full
+- use `research` for hard, comparative, or current questions
+- use `map` then `crawl` for docs/site exploration
 
-`search`/`research` are the compression tools; `extract` is the document reader. `extract` handles HTML, common text formats, and born-digital PDFs locally.
-PDF downloads are capped by `MAX_PDF_BYTES` before parsing so large files do
-not exhaust memory; scanned/image-only PDFs require a future OCR backend.
+## Config example
 
-## Configuration
-
-`just setup` generates `.env` from `env.sample`. See `env.sample` for available knobs. SearXNG engine config lives in `searxng/config/settings.yml.template`.
-
-Semantic retrieval is enabled in the compose stack by default and can augment live search. The cache layers are intentionally separate: `page_cache` stores canonical fetched/extracted documents, `page_memory` (`ws:page_memory`) stores retrieval-ready page text, and `semantic.py` owns the TTL-bounded Valkey Search HNSW chunk/vector index over recently scraped chunks. Normal searches write only to the configured cache TTL and Valkey maxmemory/LRU policy still bounds growth; there is no separate permanent vector database.
-
-Observability endpoints:
-
-- `/metrics`: JSON page, SearXNG, seen-URL, page-memory, and semantic-index counters for quick inspection.
-- `/metrics/prometheus`: Prometheus text metrics for tool requests, warnings,
-  stage latency histograms, cache counters, and semantic-index gauges.
-Each tool response also includes `meta.request_id`, which is mirrored in
-server logs for correlation.
-
-Reranking is local and pluggable. The compose default is the English
-Sentence Transformers CrossEncoder `cross-encoder/ms-marco-MiniLM-L4-v2`,
-which matched the larger MiniLM rerankers on the bundled eval set while
-using less CPU time:
+Copy `env.sample` to `.env` and start with the defaults. The top section is all most users need.
 
 ```sh
-RERANK_BACKEND=sentence-transformers
-RERANK_MODEL=cross-encoder/ms-marco-MiniLM-L4-v2
-RERANK_DEVICE=cpu
+cp env.sample .env
 ```
 
-Only the configured `RERANK_BACKEND` and `RERANK_MODEL` are loaded. Other
-models listed here are examples; they are not downloaded unless selected.
+Core defaults:
 
-FlashRank remains available as the smallest ONNX-based backend:
+```dotenv
+MCP_HOST_PORT=8002
+REQUEST_TIMEOUT=30
+MAX_RESULTS=20
+MAX_SCRAPE=10
 
-```sh
 RERANK_BACKEND=flashrank
 RERANK_MODEL=ms-marco-MiniLM-L-12-v2
+RERANK_DEVICE=cpu
+
+ENABLE_SEMANTIC_CACHE=1
 ```
 
-Tested English reranker options:
-
-| Backend | Model | Use when |
-|---|---|---|
-| `sentence-transformers` | `cross-encoder/ms-marco-MiniLM-L4-v2` | Default balance of quality and CPU latency. |
-| `sentence-transformers` | `cross-encoder/ms-marco-MiniLM-L6-v2` | Slightly larger CPU model; matched L4 quality in the bundled eval but ran slower. |
-| `sentence-transformers` | `cross-encoder/ms-marco-MiniLM-L12-v2` | Larger MiniLM model; no bundled-eval gain over L4/L6 in local tests. |
-| `sentence-transformers` | `cross-encoder/ms-marco-MiniLM-L2-v2` | Fastest tested CrossEncoder, but lower usefulness on the bundled eval. |
-| `flashrank` | `ms-marco-MiniLM-L-12-v2` | Small ONNX-based backend; available for compatibility and comparison. |
+Notes:
+- Advanced config options are documented in `env.sample`
 
 ## Layout
 

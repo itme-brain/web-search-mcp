@@ -14,9 +14,9 @@ services:
     environment:
       - SEARXNG_URL=http://searxng:8080
       - CRAWL4AI_URL=http://crawl4ai:11235
-      - RERANK_BACKEND=${RERANK_BACKEND:-sentence-transformers}
+      - RERANK_BACKEND=${RERANK_BACKEND:-flashrank}
       - VALKEY_URL=redis://valkey:6379/0
-      - RERANK_MODEL=${RERANK_MODEL:-cross-encoder/ms-marco-MiniLM-L4-v2}
+      - RERANK_MODEL=${RERANK_MODEL:-ms-marco-MiniLM-L-12-v2}
       - RERANK_DEVICE=${RERANK_DEVICE:-cpu}
       - RERANK_BATCH_SIZE=${RERANK_BATCH_SIZE:-16}
       - RERANK_MAX_LENGTH=${RERANK_MAX_LENGTH:-512}
@@ -25,7 +25,7 @@ services:
       - MAX_SCRAPE=${MAX_SCRAPE:-10}
       - CACHE_TTL_S=${CACHE_TTL_S:-3600}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - ENABLE_SEMANTIC_CACHE=${ENABLE_SEMANTIC_CACHE:-${ENABLE_SEMANTIC_INDEX:-1}}
+      - ENABLE_SEMANTIC_CACHE=${ENABLE_SEMANTIC_CACHE:-1}
       - SEMANTIC_BACKEND=${SEMANTIC_BACKEND:-valkey-search}
       - SEMANTIC_MIN_SCORE=${SEMANTIC_MIN_SCORE:-0.45}
       - SEMANTIC_MAX_CHUNKS_PER_PAGE=${SEMANTIC_MAX_CHUNKS_PER_PAGE:-40}
