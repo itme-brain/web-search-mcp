@@ -2,7 +2,7 @@
 
 Self-hosted MCP web search for LLMs — no API keys, no per-query costs.
 
-SearXNG searches configurable engines in parallel (9 by default), Crawl4AI scrapes the results, FlashRank reranks locally. Everything runs in `docker compose`.
+SearXNG searches configurable engines in parallel (9 by default), Crawl4AI scrapes the results, and a local reranker orders evidence. Everything runs in `docker compose`.
 
 ## Install
 
@@ -63,6 +63,16 @@ Small-model agent rule of thumb: use `search` first with `num_results=3..5`; use
 
 `just setup` generates `.env` from `env.sample`. See `env.sample` for available knobs. SearXNG engine config lives in `searxng/config/settings.yml.template`.
 
+Reranking is local and pluggable. The default is the CPU-friendly
+`RERANK_BACKEND=flashrank` with `ms-marco-MiniLM-L-12-v2`. For an English
+Sentence Transformers CrossEncoder, set:
+
+```sh
+RERANK_BACKEND=sentence-transformers
+RERANK_MODEL=cross-encoder/ms-marco-MiniLM-L6-v2
+RERANK_DEVICE=cpu
+```
+
 ## Layout
 
 ```
@@ -76,6 +86,7 @@ src/
   server.py                         FastMCP entry point and tool wrappers
   impls.py                          search, extract, map, crawl implementations
   core.py                           HTTP clients, reranker, caching, text processing
+  rerankers.py                      local reranker backend adapters
   models.py                         Pydantic response models
   formatters.py                     dict → markdown rendering
 searxng/config/

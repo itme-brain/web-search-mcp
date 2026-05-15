@@ -20,6 +20,7 @@ import impls
 import models
 from core import (
     CRAWL4AI_URL,
+    RERANK_NAME,
     RERANK_MODEL,
     SEARXNG_URL,
     _probe_dependency,
@@ -70,7 +71,7 @@ def _tool_result(response: dict, formatter) -> ToolResult:
 # ---------------------------------------------------------------------------
 @mcp.custom_route("/health", methods=["GET"])
 async def health(_: Request) -> JSONResponse:
-    return JSONResponse({"status": "ok", "reranker": {"name": "flashrank", "model": RERANK_MODEL}})
+    return JSONResponse({"status": "ok", "reranker": {"name": RERANK_NAME, "model": RERANK_MODEL}})
 
 
 @mcp.custom_route("/metrics", methods=["GET"])
@@ -112,7 +113,7 @@ async def ready(_: Request) -> JSONResponse:
             "searxng": searxng,
             "crawl4ai": crawl4ai,
             "valkey": valkey,
-            "reranker": {"status": "ok", "name": "flashrank", "model": RERANK_MODEL},
+            "reranker": {"status": "ok", "name": RERANK_NAME, "model": RERANK_MODEL},
             "semantic_cache": _semantic_status(),
         },
     }

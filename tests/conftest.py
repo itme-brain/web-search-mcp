@@ -9,9 +9,8 @@ import pytest_asyncio
 _SRC = Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(_SRC))
 
-# Stub flashrank BEFORE src/core.py gets imported (which instantiates Ranker
-# at module-load time). Same ordering requirement as before — just applied to
-# the new layout.
+# Stub flashrank BEFORE src/core.py gets imported, because the default
+# reranker backend is instantiated at module-load time.
 _flashrank = types.ModuleType("flashrank")
 
 
@@ -43,8 +42,8 @@ if "trafilatura" not in sys.modules:
     _trafilatura.extract_metadata = lambda *args, **kwargs: None
     sys.modules["trafilatura"] = _trafilatura
 
-# Import the split modules. `core` pulls in Settings + Ranker on first
-# import; the stub above has to be in place first.
+# Import the split modules. `core` pulls in Settings + the configured
+# reranker on first import; the stub above has to be in place first.
 import cache  # noqa: E402
 import core  # noqa: E402
 import formatters  # noqa: E402

@@ -1,9 +1,9 @@
 """Private infrastructure the impls call into.
 
 Everything that isn't a public impl or a markdown formatter lives here:
-settings + constants, HTTP + retry + polling, rerank (FlashRank model
-load and inference), text/URL utilities, validators, and the
-per-file-type extractors. Cache adapters live in cache.py.
+settings + constants, HTTP + retry + polling, reranker lifecycle,
+text/URL utilities, validators, and the per-file-type extractors. Cache
+adapters live in cache.py.
 """
 
 import asyncio
@@ -26,12 +26,12 @@ import magic
 from rapidfuzz import fuzz
 import tldextract
 import trafilatura
-from flashrank import Ranker, RerankRequest
 from pydantic_settings import BaseSettings
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 from url_normalize import url_normalize
 
 import cache as cache_module
+import rerankers
 from cache import KVCache
 
 
@@ -51,7 +51,11 @@ log = logging.getLogger("web-search-mcp")
 class Settings(BaseSettings):
     searxng_url: str = "http://searxng:8080"
     crawl4ai_url: str = "http://crawl4ai:11235"
+    rerank_backend: str = "flashrank"
     rerank_model: str = "ms-marco-MiniLM-L-12-v2"
+    rerank_device: str | None = None
+    rerank_batch_size: int = 16
+    rerank_max_length: int = 512
     request_timeout: int = 30
     max_results: int = 10
     max_scrape: int = 5
@@ -61,7 +65,11 @@ settings = Settings()
 
 SEARXNG_URL = settings.searxng_url
 CRAWL4AI_URL = settings.crawl4ai_url
+RERANK_BACKEND = settings.rerank_backend
 RERANK_MODEL = settings.rerank_model
+RERANK_DEVICE = settings.rerank_device
+RERANK_BATCH_SIZE = settings.rerank_batch_size
+RERANK_MAX_LENGTH = settings.rerank_max_length
 REQUEST_TIMEOUT = settings.request_timeout
 MAX_RESULTS = settings.max_results
 MAX_SCRAPE = settings.max_scrape
@@ -70,7 +78,6 @@ MAX_SCRAPE = settings.max_scrape
 # ---------------------------------------------------------------------------
 # Internal constants — not user-configurable
 # ---------------------------------------------------------------------------
-_RERANK_MAX_LENGTH = 512
 _HTTP_TIMEOUT = max(REQUEST_TIMEOUT // 2, 10)
 _MAX_CONTENT_CHARS = 20000
 _DEDUP_SIMILARITY = 0.75
@@ -882,7 +889,7 @@ def _crawl_filter_chain(
     # Filtering by query relevance during BFS exploration prematurely
     # rejects pages that link to relevant content but don't themselves
     # contain the query terms.  Relevance filtering happens post-crawl
-    # via the FlashRank chunk reranker in crawl_impl instead.
+    # via the configured chunk reranker in crawl_impl instead.
     return filters
 
 
@@ -1527,25 +1534,30 @@ async def _extract_url_document(
 # ---------------------------------------------------------------------------
 # Reranker — loaded once at import
 # ---------------------------------------------------------------------------
-log.info("loading reranker model=%s max_length=%d", RERANK_MODEL, _RERANK_MAX_LENGTH)
-_ranker = Ranker(model_name=RERANK_MODEL, max_length=_RERANK_MAX_LENGTH)
-log.info("reranker ready")
-
-
-def _rerank_sync(query: str, documents: list[str]) -> list[tuple[int, float]]:
-    """Synchronous rerank — runs the FlashRank ONNX model. Call via _rerank_scored."""
-    if not documents:
-        return []
-    passages = [{"id": i, "text": doc, "meta": {}} for i, doc in enumerate(documents)]
-    request = RerankRequest(query=query, passages=passages)
-    results = _ranker.rerank(request)
-    return [(r["id"], float(r["score"])) for r in results]
+log.info(
+    "loading reranker backend=%s model=%s max_length=%d device=%s batch_size=%d",
+    RERANK_BACKEND,
+    RERANK_MODEL,
+    RERANK_MAX_LENGTH,
+    RERANK_DEVICE or "auto",
+    RERANK_BATCH_SIZE,
+)
+_reranker = rerankers.build_reranker(
+    backend=RERANK_BACKEND,
+    model=RERANK_MODEL,
+    max_length=RERANK_MAX_LENGTH,
+    batch_size=RERANK_BATCH_SIZE,
+    device=RERANK_DEVICE,
+)
+RERANK_NAME = _reranker.name
+log.info("reranker ready backend=%s model=%s", RERANK_NAME, _reranker.model)
 
 
 async def _rerank_scored(query: str, documents: list[str]) -> list[tuple[int, float]]:
-    """Rerank documents via FlashRank off the event loop.
+    """Rerank documents via the configured local backend.
 
-    ONNX inference on a CPU model takes tens of ms per call. Offloading to a
-    thread keeps concurrent requests (scraping, searching) responsive.
+    Cross-encoder inference can take tens of ms per call. Backend adapters
+    offload synchronous model work so concurrent scraping/searching stays
+    responsive.
     """
-    return await asyncio.to_thread(_rerank_sync, query, documents)
+    return await _reranker.rerank(query, documents)

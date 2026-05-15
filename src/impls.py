@@ -27,6 +27,7 @@ import semantic
 import source_quality
 from core import (
     MAX_RESULTS,
+    RERANK_NAME,
     RERANK_MODEL,
     _CHUNK_GAP,
     _MAX_CONTENT_CHARS,
@@ -172,7 +173,7 @@ def _empty_search_response(
             "search_queries": search_queries,
             "source_types": source_types,
             "search_backend": "searxng",
-            "reranker": {"name": "flashrank", "model": RERANK_MODEL},
+            "reranker": {"name": RERANK_NAME, "model": RERANK_MODEL},
             "degraded": degraded,
             "warnings": warnings or [core._warning("no_results", "searxng", query)],
             "timings_ms": {**timings_ms, "total": int((time.monotonic() - started) * 1000)},
@@ -283,7 +284,7 @@ async def _rank_search_entries(
         scored = await core._rerank_scored(query, all_chunks)
     except Exception as exc:
         log.warning("rerank failed query=%r err=%s", query, exc)
-        warnings.append(core._warning("rerank_failed", "flashrank", str(exc)))
+        warnings.append(core._warning("rerank_failed", RERANK_NAME, str(exc)))
         degraded = True
         rerank_failed = True
         scored = []
@@ -312,7 +313,7 @@ async def _rank_search_entries(
             filtered_idxs.append(eidx)
         ranked_entry_idxs = filtered_idxs
         if noise_count:
-            warnings.append(core._warning("low_relevance_filtered", "flashrank", f"{noise_count} result(s) dropped below relevance threshold"))
+            warnings.append(core._warning("low_relevance_filtered", RERANK_NAME, f"{noise_count} result(s) dropped below relevance threshold"))
     ranked_entry_idxs = source_quality.diversify_by_source_type(
         core._diversify_ranked_entries(ranked_entry_idxs, entries), entries
     )[:num_results]
@@ -380,7 +381,7 @@ async def search_impl(
 ) -> dict:
     """Search the web, scrape top results, and return structured JSON ranked by relevance.
 
-    Pipeline: SearXNG search -> Crawl4AI scrape -> chunk -> FlashRank reranker -> formatted output.
+    Pipeline: SearXNG search -> Crawl4AI scrape -> chunk -> local reranker -> formatted output.
     Scraped pages are split into paragraphs and reranked at the chunk level, so only
     the most query-relevant excerpts from each page are returned.
 
@@ -501,7 +502,7 @@ async def search_impl(
             "search_queries": search_queries,
             "source_types": source_types,
             "search_backend": "searxng",
-            "reranker": {"name": "flashrank", "model": RERANK_MODEL},
+            "reranker": {"name": RERANK_NAME, "model": RERANK_MODEL},
             "degraded": degraded,
             "warnings": warnings,
             "timings_ms": {
@@ -735,7 +736,7 @@ async def crawl_impl(
     """Discover a site tree, then extract content for each discovered node.
 
     When `query` is set, results are reordered by per-page best-chunk
-    relevance score (FlashRank cross-encoder) instead of BFS discovery
+    relevance score (configured cross-encoder) instead of BFS discovery
     order, and each result's `content` carries the joined top chunks
     rather than the document head.
     """

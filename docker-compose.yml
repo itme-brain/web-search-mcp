@@ -14,8 +14,12 @@ services:
     environment:
       - SEARXNG_URL=http://searxng:8080
       - CRAWL4AI_URL=http://crawl4ai:11235
+      - RERANK_BACKEND=${RERANK_BACKEND:-flashrank}
       - VALKEY_URL=redis://valkey:6379/0
       - RERANK_MODEL=${RERANK_MODEL:-ms-marco-MiniLM-L-12-v2}
+      - RERANK_DEVICE=${RERANK_DEVICE:-cpu}
+      - RERANK_BATCH_SIZE=${RERANK_BATCH_SIZE:-16}
+      - RERANK_MAX_LENGTH=${RERANK_MAX_LENGTH:-512}
       - REQUEST_TIMEOUT=${REQUEST_TIMEOUT:-30}
       - MAX_RESULTS=${MAX_RESULTS:-20}
       - MAX_SCRAPE=${MAX_SCRAPE:-10}
