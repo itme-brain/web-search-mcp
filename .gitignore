@@ -19,3 +19,6 @@ result-*
 
 # Generated at deploy time from settings.yml.template.
 searxng/config/settings.yml
+
+# Generated benchmark output.
+eval/runs/

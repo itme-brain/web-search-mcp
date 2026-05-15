@@ -7,6 +7,7 @@ This directory gives the project a repeatable way to measure retrieval changes.
 - `queries.json`: benchmark query set
 - `run_eval.py`: executes the local search implementation and writes JSONL results
 - `score.py`: summarizes a saved run into simple metrics
+- `benchmark_rerankers.py`: runs the query set once per reranker backend/model and compares scores
 
 ## Workflow
 
@@ -23,6 +24,27 @@ Score a run:
 ```sh
 just eval-score eval/runs/<timestamp>.jsonl
 ```
+
+Compare rerankers:
+
+```sh
+just eval-rerankers
+```
+
+The default comparison runs:
+
+- `flashrank=flashrank:ms-marco-MiniLM-L-12-v2`
+- `minilm-l6=sentence-transformers:cross-encoder/ms-marco-MiniLM-L6-v2`
+
+Pass explicit specs to compare other English rerankers:
+
+```sh
+just eval-rerankers \
+  --spec flashrank=flashrank:ms-marco-MiniLM-L-12-v2 \
+  --spec minilm-l12=sentence-transformers:cross-encoder/ms-marco-MiniLM-L12-v2
+```
+
+Each spec runs in a fresh Python process because the configured reranker is loaded at import time. Results are written under `eval/runs/rerankers/<timestamp>/`.
 
 ## What it measures today
 
@@ -65,6 +87,7 @@ This first pass is not a full semantic relevance benchmark. It gives a baseline 
 - latency regressions
 - expected-source coverage
 - rough usefulness target tracking
+- reranker latency/quality tradeoffs when run through `just eval-rerankers`
 
 ## How to extend it
 

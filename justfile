@@ -75,6 +75,12 @@ eval: setup-python
 eval-score run_file: setup-python
     .venv/bin/python eval/score.py {{ run_file }}
 
+# Compare reranker backends on eval/queries.json.
+# Override specs with e.g.
+# `just eval-rerankers --spec flashrank=flashrank:ms-marco-MiniLM-L-12-v2 --spec minilm=sentence-transformers:cross-encoder/ms-marco-MiniLM-L6-v2`.
+eval-rerankers *args: setup-python
+    .venv/bin/python eval/benchmark_rerankers.py {{ args }}
+
 # Lightweight retrieval smoke focused on small-model output shape.
 small-eval: setup-python
     .venv/bin/python eval/small_model_eval.py
