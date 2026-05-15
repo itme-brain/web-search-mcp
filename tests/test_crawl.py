@@ -236,21 +236,25 @@ async def test_crawl_query_reorders_by_relevance():
             "content": f"top chunk text for {url}",
             "total_chars": 200,
             "metadata": {},
-            "top_chunks": [{"id": 0, "text": f"top chunk text for {url}", "score": score}],
-            "chunks": [{"id": 0, "text": "..."}],
+            "top_chunks": [],
+            "chunks": [{"id": 0, "text": f"top chunk text for {url}"}],
             "shown_chunk_ids": [0],
             "total_chunks": 1,
-            "chunk_mode": "relevant",
+            "chunk_mode": "document",
             "cached": False,
         }
 
-    async def _fake_extract_url_document(url, query, cache, chunk_ids=None):
-        assert query == "rate limits"
+    async def _fake_extract_url_document(url, cache, chunk_ids=None):
         return _doc(url)
+
+    async def _fake_rerank(_query, documents):
+        assert _query == "rate limits"
+        return [(i, score_by_url[documents[i].removeprefix("top chunk text for ")]) for i in range(len(documents))]
 
     with (
         patch(PATCH_MAP_IMPL, AsyncMock(return_value=map_payload)),
         patch("core._extract_url_document", AsyncMock(side_effect=_fake_extract_url_document)),
+        patch("core._rerank_scored", AsyncMock(side_effect=_fake_rerank)),
     ):
         payload = await server_module.crawl_impl(
             "https://docs.example.com",

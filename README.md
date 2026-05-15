@@ -52,12 +52,12 @@ claude mcp add --transport http web-search http://localhost:8002/mcp
 | Tool | Purpose |
 |---|---|
 | `search` | Start here for unknown/current facts. Returns ranked sources with evidence passages. |
-| `extract` | Read the full cleaned body of known URLs after `search`. |
+| `extract` | Read the full cleaned body of one known URL after `search`. |
 | `map` | List URLs on one site; does not read page content. |
 | `research` | Hard/broad questions. Multi-query search, compact brief, cited evidence. |
 | `crawl` | Read several pages from one site/docs tree. |
 
-Small-model agent rule of thumb: use `search` first with `num_results=3..5`; use `extract` to read selected sources as full documents. Use `research` for hard/broad/current questions. Use `map` to plan a docs/site read, then `crawl` a small tree. Use `site:domain.com terms` in `search` for focused docs/site lookup. The MCP tools expose few knobs on purpose; retrieval depth, passage limits, and raw-content fallbacks are sane internal defaults.
+Small-model agent rule of thumb: use `search` first with `num_results=3..5`; use `extract` to read one selected source as a full document, calling it again for additional URLs. Use `research` for hard/broad/current questions. Use `map` to plan a docs/site read, then `crawl` a small tree. Use `site:domain.com terms` in `search` for focused docs/site lookup. The MCP tools expose few knobs on purpose; retrieval depth, passage limits, and raw-content fallbacks are sane internal defaults.
 
 `search`/`research` are the compression tools; `extract` is the document reader. `extract` handles HTML, common text formats, and born-digital PDFs locally.
 PDF downloads are capped by `MAX_PDF_BYTES` before parsing so large files do

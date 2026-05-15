@@ -37,11 +37,6 @@ def research_findings(results: list[dict]) -> list[str]:
     return findings
 
 
-def research_answer(results: list[dict]) -> list[str]:
-    """Backward-compatible alias for older clients expecting meta.answer."""
-    return research_findings(results)
-
-
 def research_summary(results: list[dict], warnings: list[dict]) -> list[str]:
     """Return a conservative answer-first assessment for research output."""
     if not results:

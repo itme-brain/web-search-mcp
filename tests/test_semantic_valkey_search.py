@@ -95,7 +95,7 @@ async def test_index_page_creates_valkey_search_index_and_hashes_chunks(enabled_
     assert mapping["domain"] == "example.com"
     assert mapping["metadata"] == '{"author": "Ada"}'
     assert isinstance(mapping["vector"], bytes)
-    assert client.expires[key] == cache.SEMANTIC_CACHE_TTL_S
+    assert client.expires[key] == cache.SEMANTIC_INDEX_TTL_S
 
 
 @pytest.mark.asyncio

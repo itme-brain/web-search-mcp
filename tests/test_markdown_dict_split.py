@@ -196,7 +196,7 @@ async def test_extract_dict_carries_full_structured_fields():
 
     with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
         payload = await server_module.extract_impl(
-            urls=["https://example.com/a"], query="q",
+            urls=["https://example.com/a"],
         )
 
     result = payload["results"][0]
@@ -220,9 +220,7 @@ async def test_extract_markdown_does_not_leak_metadata_fields():
     })
 
     with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
-        markdown = await server_module.extract.fn(
-            ["https://example.com/a"], query="q",
-        )
+        markdown = await server_module.extract.fn("https://example.com/a")
 
     for field in _LEAKY_FIELDS:
         assert f"{field}:" not in markdown, (

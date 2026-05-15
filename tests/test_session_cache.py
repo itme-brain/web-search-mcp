@@ -81,7 +81,7 @@ def patched_backends():
 
 
 @pytest.mark.asyncio
-async def test_repeat_query_skips_searxng_and_scrape(patched_backends, fake_ctx):
+async def test_repeat_query_skips_searxng_and_scrape(patched_backends):
     """Same query twice: SearXNG and scrape both cached, rerank runs fresh.
 
     The old query_cache memoized the full response; we now cache at two
@@ -102,7 +102,7 @@ async def test_repeat_query_skips_searxng_and_scrape(patched_backends, fake_ctx)
 
 
 @pytest.mark.asyncio
-async def test_searxng_cache_key_normalizes_whitespace_and_case(patched_backends, fake_ctx):
+async def test_searxng_cache_key_normalizes_whitespace_and_case(patched_backends):
     """Query text normalization (lower + strip) collapses to one searxng key."""
     await server_module.search_impl("Test Query ", num_results=3)
     patched_backends["search"].reset_mock()
@@ -111,7 +111,7 @@ async def test_searxng_cache_key_normalizes_whitespace_and_case(patched_backends
 
 
 @pytest.mark.asyncio
-async def test_searxng_cache_key_includes_num_results(fake_ctx):
+async def test_searxng_cache_key_includes_num_results():
     """A smaller cached SearXNG page must not underfill a later larger request."""
     search_mock = AsyncMock(
         side_effect=[
@@ -136,7 +136,7 @@ async def test_searxng_cache_key_includes_num_results(fake_ctx):
 
 
 @pytest.mark.asyncio
-async def test_concurrent_searches_single_flight_to_searxng(fake_ctx):
+async def test_concurrent_searches_single_flight_to_searxng():
     """Two concurrent search calls for the same (query, page, lang, time)
     share one upstream SearXNG call instead of both cache-missing.
 
@@ -183,7 +183,7 @@ async def test_concurrent_searches_single_flight_to_searxng(fake_ctx):
 
 
 @pytest.mark.asyncio
-async def test_searxng_cache_ignores_filter_changes(patched_backends, fake_ctx):
+async def test_searxng_cache_ignores_filter_changes(patched_backends):
     """Same query with different domain filters: SearXNG hit, no refetch.
 
     The whole point of dropping filters from the cache key — filter
@@ -199,7 +199,7 @@ async def test_searxng_cache_ignores_filter_changes(patched_backends, fake_ctx):
 
 
 @pytest.mark.asyncio
-async def test_query_cache_miss_on_different_query_triggers_fresh_pipeline(fake_ctx):
+async def test_query_cache_miss_on_different_query_triggers_fresh_pipeline():
     search_call_count = 0
 
     async def _search_side_effect(query, **kwargs):
@@ -232,7 +232,7 @@ async def test_query_cache_miss_on_different_query_triggers_fresh_pipeline(fake_
 
 
 @pytest.mark.asyncio
-async def test_scrape_cache_reuse_skips_already_scraped_urls(fake_ctx):
+async def test_scrape_cache_reuse_skips_already_scraped_urls():
     search_call_count = 0
 
     async def _search_side_effect(query, **kwargs):
@@ -265,7 +265,7 @@ async def test_scrape_cache_reuse_skips_already_scraped_urls(fake_ctx):
 
 
 @pytest.mark.asyncio
-async def test_seen_recently_urls_annotated_in_subsequent_results(fake_ctx):
+async def test_seen_recently_urls_annotated_in_subsequent_results():
     search_call_count = 0
 
     async def _search_side_effect(query, **kwargs):
@@ -296,7 +296,7 @@ async def test_seen_recently_urls_annotated_in_subsequent_results(fake_ctx):
 
 
 @pytest.mark.asyncio
-async def test_none_scrape_result_cached_so_broken_url_not_retried(fake_ctx):
+async def test_none_scrape_result_cached_so_broken_url_not_retried():
     content_with_failure = dict(SCRAPE_CONTENT_EXTENDED)
     content_with_failure["https://example.com/a2"] = None
 
@@ -380,7 +380,7 @@ async def test_search_failure_returns_empty_degraded_payload():
 
 
 @pytest.mark.asyncio
-async def test_include_domains_filters_results(fake_ctx):
+async def test_include_domains_filters_results():
     search_mock = AsyncMock(return_value=_make_domain_results())
     scrape_mock = _make_scrape_mock({
         "https://docs.python.org/3/tutorial/": "# Docs\n\nUseful python docs content for reranking.",
@@ -404,7 +404,7 @@ async def test_include_domains_filters_results(fake_ctx):
 
 
 @pytest.mark.asyncio
-async def test_exclude_domains_filters_results(fake_ctx):
+async def test_exclude_domains_filters_results():
     search_mock = AsyncMock(return_value=_make_domain_results())
     scrape_mock = _make_scrape_mock({
         "https://docs.python.org/3/tutorial/": "# Docs\n\nUseful python docs content for reranking.",
@@ -428,7 +428,7 @@ async def test_exclude_domains_filters_results(fake_ctx):
 
 
 @pytest.mark.asyncio
-async def test_scrape_top_is_auto_bounded_by_num_results(fake_ctx):
+async def test_scrape_top_is_auto_bounded_by_num_results():
     search_mock = AsyncMock(return_value=make_search_results(URLS_A))
     scrape_mock = _make_scrape_mock()
     rerank_mock = AsyncMock(side_effect=_identity_rerank)
@@ -446,7 +446,7 @@ async def test_scrape_top_is_auto_bounded_by_num_results(fake_ctx):
 
 
 @pytest.mark.asyncio
-async def test_final_results_are_domain_diversified(fake_ctx):
+async def test_final_results_are_domain_diversified():
     search_mock = AsyncMock(return_value=_make_diversity_results())
     scrape_mock = _make_scrape_mock({
         "https://alpha.com/1": "# A1\n\nAlpha one covers rockets, launch pads, fuel checks, mission control, and countdown sequencing with plenty of unique detail.",

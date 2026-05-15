@@ -13,7 +13,6 @@ import mimetypes
 import os
 import fnmatch
 import re
-import socket  # re-exported for compatibility with tests/patches
 from collections import defaultdict
 from io import BytesIO
 from urllib.parse import urljoin, urlparse
@@ -1275,16 +1274,10 @@ async def _deep_crawl(
 # Ranking + central extract orchestrator
 # ---------------------------------------------------------------------------
 async def _prepare_document_content(
-    query: str | None,
     content: str,
     chunk_ids: list[int] | None = None,
 ) -> tuple[str, list[dict], list[dict], list[int], str, bool]:
-    """Prepare extract display content.
-
-    Extract is full-document-first: absent explicit chunk_ids, the main
-    content is the cleaned document body up to a generous safety cap.
-    Query reranking only populates optional top_chunks metadata.
-    """
+    """Prepare full-document extract display content."""
     chunks = [{"id": i, "text": text} for i, text in enumerate(_chunk_text(content))]
 
     if chunk_ids is not None:
@@ -1296,20 +1289,11 @@ async def _prepare_document_content(
     display = content[:_MAX_EXTRACT_CONTENT_CHARS]
     truncated = len(content) > len(display)
     shown_ids = [c["id"] for c in chunks]
-    top: list[dict] = []
-    if query and chunks:
-        chunk_texts = [c["text"] for c in chunks]
-        scored = await _rerank_scored(query, chunk_texts)
-        top = [
-            {"id": idx, "text": chunk_texts[idx], "score": score}
-            for idx, score in scored[:_TOP_CHUNKS]
-        ]
-    return display, top, chunks, shown_ids, "document", truncated
+    return display, [], chunks, shown_ids, "document", truncated
 
 
 async def _extract_url_document(
     url: str,
-    query: str | None,
     cache: KVCache,
     chunk_ids: list[int] | None = None,
 ) -> dict:
@@ -1320,7 +1304,7 @@ async def _extract_url_document(
     if cached is not None:
         raw = cached.get("content") or ""
         content, top_chunks, chunks, shown_chunk_ids, chunk_mode, truncated = await _prepare_document_content(
-            query, raw, chunk_ids=chunk_ids,
+            raw, chunk_ids=chunk_ids,
         )
         return {
             **cached,
@@ -1379,7 +1363,7 @@ async def _extract_url_document(
         cached_entry["total_chars"] = total_chars
         await _page_set(url, cached_entry, cache)
         content, top_chunks, chunks, shown_chunk_ids, chunk_mode, truncated = await _prepare_document_content(
-            query, raw, chunk_ids=chunk_ids,
+            raw, chunk_ids=chunk_ids,
         )
         extracted["content"] = content
         extracted["total_chars"] = total_chars

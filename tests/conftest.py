@@ -54,7 +54,7 @@ server_app = server.mcp
 
 
 class _ServerModuleProxy:
-    """Back-compat facade resolving attributes across the four split modules.
+    """Test facade resolving attributes across split modules.
 
     Tests reference `server_module.X` — resolve X by walking the split
     modules in order. New tests can also `import core`, `import impls`,
@@ -73,23 +73,6 @@ class _ServerModuleProxy:
 
 server_module = _ServerModuleProxy()
 
-
-class FakeContext:
-    """Minimal no-op stub for fastmcp.Context in impl-level tests.
-
-    Cache state no longer round-trips through ctx (it lives in Valkey),
-    so the old JSON-serializability gate isn't needed anymore. The
-    class stays because tool signatures still accept ctx.
-    """
-
-    def __init__(self):
-        self._state = {}
-
-    def get_state(self, key):
-        return self._state.get(key)
-
-    def set_state(self, key, value):
-        self._state[key] = value
 
 
 def make_search_results(
@@ -127,10 +110,6 @@ SCRAPE_CONTENT = {
     "https://example.com/b2": "# Page B2\n\nThis is the full content of page B2 with enough text to pass the minimum chunk size threshold for reranking.",
 }
 
-
-@pytest.fixture
-def fake_ctx():
-    return FakeContext()
 
 
 @pytest_asyncio.fixture(autouse=True)

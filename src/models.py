@@ -12,10 +12,9 @@ class StrictModel(BaseModel):
 class ChunkSpecModel(StrictModel):
     """A chunk with a stable id.
 
-    Returned on extract responses so callers can cherry-pick chunks by
-    id on a follow-up call (`chunk_ids=[...]`) without re-scraping or
-    re-reranking. IDs are indices into the full cached document chunk
-    list and are stable as long as the cached raw content is.
+    Returned on extract responses as stable document chunk metadata.
+    IDs are indices into the full cached document chunk list and are
+    stable as long as the cached raw content is.
     """
     id: int
     text: str

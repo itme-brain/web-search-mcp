@@ -1,8 +1,8 @@
-"""Optional CPU-only semantic cache backed by Valkey Search.
+"""Optional CPU-only semantic index backed by Valkey Search.
 
 Page chunks are embedded with a small sentence-transformers model and
 stored as Valkey HASH records. Valkey Search maintains an HNSW vector
-index over those hashes, giving us bounded TTL cache semantics without a
+index over those hashes, giving us bounded TTL semantics without a
 separate vector database service.
 """
 
@@ -23,10 +23,7 @@ import core
 
 log = logging.getLogger("web-search-mcp")
 
-ENABLED = os.environ.get(
-    "ENABLE_SEMANTIC_CACHE",
-    os.environ.get("ENABLE_SEMANTIC_INDEX", "0"),  # backwards-compatible old name
-).lower() in {"1", "true", "yes", "on"}
+ENABLED = os.environ.get("ENABLE_SEMANTIC_CACHE", "0").lower() in {"1", "true", "yes", "on"}
 MODEL_NAME = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
 DEVICE = os.environ.get("EMBEDDING_DEVICE", "cpu")
 TOP_K = int(os.environ.get("SEMANTIC_TOP_K", "20"))
@@ -178,7 +175,7 @@ async def index_page(url: str, title: str, content: str, metadata: dict | None =
     chunks = core._chunk_text(content)[:MAX_CHUNKS_PER_PAGE]
     if not chunks:
         return
-    if cache.SEMANTIC_CACHE_TTL_S == 0:
+    if cache.SEMANTIC_INDEX_TTL_S == 0:
         return
     vectors = await _embed(chunks, is_query=False)
     if vectors.size == 0:
@@ -206,7 +203,7 @@ async def index_page(url: str, title: str, content: str, metadata: dict | None =
             "model": MODEL_NAME,
             "vector": _vector_blob(vector),
         })
-        pipe.expire(key, cache.SEMANTIC_CACHE_TTL_S)
+        pipe.expire(key, cache.SEMANTIC_INDEX_TTL_S)
     await pipe.execute()
 
 

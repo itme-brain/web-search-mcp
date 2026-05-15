@@ -1,5 +1,4 @@
-"""MCP entry point: FastMCP instance, /health + /ready routes, and the
-four @mcp.tool wrappers.
+"""MCP entry point: FastMCP instance, /health + /ready routes, and the five @mcp.tool wrappers.
 
 Run with `python server.py` inside the container (WORKDIR /app, where
 the sibling modules live).
@@ -7,7 +6,7 @@ the sibling modules live).
 
 import asyncio
 
-from fastmcp import Context, FastMCP
+from fastmcp import FastMCP
 from fastmcp.tools.tool import ToolResult
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
@@ -33,7 +32,7 @@ from formatters import (
     _format_map_results,
     _format_search_results,
 )
-# Re-export the four impls as server-level attributes so `from server
+# Re-export impls as server-level attributes so `from server
 # import search_impl` still works for Python scripters.
 from impls import crawl_impl, extract_impl, map_impl, research_impl, search_impl  # noqa: F401
 
@@ -83,7 +82,7 @@ async def metrics(_: Request) -> JSONResponse:
 
     Plain INCR counters; no TTL. Reset by flushing Valkey.
     """
-    page, searxng, seen, page_memory, semantic_cache = await asyncio.gather(
+    page, searxng, seen, page_memory, semantic_index = await asyncio.gather(
         cache.page_cache.stats(),
         cache.searxng_cache.stats(),
         cache.seen_urls.stats(),
@@ -97,14 +96,14 @@ async def metrics(_: Request) -> JSONResponse:
             "seen_urls": seen,
             "page_memory": page_memory,
         },
-        "semantic_index": semantic_cache,
+        "semantic_index": semantic_index,
     })
 
 
 @mcp.custom_route("/metrics/prometheus", methods=["GET"])
 async def prometheus_metrics(_: Request) -> PlainTextResponse:
     """Prometheus text metrics for tool/stage observability."""
-    page, searxng, seen, page_memory, semantic_cache = await asyncio.gather(
+    page, searxng, seen, page_memory, semantic_index = await asyncio.gather(
         cache.page_cache.stats(),
         cache.searxng_cache.stats(),
         cache.seen_urls.stats(),
@@ -120,8 +119,8 @@ async def prometheus_metrics(_: Request) -> PlainTextResponse:
         "web_search_mcp_seen_url_cache_misses": (seen["misses"], {"cache": "seen_urls"}),
         "web_search_mcp_page_memory_cache_hits": (page_memory["hits"], {"cache": "page_memory"}),
         "web_search_mcp_page_memory_cache_misses": (page_memory["misses"], {"cache": "page_memory"}),
-        "web_search_mcp_semantic_index_ready": (1 if semantic_cache.get("index_ready") else 0, {}),
-        "web_search_mcp_semantic_indexed_chunks": (semantic_cache.get("indexed_chunks", 0), {}),
+        "web_search_mcp_semantic_index_ready": (1 if semantic_index.get("index_ready") else 0, {}),
+        "web_search_mcp_semantic_indexed_chunks": (semantic_index.get("indexed_chunks", 0), {}),
     }
     return PlainTextResponse(
         observability.prometheus_text(gauges),
@@ -147,7 +146,7 @@ async def ready(_: Request) -> JSONResponse:
             "crawl4ai": crawl4ai,
             "valkey": valkey,
             "reranker": {"status": "ok", "name": RERANK_NAME, "model": RERANK_MODEL},
-            "semantic_cache": _semantic_status(),
+            "semantic_index": _semantic_status(),
         },
     }
     return JSONResponse(payload, status_code=200 if ready_ok else 503)
@@ -163,7 +162,6 @@ async def search(
     time_range: str | None = None,
     include_domains: list[str] | None = None,
     exclude_domains: list[str] | None = None,
-    ctx: Context | None = None,
 ) -> ToolResult:
     """Find web sources with compact evidence. Use first.
 
@@ -186,20 +184,13 @@ async def search(
 
 
 @mcp.tool(output_schema=models.ExtractResponseModel.model_json_schema())
-async def extract(
-    urls: list[str],
-    query: str | None = None,
-    ctx: Context | None = None,
-) -> ToolResult:
-    """Read known URLs. Use after search for more context.
+async def extract(url: str) -> ToolResult:
+    """Read one URL.
 
     Args:
-        urls: URL list, even for one URL.
-        query: Optional focus question for relevant chunks.
+        url: URL to read.
     """
-    response = await impls.extract_impl(
-        urls=urls, query=query, chunk_ids=None,
-    )
+    response = await impls.extract_impl(urls=[url], chunk_ids=None)
     return _tool_result(response, _format_extract_results)
 
 
@@ -228,7 +219,6 @@ async def research(
     num_results: int = 8,
     time_range: str | None = None,
     source_types: list[str] | None = None,
-    ctx: Context | None = None,
 ) -> ToolResult:
     """Broader/slower search for hard questions.
 

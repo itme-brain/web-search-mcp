@@ -261,11 +261,6 @@ async def _append_page_memory_entries(
     """Append page-level retrieval-memory hits from cache.py."""
     keys = [core._normalize_url(r.get("url", "")) for r in results]
     cached_entries = await asyncio.gather(*(cache_module.page_memory_cache.get(key) for key in keys))
-    missing = [key for key, cached in zip(keys, cached_entries) if cached is None]
-    if missing and hasattr(cache_module, "legacy_page_memory_cache"):
-        legacy_entries = await asyncio.gather(*(cache_module.legacy_page_memory_cache.get(key) for key in missing))
-        legacy_iter = iter(legacy_entries)
-        cached_entries = [next(legacy_iter) if cached is None else cached for cached in cached_entries]
     added = 0
     for cached in cached_entries:
         if not cached or not cached.get("content"):
@@ -526,7 +521,7 @@ async def search_impl(
 
     brief = evidence.brief_from_results(structured_results)
     findings = evidence.research_findings(structured_results) if profile == "research" else []
-    answer = findings  # backward-compatible meta field; prefer findings.
+    answer = findings
     summary = evidence.research_summary(structured_results, warnings) if profile == "research" else []
     key_evidence = evidence.research_key_evidence(structured_results) if profile == "research" else []
     gaps = evidence.research_gaps(structured_results, warnings) if profile == "research" else []
@@ -597,31 +592,29 @@ async def research_impl(
 
 async def extract_impl(
     urls: list[str],
-    query: str | None = None,
     chunk_ids: list[int] | None = None,
     observe: bool = True,
 ) -> dict:
-    """Extract a batch of URLs with per-URL status reporting.
+    """Extract full cleaned documents with per-URL status reporting.
 
     Uses Crawl4AI for web pages and local fetch for text-like resources.
-    Binary document formats are classified here and handed off to the
-    `files` MCP via structured metadata rather than parsed locally.
+    Binary document formats are classified here and handed off via
+    structured metadata rather than parsed locally.
 
-    `chunk_ids` cherry-picks specific chunks from the full cached
-    document by stable id (see the `chunks` field on the response).
+    `chunk_ids` is an internal escape hatch for tests/debugging; public
+    MCP extract always reads the document body.
     """
     urls = core._validate_urls(urls, maximum=_MAX_EXTRACT_URLS)
     request_id = uuid.uuid4().hex
     if chunk_ids is not None and any(i < 0 for i in chunk_ids):
         raise ValueError("chunk_ids entries must be >= 0")
-    normalized_query = core._coerce_optional_str(query)
     started = time.monotonic()
 
     page_cache = cache_module.page_cache
 
     documents = await asyncio.gather(*[
         core._extract_url_document(
-            url, normalized_query, page_cache,
+            url, page_cache,
             chunk_ids=chunk_ids,
         )
         for url in urls
@@ -666,7 +659,7 @@ async def extract_impl(
         results.append(entry)
 
     response = {
-        "query": normalized_query,
+        "query": None,
         "results": results,
         "meta": {
             "request_id": request_id,
@@ -830,34 +823,43 @@ async def crawl_impl(
     root_url = tree["url"]
     urls = [entry["url"] for entry in tree["results"]]
 
-    # Query-driven path bypasses extract_impl to retain per-chunk scores
-    # for cross-page ranking; non-query path keeps using extract_impl so
-    # existing call-sites and test mocks remain unchanged.
+    extracted = await extract_impl(
+        urls=urls,
+        chunk_ids=None,
+        observe=False,
+    )
+    urls_succeeded = extracted["meta"]["urls_succeeded"]
+    urls_failed = extracted["meta"]["urls_failed"]
+    doc_by_url = {entry["url"]: entry for entry in extracted["results"]}
+
     score_by_url: dict[str, float | None] = {}
     if normalized_query:
-        page_cache = cache_module.page_cache
-        documents = await asyncio.gather(*[
-            core._extract_url_document(u, normalized_query, page_cache, chunk_ids=None)
-            for u in urls
-        ])
-        urls_succeeded = sum(1 for d in documents if d["status"] == "ok")
-        urls_failed = len(documents) - urls_succeeded
-        doc_by_url: dict[str, dict] = dict(zip(urls, documents))
+        chunk_docs: list[str] = []
+        chunk_to_url: list[str] = []
         for u, doc in doc_by_url.items():
-            top = doc.get("top_chunks") or []
-            score_by_url[u] = (
-                top[0].get("score") if top and isinstance(top[0], dict) else None
-            )
-    else:
-        extracted = await extract_impl(
-            urls=urls,
-            query=None,
-            chunk_ids=None,
-            observe=False,
-        )
-        urls_succeeded = extracted["meta"]["urls_succeeded"]
-        urls_failed = extracted["meta"]["urls_failed"]
-        doc_by_url = {entry["url"]: entry for entry in extracted["results"]}
+            if doc.get("status") != "ok":
+                continue
+            chunks = doc.get("chunks") or []
+            for chunk in chunks:
+                text = chunk.get("text") if isinstance(chunk, dict) else None
+                if text:
+                    chunk_docs.append(text)
+                    chunk_to_url.append(u)
+        if chunk_docs:
+            try:
+                scored = await core._rerank_scored(normalized_query, chunk_docs)
+            except Exception as exc:
+                log.warning("crawl rerank failed query=%r err=%s", normalized_query, exc)
+                scored = []
+            top_by_url: dict[str, list[dict]] = defaultdict(list)
+            for chunk_idx, score in scored:
+                u = chunk_to_url[chunk_idx]
+                if score_by_url.get(u) is None or score > (score_by_url[u] or 0):
+                    score_by_url[u] = score
+                if len(top_by_url[u]) < 3:
+                    top_by_url[u].append({"text": chunk_docs[chunk_idx], "score": score})
+            for u, top in top_by_url.items():
+                doc_by_url[u]["top_chunks"] = top
 
     results: list[dict] = []
     for node in tree["results"]:

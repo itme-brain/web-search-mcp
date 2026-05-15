@@ -15,9 +15,9 @@ def _identity_rerank(_query: str, documents: list[str]) -> list[tuple[int, float
 
 
 @pytest.mark.asyncio
-async def test_extract_urls_returns_structured_result_from_tool():
+async def test_extract_url_returns_structured_result_from_tool():
     extract_mock = AsyncMock(return_value={
-        "query": "example query",
+        "query": None,
         "results": [
             {
                 "url": "https://example.com/a1",
@@ -46,12 +46,11 @@ async def test_extract_urls_returns_structured_result_from_tool():
         async with Client(server_app) as client:
             result = await client.call_tool_mcp(
                 "extract",
-                {"urls": ["https://example.com/a1"], "query": "example query"},
+                {"url": "https://example.com/a1"},
             )
             payload = result.content[0].text
             structured = result.structuredContent
 
-    assert "example query" in payload
     assert "https://example.com/a1" in payload
     assert "Example" in payload
     assert structured["results"][0]["url"] == "https://example.com/a1"
@@ -85,7 +84,7 @@ async def test_extract_rejects_private_ip_urls():
 async def test_extract_rejects_hostnames_that_resolve_private():
     fake_addrinfo = [(2, 1, 6, "", ("10.0.0.8", 0))]
     with (
-        patch("core.socket.getaddrinfo", return_value=fake_addrinfo),
+        patch("validators.socket.getaddrinfo", return_value=fake_addrinfo),
         pytest.raises(ValueError, match="private or reserved target"),
     ):
         await server_module.extract_impl(urls=["http://internal.example.test/secret"])

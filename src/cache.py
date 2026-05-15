@@ -9,10 +9,11 @@ Named caches:
                       flag on search results.
 - `content_alias`   — content_hash → canonical URL, for exact-dupe
                       aliasing inside page_cache.
+- `page_memory_cache` — retrieval-ready page text keyed by normalized URL.
 
-They replace the per-session in-memory `cachetools.TTLCache` trio that
-used to hang off FastMCP Context state. A single connection pool backs
-them all; keys are prefixed per-cache and carry sane default TTLs.
+They replace the old per-session in-memory `cachetools.TTLCache` trio.
+A single connection pool backs them all; keys are prefixed per-cache and
+carry sane default TTLs.
 
 Valkey is an internal compose service alongside searxng and crawl4ai. If
 the stack is up, Valkey is up — there is no in-request fallback path.
@@ -41,15 +42,16 @@ def _ttl_env(name: str, default: int) -> int:
 
 # CACHE_TTL_S remains the coarse global default. Per-cache TTL env vars
 # are optional overrides for operators who want fresher SearXNG results
-# but longer-lived page/semantic caches. Set CACHE_TTL_S=0 to run all
-# caches as no-ops unless a per-cache override is explicitly set.
+# but longer-lived page/page-memory/semantic-index entries. Set
+# CACHE_TTL_S=0 to run all caches as no-ops unless a per-cache override
+# is explicitly set.
 _DEFAULT_TTL_S = _ttl_env("CACHE_TTL_S", 3600)
 SEARXNG_CACHE_TTL_S = _ttl_env("SEARXNG_CACHE_TTL_S", min(_DEFAULT_TTL_S, 900) if _DEFAULT_TTL_S else 0)
 PAGE_CACHE_TTL_S = _ttl_env("PAGE_CACHE_TTL_S", max(_DEFAULT_TTL_S, 86400) if _DEFAULT_TTL_S else 0)
 SEEN_URL_TTL_S = _ttl_env("SEEN_URL_TTL_S", _DEFAULT_TTL_S)
 CONTENT_ALIAS_TTL_S = _ttl_env("CONTENT_ALIAS_TTL_S", PAGE_CACHE_TTL_S)
 PAGE_MEMORY_CACHE_TTL_S = _ttl_env("PAGE_MEMORY_CACHE_TTL_S", PAGE_CACHE_TTL_S)
-SEMANTIC_CACHE_TTL_S = _ttl_env("SEMANTIC_CACHE_TTL_S", PAGE_CACHE_TTL_S)
+SEMANTIC_INDEX_TTL_S = _ttl_env("SEMANTIC_INDEX_TTL_S", PAGE_CACHE_TTL_S)
 # Short TTL for failed / rejected page entries. Long enough to prevent
 # immediate retry thrash on bad URLs, short enough that a transient
 # upstream failure (CAPTCHA, 5xx, brief timeout) can recover in under a
@@ -178,8 +180,3 @@ content_alias = KVCache("ws:content", ttl=CONTENT_ALIAS_TTL_S)
 # -> {url,title,domain,source_type,content,metadata,updated_at}. Distinct
 # from semantic.py, which owns chunk-level vector/FT indexing.
 page_memory_cache = KVCache("ws:page_memory", ttl=PAGE_MEMORY_CACHE_TTL_S)
-# Backward-compatible handle for deployments/tests that still read the old
-# page-memory prefix. New writes go to page_memory_cache only.
-legacy_page_memory_cache = KVCache("ws:semantic", ttl=SEMANTIC_CACHE_TTL_S)
-# Backward-compatible alias for older imports/tests.
-semantic_cache = page_memory_cache

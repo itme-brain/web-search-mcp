@@ -34,18 +34,17 @@ class _FakePdfReader:
 
 
 @pytest.mark.asyncio
-async def test_extract_urls_validates_input():
-    with pytest.raises(ValueError, match="urls must not be empty"):
-        await server_module.extract.fn([])
+async def test_extract_url_validates_input():
+    with pytest.raises(ValueError, match="invalid URL"):
+        await server_module.extract.fn("")
 
     with pytest.raises(ValueError, match="invalid URL"):
-        await server_module.extract.fn(["notaurl"])
+        await server_module.extract.fn("notaurl")
 
 
 @pytest.mark.asyncio
-async def test_extract_impl_treats_null_string_query_as_none():
-    """Buggy MCP clients sometimes serialize `query=None` as the string
-    "null". It must not be forwarded as a literal query to the reranker."""
+async def test_extract_impl_uses_full_document_core_mode():
+    """Public extract uses core full-document mode."""
     extract_mock = AsyncMock(return_value={
         "status": "ok",
         "url": "https://example.com/page",
@@ -59,12 +58,10 @@ async def test_extract_impl_treats_null_string_query_as_none():
     with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
         payload = await server_module.extract_impl(
             urls=["https://example.com/page"],
-            query="null",
         )
 
     assert payload["query"] is None
-    # `_extract_url_document` must receive None, not the string "null".
-    assert extract_mock.call_args.args[1] is None
+    assert extract_mock.call_args.args[1] is cache_module.page_cache
 
 
 @pytest.mark.asyncio
@@ -95,11 +92,10 @@ async def test_extract_urls_returns_structured_results():
     with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
         payload = await server_module.extract_impl(
             urls=["https://example.com/page", "https://example.com/file.pdf"],
-            query="example query",
             
         )
 
-    assert payload["query"] == "example query"
+    assert payload["query"] is None
     assert payload["meta"]["urls_requested"] == 2
     assert payload["meta"]["urls_succeeded"] == 1
     assert payload["meta"]["urls_failed"] == 1
@@ -160,14 +156,9 @@ async def test_extract_urls_single_url_returns_markdown():
     })
 
     with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
-        payload = await server_module.extract.fn(
-            ["https://example.com/file.docx"],
-            query="example query",
-            
-        )
+        payload = await server_module.extract.fn("https://example.com/file.docx")
     payload_text = payload.content[0].text
 
-    assert "example query" in payload_text
     assert "https://example.com/file.docx" in payload_text
     assert "Unsupported" in payload_text
     assert "local docx extraction is not supported" in payload_text
@@ -191,7 +182,7 @@ async def test_single_extract_markdown_omits_redundant_success_header():
     })
 
     with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
-        payload = await server_module.extract.fn(["https://example.com/page"])
+        payload = await server_module.extract.fn("https://example.com/page")
 
     payload_text = payload.content[0].text
     assert not payload_text.startswith("succeeded:")
@@ -210,7 +201,6 @@ async def test_extract_url_document_extracts_pdf_text():
     ):
         result = await server_module._extract_url_document(
             "https://example.com/manual.pdf",
-            query=None,
             cache=cache_module.page_cache,
         )
 
@@ -239,7 +229,7 @@ async def test_extract_cache_hit_preserves_pdf_metadata():
     })
 
     result = await server_module._extract_url_document(
-        "https://example.com/manual.pdf", query=None, cache=cache_module.page_cache,
+        "https://example.com/manual.pdf", cache=cache_module.page_cache,
     )
 
     assert result["cached"] is True
@@ -344,7 +334,6 @@ async def test_extract_url_document_reports_unknown_types_unsupported_by_default
     with patch("core._detect_file_type", AsyncMock(return_value=("unknown", "application/octet-stream"))):
         result = await server_module._extract_url_document(
             "https://example.com/blob.bin",
-            query=None,
             cache=cache_module.page_cache,
         )
 
@@ -376,7 +365,7 @@ async def test_extract_markdown_surfaces_chunk_range_summary():
     })
 
     with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
-        markdown = await server_module.extract.fn(["https://example.com/long"])
+        markdown = await server_module.extract.fn("https://example.com/long")
     markdown_text = markdown.content[0].text
 
     assert "document: chunks: 0..2 of 0..8 | mode: relevant | 8,000 of 24,000 chars" in markdown_text
@@ -398,7 +387,7 @@ async def test_extract_no_chunk_summary_when_chunks_absent():
     })
 
     with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
-        markdown = await server_module.extract.fn(["https://example.com/short"])
+        markdown = await server_module.extract.fn("https://example.com/short")
     markdown_text = markdown.content[0].text
 
     assert "chunks:" not in markdown_text
@@ -430,7 +419,6 @@ async def test_extract_response_includes_chunks_with_stable_ids():
 
     result = await server_module._extract_url_document(
         "https://example.com/chunked",
-        query=None,
         cache=cache_module.page_cache,
     )
 
@@ -656,7 +644,7 @@ async def test_extract_sees_search_scrape_as_cache_hit():
         patch("core._detect_file_type", extract_detect),
     ):
         result = await server_module._extract_url_document(
-            url, query=None, cache=cache_module.page_cache,
+            url, cache=cache_module.page_cache,
         )
 
     assert result["cached"] is True
@@ -693,7 +681,6 @@ async def test_extract_cache_collapses_url_variants():
     for variant in variants:
         result = await server_module._extract_url_document(
             variant,
-            query=None,
             cache=cache_module.page_cache,
         )
         assert result["cached"] is True, f"variant missed cache: {variant!r}"
@@ -702,7 +689,7 @@ async def test_extract_cache_collapses_url_variants():
 
 @pytest.mark.asyncio
 async def test_extract_chunk_ids_returns_only_selected_chunks():
-    """chunk_ids=[0,2] joins chunks 0 and 2 into `content`, skips rerank."""
+    """chunk_ids=[0,2] joins chunks 0 and 2 into `content`."""
     content = "Alpha paragraph one.\n\nBeta paragraph two.\n\nGamma paragraph three."
     await cache_module.page_cache.set("https://example.com/chunked", {
         "status": "ok",
@@ -716,12 +703,10 @@ async def test_extract_chunk_ids_returns_only_selected_chunks():
 
     result = await server_module._extract_url_document(
         "https://example.com/chunked",
-        query="query that would otherwise rerank",
         cache=cache_module.page_cache,
         chunk_ids=[0, 2],
     )
 
-    # chunk_ids short-circuits rerank.
     assert result["top_chunks"] == []
     assert "Alpha paragraph one." in result["content"]
     assert "Gamma paragraph three." in result["content"]
@@ -749,7 +734,7 @@ async def test_extract_markdown_uses_compact_chunk_ranges():
     })
 
     with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
-        markdown = await server_module.extract.fn(["https://example.com/page"])
+        markdown = await server_module.extract.fn("https://example.com/page")
     markdown_text = markdown.content[0].text
 
     assert "document: chunks: 3..5 of 0..8 | mode: selected | 8,000 of 12,000 chars" in markdown_text
@@ -773,7 +758,7 @@ async def test_extract_markdown_renders_non_consecutive_chunks_as_list():
     })
 
     with patch(PATCH_EXTRACT_URL_DOCUMENT, extract_mock):
-        markdown = await server_module.extract.fn(["https://example.com/page"])
+        markdown = await server_module.extract.fn("https://example.com/page")
     markdown_text = markdown.content[0].text
 
     assert "chunks: 5, 30, 60 of 0..99" in markdown_text
