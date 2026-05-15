@@ -10,8 +10,9 @@ def brief_from_results(results: list[dict]) -> list[str]:
         text = passages[0].get("text", "").replace("\n", " ").strip()
         if len(text) > 220:
             text = text[:219].rstrip() + "…"
+        citation = passages[0].get("citation") or str(result["rank"])
         if text:
-            brief.append(f"[{result['rank']}] {text}")
+            brief.append(f"[{citation}] {text}")
     return brief
 
 
@@ -31,9 +32,10 @@ def research_findings(results: list[dict]) -> list[str]:
         if len(text) > 260:
             text = text[:259].rstrip() + "…"
         key = text[:120].lower()
+        citation = passages[0].get("citation") or str(result["rank"])
         if text and key not in seen:
             seen.add(key)
-            findings.append(f"[{result['rank']}] {text}")
+            findings.append(f"[{citation}] {text}")
     return findings
 
 
@@ -65,8 +67,9 @@ def research_key_evidence(results: list[dict]) -> list[str]:
         text = passages[0].get("text", "").replace("\n", " ").strip()
         if len(text) > 180:
             text = text[:179].rstrip() + "…"
+        citation = passages[0].get("citation") or str(result["rank"])
         if text:
-            evidence.append(f"[{result['rank']}] {result.get('title', 'Untitled')}: {text}")
+            evidence.append(f"[{citation}] {result.get('title', 'Untitled')}: {text}")
     return evidence
 
 

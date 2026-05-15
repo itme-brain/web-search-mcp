@@ -58,6 +58,7 @@ class DocumentMetadataModel(StrictModel):
 
 
 class SearchPassageModel(StrictModel):
+    citation: str | None = None
     text: str
     score: float | None = None
 
@@ -201,6 +202,8 @@ class CrawlMetaModel(StrictModel):
     urls_returned: int
     urls_truncated_by_limit: int
     urls_deduplicated: int = 0
+    sparse: bool = False
+    sparsity_reason: str | None = None
     urls_succeeded: int
     urls_failed: int
     warnings: list[WarningModel]

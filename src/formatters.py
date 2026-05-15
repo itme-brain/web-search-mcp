@@ -193,8 +193,14 @@ def _format_search_results(response: dict) -> str:
         if passages:
             evidence_lines = []
             for passage in passages:
-                text = passage.get("text", "") if isinstance(passage, dict) else str(passage)
-                evidence_lines.append(f"- {text}")
+                if isinstance(passage, dict):
+                    text = passage.get("text", "")
+                    citation = passage.get("citation")
+                    prefix = f"[{citation}] " if citation else ""
+                else:
+                    text = str(passage)
+                    prefix = ""
+                evidence_lines.append(f"- {prefix}{text}")
             section_lines.append("\n".join(evidence_lines))
         elif content:
             section_lines.append(content)
@@ -302,6 +308,8 @@ def _format_crawl_results(response: dict) -> str:
         ("discovered", str(meta.get("urls_discovered", 0))),
         ("extracted", str(meta.get("urls_succeeded", 0))),
         ("failed", str(meta.get("urls_failed", 0)) if meta.get("urls_failed") else None),
+        ("sparse", "yes" if meta.get("sparse") else None),
+        ("sparsity", meta.get("sparsity_reason")),
     ])
     if summary:
         sections.append(summary)

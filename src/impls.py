@@ -356,15 +356,19 @@ async def _rank_search_entries(
 
 async def _build_structured_search_results(
     *, ranked_entry_idxs: list[int], entries: list[dict], entry_chunks: dict[int, list[tuple[str, float]]],
-    results: list[dict],
+    results: list[dict], profile: str = "search",
 ) -> tuple[list[dict], list[str]]:
     ranked_normalized = [core._normalize_url(entries[eidx]["url"]) for eidx in ranked_entry_idxs]
     seen_flags = await asyncio.gather(*(cache_module.seen_urls.contains(u) for u in ranked_normalized))
     structured_results: list[dict] = []
     for rank, (eidx, normalized_url, seen_recently) in enumerate(zip(ranked_entry_idxs, ranked_normalized, seen_flags), 1):
+        top = entry_chunks.get(eidx, [])
+        if profile == "research" and not top:
+            continue
+        if profile == "research" and entries[eidx].get("scraped") is False and rank > 3:
+            continue
         entry = entries[eidx]
         url = entry["url"]
-        top = entry_chunks.get(eidx, [])
         content = _CHUNK_GAP.join(chunk for chunk, _ in top) if top else entry["content"]
         structured = {
             "rank": rank,
@@ -374,7 +378,10 @@ async def _build_structured_search_results(
             "source_type": source_quality.source_type(url),
             "snippet": results[eidx].get("content", "") if eidx < len(results) else "",
             "content": content,
-            "passages": [{"text": chunk, "score": score} for chunk, score in top],
+            "passages": [
+                {"citation": f"{rank}.{idx}", "text": chunk, "score": score}
+                for idx, (chunk, score) in enumerate(top, 1)
+            ],
             "scraped": entry["scraped"],
             "seen_recently": seen_recently,
             "retrieval_source": entry.get("retrieval_source", "live_search"),
@@ -517,6 +524,7 @@ async def search_impl(
         entries=entries,
         entry_chunks=entry_chunks,
         results=results,
+        profile=profile,
     )
 
     brief = evidence.brief_from_results(structured_results)
@@ -904,6 +912,14 @@ async def crawl_impl(
         entry["rank"] = rank
 
     warnings = list(tree["meta"].get("warnings", []))
+    sparse = len(results) < min(effective_max_urls, 3) or urls_succeeded == 0
+    sparsity_reason = None
+    if urls_succeeded == 0:
+        sparsity_reason = "No pages could be extracted."
+    elif len(results) < min(effective_max_urls, 3):
+        sparsity_reason = f"Only {len(results)} in-scope page(s) were discovered under this root."
+    if sparsity_reason:
+        warnings.append(core._warning("crawl_sparse", "crawl", sparsity_reason))
     response = {
         "url": root_url,
         "query": normalized_query,
@@ -915,6 +931,8 @@ async def crawl_impl(
             "urls_returned": len(results),
             "urls_truncated_by_limit": 0,
             "urls_deduplicated": 0,
+            "sparse": sparse,
+            "sparsity_reason": sparsity_reason,
             "urls_succeeded": urls_succeeded,
             "urls_failed": urls_failed,
             "warnings": warnings,
