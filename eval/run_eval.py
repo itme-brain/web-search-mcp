@@ -37,7 +37,6 @@ async def _run_query(server_module, query_spec: dict) -> dict:
         time_range=query_spec.get("time_range"),
         include_domains=query_spec.get("include_domains"),
         exclude_domains=query_spec.get("exclude_domains"),
-        ctx=None,
     )
     return {
         "id": query_spec["id"],

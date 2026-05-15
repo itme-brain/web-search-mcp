@@ -36,6 +36,10 @@ The default comparison runs:
 - `flashrank=flashrank:ms-marco-MiniLM-L-12-v2`
 - `minilm-l6=sentence-transformers:cross-encoder/ms-marco-MiniLM-L6-v2`
 
+The current compose default is `sentence-transformers:cross-encoder/ms-marco-MiniLM-L4-v2`.
+It matched MiniLM-L6/L12 usefulness on the bundled eval set while reducing
+CPU rerank latency in local benchmarks.
+
 Pass explicit specs to compare other English rerankers:
 
 ```sh

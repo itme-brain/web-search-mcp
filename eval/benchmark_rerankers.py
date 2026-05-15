@@ -70,15 +70,19 @@ def parse_spec(raw: str) -> RerankerSpec:
 
 
 def _run_command(args: list[str], *, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    result = subprocess.run(
         args,
         cwd=ROOT,
         env=env,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        check=True,
     )
+    if result.returncode != 0:
+        if result.stdout:
+            print(result.stdout.rstrip())
+        raise subprocess.CalledProcessError(result.returncode, args, output=result.stdout)
+    return result
 
 
 def run_eval_for_spec(
