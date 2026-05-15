@@ -39,6 +39,9 @@ The default comparison runs:
 The current compose default is `sentence-transformers:cross-encoder/ms-marco-MiniLM-L4-v2`.
 It matched MiniLM-L6/L12 usefulness on the bundled eval set while reducing
 CPU rerank latency in local benchmarks.
+Each benchmarked reranker is loaded in its own subprocess. Normal deploys
+download/load only the single backend/model selected by `RERANK_BACKEND`
+and `RERANK_MODEL`.
 
 Pass explicit specs to compare other English rerankers:
 

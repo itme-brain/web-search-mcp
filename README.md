@@ -74,12 +74,25 @@ RERANK_MODEL=cross-encoder/ms-marco-MiniLM-L4-v2
 RERANK_DEVICE=cpu
 ```
 
+Only the configured `RERANK_BACKEND` and `RERANK_MODEL` are loaded. Other
+models listed here are examples; they are not downloaded unless selected.
+
 FlashRank remains available as the smallest ONNX-based backend:
 
 ```sh
 RERANK_BACKEND=flashrank
 RERANK_MODEL=ms-marco-MiniLM-L-12-v2
 ```
+
+Tested English reranker options:
+
+| Backend | Model | Use when |
+|---|---|---|
+| `sentence-transformers` | `cross-encoder/ms-marco-MiniLM-L4-v2` | Default balance of quality and CPU latency. |
+| `sentence-transformers` | `cross-encoder/ms-marco-MiniLM-L6-v2` | Slightly larger CPU model; matched L4 quality in the bundled eval but ran slower. |
+| `sentence-transformers` | `cross-encoder/ms-marco-MiniLM-L12-v2` | Larger MiniLM model; no bundled-eval gain over L4/L6 in local tests. |
+| `sentence-transformers` | `cross-encoder/ms-marco-MiniLM-L2-v2` | Fastest tested CrossEncoder, but lower usefulness on the bundled eval. |
+| `flashrank` | `ms-marco-MiniLM-L-12-v2` | Small ONNX-based backend; available for compatibility and comparison. |
 
 ## Layout
 
