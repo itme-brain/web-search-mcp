@@ -69,6 +69,9 @@ class SearchResultModel(StrictModel):
     url: str
     domain: str
     source_type: str | None = None
+    retrieval_source: str | None = None
+    best_score: float | None = None
+    latest_date: str | None = None
     snippet: str
     content: str
     passages: list[SearchPassageModel] = []
@@ -83,6 +86,7 @@ class SearchMetaModel(StrictModel):
     brief: list[str] = []
     findings: list[str] = []
     answer: list[str] = []
+    summary: list[str] = []
     key_evidence: list[str] = []
     gaps: list[str] = []
     next_actions: list[str] = []
@@ -120,10 +124,11 @@ class ExtractResultModel(StrictModel):
     content: str
     chars_shown: int
     total_chars: int
+    truncated: bool = False
     total_chunks: int | None = None
     shown_chunk_ids: list[int] = []
     chunk_mode: str | None = None
-    top_chunks: list[str]
+    top_chunks: list[str] = []
     chunks: list[ChunkSpecModel] = []
     cached: bool
     error: str | None = None

@@ -7,33 +7,31 @@ adapters live in cache.py.
 """
 
 import asyncio
-import copy
-import fnmatch
-import ipaddress
 import json
 import logging
 import mimetypes
 import os
+import fnmatch
 import re
-import socket
+import socket  # re-exported for compatibility with tests/patches
 from collections import defaultdict
 from io import BytesIO
-from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
-from datasketch import MinHash, MinHashLSH
-from langchain_text_splitters import MarkdownTextSplitter
 import magic
-from pypdf import PdfReader
+PdfReader = None  # lazily imported in _get_pdf_reader_cls()
 from rapidfuzz import fuzz
-import tldextract
 import trafilatura
 from pydantic_settings import BaseSettings
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
-from url_normalize import url_normalize
+import text_utils
+import urls
+import validators
 
 import cache as cache_module
-import rerankers
+import crawl
+import rerank
 from cache import KVCache
 
 
@@ -84,8 +82,7 @@ MAX_PDF_BYTES = settings.max_pdf_bytes
 # ---------------------------------------------------------------------------
 _HTTP_TIMEOUT = max(REQUEST_TIMEOUT // 2, 10)
 _MAX_CONTENT_CHARS = 20000
-_DEDUP_SIMILARITY = 0.75
-_DEDUP_NUM_PERM = 128
+_MAX_EXTRACT_CONTENT_CHARS = 200000
 _TITLE_DEDUP_THRESHOLD = 97.0
 _TOP_CHUNKS = 3
 _MAX_CHUNKS_PER_PAGE = 10
@@ -108,13 +105,7 @@ _MIN_RELEVANCE_SCORE = 0.05
 
 VALID_TIME_RANGES = frozenset({"day", "week", "month", "year"})
 
-_TRACKING_PARAMS = frozenset({
-    "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
-    "ref", "fbclid", "gclid", "dclid", "msclkid", "mc_cid", "mc_eid",
-})
-_WORD_SPLIT = re.compile(r"\W+")
 _WHITESPACE = re.compile(r"\s+")
-_MARKDOWN_SPLITTER = MarkdownTextSplitter(chunk_size=1000, chunk_overlap=0)
 _PILCROW_LINK = re.compile(r"\[¶\]\([^)]*\)")
 _MARKDOWN_LINK = re.compile(r"\[[^\]]+\]\([^)]+\)")
 
@@ -159,13 +150,7 @@ def _dedup_unresponsive_engines(entries: list) -> list[tuple[str, str]]:
 # URL + text utilities
 # ---------------------------------------------------------------------------
 def _normalize_url(url: str) -> str:
-    normalized = url_normalize(url)
-    parsed = urlparse(normalized)
-    host = parsed.hostname or ""
-    if host.startswith("www."):
-        host = host[4:]
-    params = {k: v for k, v in parse_qs(parsed.query).items() if k not in _TRACKING_PARAMS}
-    return urlunparse((parsed.scheme, host, parsed.path.rstrip("/"), "", urlencode(params, doseq=True), ""))
+    return urls.normalize_url(url)
 
 
 def _dedup_results(results: list[dict]) -> list[dict]:
@@ -175,7 +160,7 @@ def _dedup_results(results: list[dict]) -> list[dict]:
     for r in results:
         norm = _normalize_url(r.get("url", ""))
         domain = _domain_from_url(r.get("url", "")).lower()
-        title = _normalize_title(r.get("title", ""))
+        title = urls.normalize_title(r.get("title", ""))
         if norm in seen_urls:
             continue
         if title and any(fuzz.ratio(title, seen) >= _TITLE_DEDUP_THRESHOLD for seen in seen_titles[domain]):
@@ -187,111 +172,28 @@ def _dedup_results(results: list[dict]) -> list[dict]:
     return deduped
 
 
-def _normalize_title(title: str) -> str:
-    normalized = _WHITESPACE.sub(" ", title.strip().lower())
-    normalized = re.sub(r"[^a-z0-9 ]+", "", normalized)
-    normalized = _WHITESPACE.sub(" ", normalized)
-    return normalized.strip()
-
-
-def _word_set(text: str) -> set[str]:
-    return {word for word in _WORD_SPLIT.split(text.lower()) if word}
-
-
-def _chunk_minhash(words: set[str]) -> MinHash:
-    sketch = MinHash(num_perm=_DEDUP_NUM_PERM)
-    for word in sorted(words):
-        if word:
-            sketch.update(word.encode("utf-8"))
-    return sketch
-
-
 def _dedup_chunks(chunks: list[str], entry_map: list[int]) -> tuple[list[str], list[int]]:
-    kept_chunks: list[str] = []
-    kept_entries: list[int] = []
-    lsh = MinHashLSH(threshold=_DEDUP_SIMILARITY, num_perm=_DEDUP_NUM_PERM)
-    for chunk, eidx in zip(chunks, entry_map):
-        words = _word_set(chunk)
-        if not words:
-            continue
-        sketch = _chunk_minhash(words)
-        if lsh.query(sketch):
-            continue
-        key = len(kept_chunks)
-        lsh.insert(key, sketch)
-        kept_chunks.append(chunk)
-        kept_entries.append(eidx)
-    return kept_chunks, kept_entries
+    return text_utils.dedup_chunks(chunks, entry_map)
 
 
 def _dedup_pages(entries: list[dict], *, min_chars: int = 200) -> tuple[list[dict], int]:
-    """Collapse pages with near-identical body content; keep first-seen entry.
-
-    Catches the case where a site serves the same rendered page at several URLs
-    (e.g. `/`, `/docs/getting-started`, `/docs/getting-started/intro` all rendering
-    one intro page). Pages shorter than `min_chars` bypass the check since short
-    bodies false-match easily against shared boilerplate.
-    """
-    kept: list[dict] = []
-    lsh = MinHashLSH(threshold=_DEDUP_SIMILARITY, num_perm=_DEDUP_NUM_PERM)
-    dropped = 0
-    for entry in entries:
-        content = entry.get("content") or ""
-        if len(content) < min_chars:
-            kept.append(entry)
-            continue
-        words = _word_set(content)
-        if not words:
-            kept.append(entry)
-            continue
-        sketch = _chunk_minhash(words)
-        if lsh.query(sketch):
-            dropped += 1
-            continue
-        lsh.insert(len(kept), sketch)
-        kept.append(entry)
-    return kept, dropped
+    return text_utils.dedup_pages(entries, min_chars=min_chars)
 
 
 def _domain_from_url(url: str) -> str:
-    return urlparse(url).hostname or ""
+    return urls.domain_from_url(url)
 
 
 def _canonical_hostname(host: str) -> str:
-    normalized = host.strip().lower().rstrip(".")
-    if normalized.startswith("www."):
-        normalized = normalized[4:]
-    return normalized
+    return urls.canonical_hostname(host)
 
 
 def _registrable_domain(domain: str) -> str:
-    """Return the PSL-aware registrable domain for host/domain matching."""
-    bare = _canonical_hostname(domain)
-    extracted = tldextract.extract(bare)
-    if extracted.domain and extracted.suffix:
-        return f"{extracted.domain}.{extracted.suffix}"
-    return bare
+    return urls.registrable_domain(domain)
 
 
 def _chunk_text(text: str) -> list[str]:
-    """Split extracted markdown into bounded chunks for reranking.
-
-    Preserve existing paragraph boundaries for short blocks so reranked
-    excerpts remain visibly discontinuous, and delegate only oversized
-    blocks to LangChain's maintained markdown-aware splitter.
-    """
-    blocks = [block.strip() for block in text.split("\n\n") if block.strip()]
-    chunks: list[str] = []
-    for block in blocks:
-        if len(block) <= 1000:
-            chunks.append(block)
-            continue
-        chunks.extend(
-            chunk.strip()
-            for chunk in _MARKDOWN_SPLITTER.split_text(block)
-            if chunk.strip()
-        )
-    return chunks
+    return text_utils.chunk_text(text)
 
 
 def _diversify_ranked_entries(ranked_entry_idxs: list[int], entries: list[dict]) -> list[int]:
@@ -324,153 +226,43 @@ def _diversify_ranked_entries(ranked_entry_idxs: list[int], entries: list[dict])
 # Validators + normalizers
 # ---------------------------------------------------------------------------
 def _coerce_optional_str(value: str | None) -> str | None:
-    """Undo accidental JSON-quoting from buggy MCP clients.
-
-    Some clients over-serialize optional string args: `None` arrives as
-    the string `"null"`, and `"en"` arrives as `'"en"'` (literal quotes).
-    Strip that back so downstream code sees the values Python expects.
-    """
-    if value is None:
-        return None
-    stripped = value.strip().strip('"').strip("'").strip()
-    if stripped.lower() in ("", "null", "none"):
-        return None
-    return stripped
+    return validators.coerce_optional_str(value)
 
 
 def _normalize_time_range(time_range: str | None) -> str | None:
-    coerced = _coerce_optional_str(time_range)
-    if coerced is None:
-        return None
-    normalized = coerced.lower()
-    if normalized not in VALID_TIME_RANGES:
-        raise ValueError(f"invalid time_range: {time_range!r}. Expected one of {sorted(VALID_TIME_RANGES)}")
-    return normalized
+    return validators.normalize_time_range(time_range)
 
 
 def _validate_query(query: str) -> str:
-    normalized = query.strip()
-    if not normalized:
-        raise ValueError("query must not be empty")
-    return normalized
+    return validators.validate_query(query)
 
 
 def _validate_positive_int(name: str, value: int, *, maximum: int) -> int:
-    if value < 1:
-        raise ValueError(f"{name} must be >= 1")
-    if value > maximum:
-        raise ValueError(f"{name} must be <= {maximum}")
-    return value
+    return validators.validate_positive_int(name, value, maximum=maximum)
 
 
 def _validate_urls(urls: list[str], *, maximum: int) -> list[str]:
-    if not urls:
-        raise ValueError("urls must not be empty")
-    if len(urls) > maximum:
-        raise ValueError(f"urls must contain at most {maximum} entries")
-    normalized: list[str] = []
-    for url in urls:
-        value = url.strip()
-        parsed = urlparse(value)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise ValueError(f"invalid URL: {url!r}")
-        _reject_non_public_target(parsed.hostname, url=value)
-        normalized.append(value)
-    return normalized
+    return validators.validate_urls(urls, maximum=maximum)
 
 
-def _is_blocked_ip(ip: ipaddress._BaseAddress) -> bool:
-    return any((
-        ip.is_private,
-        ip.is_loopback,
-        ip.is_link_local,
-        ip.is_multicast,
-        ip.is_reserved,
-        ip.is_unspecified,
-        not ip.is_global,
-    ))
+def _is_blocked_ip(ip) -> bool:
+    return validators.is_blocked_ip(ip)
 
 
 def _reject_non_public_target(hostname: str | None, *, url: str) -> None:
-    """Reject localhost and DNS targets that resolve to non-public IP space."""
-    if not hostname:
-        raise ValueError(f"invalid URL: {url!r}")
-
-    host = hostname.rstrip(".").lower()
-    if host == "localhost" or host.endswith(".localhost"):
-        raise ValueError(f"URL resolves to a private or reserved target: {url!r}")
-
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        ip = None
-
-    if ip is not None:
-        if _is_blocked_ip(ip):
-            raise ValueError(f"URL resolves to a private or reserved target: {url!r}")
-        return
-
-    try:
-        resolved = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
-    except OSError:
-        # Treat DNS/OS resolver failures as non-actionable here. The
-        # actual fetch layer will surface connection failures; this guard
-        # exists only to reject targets that definitely resolve to private
-        # or reserved address space.
-        return
-
-    for family, _, _, _, sockaddr in resolved:
-        if family == socket.AF_INET:
-            candidate = ipaddress.ip_address(sockaddr[0])
-        elif family == socket.AF_INET6:
-            candidate = ipaddress.ip_address(sockaddr[0])
-        else:
-            continue
-        if _is_blocked_ip(candidate):
-            raise ValueError(f"URL resolves to a private or reserved target: {url!r}")
+    return validators.reject_non_public_target(hostname, url=url)
 
 
 def _normalize_domains(domains: list[str] | None, *, field_name: str) -> list[str]:
-    if not domains:
-        return []
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for domain in domains:
-        value = _canonical_hostname(domain)
-        if not value:
-            continue
-        if "/" in value:
-            raise ValueError(f"{field_name} entries must be bare domains, got {domain!r}")
-        if value not in seen:
-            seen.add(value)
-            normalized.append(value)
-    return normalized
+    return validators.normalize_domains(domains, field_name=field_name)
 
 
 def _normalize_glob_patterns(patterns: list[str] | None, *, field_name: str) -> list[str]:
-    if not patterns:
-        return []
-    normalized: list[str] = []
-    for pattern in patterns:
-        value = pattern.strip()
-        if not value:
-            continue
-        normalized.append(value)
-    if not normalized:
-        raise ValueError(f"{field_name} must not be empty when provided")
-    return normalized
+    return validators.normalize_glob_patterns(patterns, field_name=field_name)
 
 
 def _match_domain(domain: str, patterns: list[str]) -> bool:
-    host = _canonical_hostname(domain)
-    host_registrable = _registrable_domain(host)
-    for pattern in patterns:
-        normalized = _canonical_hostname(pattern)
-        if host == normalized or host.endswith(f".{normalized}"):
-            return True
-        if "." not in normalized and host_registrable == normalized:
-            return True
-    return False
+    return validators.match_domain(domain, patterns)
 
 
 def _filter_results_by_domain(
@@ -691,7 +483,7 @@ def _clean_pdf_metadata_value(value) -> str | None:
     return text or None
 
 
-def _build_pdf_metadata(reader: PdfReader, content: str) -> dict:
+def _build_pdf_metadata(reader, content: str) -> dict:
     metadata: dict = {
         "page_count": len(reader.pages),
         "word_count": len(content.split()) if content else 0,
@@ -939,35 +731,13 @@ def _deep_crawl_config(
     # Discovery should keep the full page chrome where site topology
     # often lives. Starting from the content-pruned default config can
     # collapse map/crawl to the root page on real sites.
-    params = copy.deepcopy(_MAP_CRAWL_CONFIG["params"])
-    strategy_params: dict = {
-        "max_depth": max_depth,
-        "include_external": not same_domain_only,
-        "max_pages": max_pages,
-    }
-    filters = _crawl_filter_chain(
+    return crawl.deep_crawl_config(
         root_url=root_url,
+        max_depth=max_depth,
+        max_pages=max_pages,
         same_domain_only=same_domain_only,
         include_patterns=include_patterns,
     )
-    if filters:
-        # Crawl4AI's BFS strategy calls `filter_chain.apply(url)`. A bare
-        # list has no .apply() and the server raises AttributeError mid-
-        # stream, so wrap the filters in a typed FilterChain object per
-        # Crawl4AI's type-tagged JSON schema.
-        strategy_params["filter_chain"] = {
-            "type": "FilterChain",
-            "params": {"filters": filters},
-        }
-
-    params["deep_crawl_strategy"] = {
-        "type": "BFSDeepCrawlStrategy",
-        "params": strategy_params,
-    }
-    return {
-        "type": "CrawlerRunConfig",
-        "params": params,
-    }
 
 
 def _is_retryable_crawl_error(exc: BaseException) -> bool:
@@ -999,32 +769,13 @@ async def _crawl_post(
     `urls` is the seed list. With a BFS deep_crawl_strategy in the
     config, Crawl4AI expands each seed independently.
     """
-    resp = await client.post(
-        f"{CRAWL4AI_URL}/crawl/stream",
-        json={
-            "urls": urls,
-            "priority": priority,
-            "crawler_config": crawler_config or _DEFAULT_CRAWL_CONFIG,
-        },
+    return await crawl.crawl_post(
+        client,
+        crawl4ai_url=CRAWL4AI_URL,
+        urls=urls,
+        priority=priority,
+        crawler_config=crawler_config,
     )
-    resp.raise_for_status()
-    body = (await resp.aread()).decode("utf-8", errors="replace")
-    results: list[dict] = []
-    for raw_line in body.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        item = json.loads(line)
-        if not isinstance(item, dict):
-            continue
-        status = item.get("status")
-        if status == "completed":
-            break
-        if status == "failed":
-            detail = item.get("error") or item.get("error_message") or "crawl stream failed"
-            raise ValueError(detail)
-        results.append(item)
-    return {"results": results}
 
 
 async def _scrape_impl(url: str) -> dict:
@@ -1399,7 +1150,16 @@ async def _download_document_bytes(url: str, *, max_bytes: int) -> tuple[bytes, 
             )
 
 
-def _extract_pdf_markdown(reader: PdfReader) -> str:
+def _get_pdf_reader_cls():
+    """Import pypdf only when PDF extraction is actually used."""
+    global PdfReader
+    if PdfReader is None:
+        from pypdf import PdfReader as _PdfReader
+        PdfReader = _PdfReader
+    return PdfReader
+
+
+def _extract_pdf_markdown(reader) -> str:
     page_sections: list[str] = []
     for index, page in enumerate(reader.pages, start=1):
         try:
@@ -1421,7 +1181,7 @@ async def _extract_pdf_document(url: str, content_type: str | None) -> dict:
     pdf_bytes, response_content_type, final_url = await _download_document_bytes(
         url, max_bytes=MAX_PDF_BYTES,
     )
-    reader = PdfReader(BytesIO(pdf_bytes), strict=False)
+    reader = _get_pdf_reader_cls()(BytesIO(pdf_bytes), strict=False)
     if reader.is_encrypted:
         try:
             decrypted = reader.decrypt("")
@@ -1514,61 +1274,37 @@ async def _deep_crawl(
 # ---------------------------------------------------------------------------
 # Ranking + central extract orchestrator
 # ---------------------------------------------------------------------------
-async def _rank_document_content(
+async def _prepare_document_content(
     query: str | None,
     content: str,
     chunk_ids: list[int] | None = None,
-) -> tuple[str, list[dict], list[dict], list[int], str]:
-    """Return (display, top_chunks, chunks) for one document's raw content.
+) -> tuple[str, list[dict], list[dict], list[int], str, bool]:
+    """Prepare extract display content.
 
-    `chunks` is the full chunk list for the first _MAX_CONTENT_CHARS of
-    content with stable ids (derived fresh each call — chunking is
-    deterministic, so ids are stable across calls for the same raw
-    content). Empty when there is no content to chunk.
-
-    `top_chunks` is the reranked top-K — populated only when a query is
-    given and no explicit chunk selection override applies.
-
-    `display` is what the caller reads:
-      - chunk_ids provided: joined text of the requested ids
-      - query provided:     joined text of top-K reranked chunks
-      - otherwise:          first display-sized chunk window in document order
+    Extract is full-document-first: absent explicit chunk_ids, the main
+    content is the cleaned document body up to a generous safety cap.
+    Query reranking only populates optional top_chunks metadata.
     """
-    chunks = [
-        {"id": i, "text": text} for i, text in enumerate(_chunk_text(content))
-    ]
+    chunks = [{"id": i, "text": text} for i, text in enumerate(_chunk_text(content))]
 
     if chunk_ids is not None:
         wanted = set(chunk_ids)
         selected = [c for c in chunks if c["id"] in wanted]
         display = _CHUNK_GAP.join(c["text"] for c in selected)
-        return display, [], chunks, [c["id"] for c in selected], "selected"
+        return display, [], chunks, [c["id"] for c in selected], "selected", False
 
-    if not query or not content:
-        selected = chunks[:_DISPLAY_CHUNK_COUNT]
-        display = _CHUNK_GAP.join(c["text"] for c in selected)
-        return display, [], chunks, [c["id"] for c in selected], "document"
-
-    if not chunks:
-        return content[:_MAX_CONTENT_CHARS], [], chunks, [], "relevant"
-
-    chunk_texts = [c["text"] for c in chunks]
-    scored = await _rerank_scored(query, chunk_texts)
-    top = [
-        {"id": idx, "text": chunk_texts[idx], "score": score}
-        for idx, score in scored[:_TOP_CHUNKS]
-    ]
-    if not top:
-        selected = chunks[:_DISPLAY_CHUNK_COUNT]
-        display = _CHUNK_GAP.join(c["text"] for c in selected)
-        return display, [], chunks, [c["id"] for c in selected], "document"
-    return (
-        _CHUNK_GAP.join(item["text"] for item in top),
-        top,
-        chunks,
-        [item["id"] for item in top],
-        "relevant",
-    )
+    display = content[:_MAX_EXTRACT_CONTENT_CHARS]
+    truncated = len(content) > len(display)
+    shown_ids = [c["id"] for c in chunks]
+    top: list[dict] = []
+    if query and chunks:
+        chunk_texts = [c["text"] for c in chunks]
+        scored = await _rerank_scored(query, chunk_texts)
+        top = [
+            {"id": idx, "text": chunk_texts[idx], "score": score}
+            for idx, score in scored[:_TOP_CHUNKS]
+        ]
+    return display, top, chunks, shown_ids, "document", truncated
 
 
 async def _extract_url_document(
@@ -1583,7 +1319,7 @@ async def _extract_url_document(
     cached = await _page_get(url, cache)
     if cached is not None:
         raw = cached.get("content") or ""
-        content, top_chunks, chunks, shown_chunk_ids, chunk_mode = await _rank_document_content(
+        content, top_chunks, chunks, shown_chunk_ids, chunk_mode, truncated = await _prepare_document_content(
             query, raw, chunk_ids=chunk_ids,
         )
         return {
@@ -1594,6 +1330,7 @@ async def _extract_url_document(
             "shown_chunk_ids": shown_chunk_ids,
             "total_chunks": len(chunks),
             "chunk_mode": chunk_mode,
+            "truncated": truncated,
             "cached": True,
         }
     key = _normalize_url(url)
@@ -1641,7 +1378,7 @@ async def _extract_url_document(
         # that know their own length) rather than deriving from content.
         cached_entry["total_chars"] = total_chars
         await _page_set(url, cached_entry, cache)
-        content, top_chunks, chunks, shown_chunk_ids, chunk_mode = await _rank_document_content(
+        content, top_chunks, chunks, shown_chunk_ids, chunk_mode, truncated = await _prepare_document_content(
             query, raw, chunk_ids=chunk_ids,
         )
         extracted["content"] = content
@@ -1651,6 +1388,7 @@ async def _extract_url_document(
         extracted["shown_chunk_ids"] = shown_chunk_ids
         extracted["total_chunks"] = len(chunks)
         extracted["chunk_mode"] = chunk_mode
+        extracted["truncated"] = truncated
         extracted["cached"] = False
         return extracted
 
@@ -1660,6 +1398,7 @@ async def _extract_url_document(
     extracted["shown_chunk_ids"] = []
     extracted["total_chunks"] = 0
     extracted["chunk_mode"] = None
+    extracted["truncated"] = False
     extracted["cached"] = False
     return extracted
 
@@ -1667,15 +1406,7 @@ async def _extract_url_document(
 # ---------------------------------------------------------------------------
 # Reranker — loaded once at import
 # ---------------------------------------------------------------------------
-log.info(
-    "loading reranker backend=%s model=%s max_length=%d device=%s batch_size=%d",
-    RERANK_BACKEND,
-    RERANK_MODEL,
-    RERANK_MAX_LENGTH,
-    RERANK_DEVICE or "auto",
-    RERANK_BATCH_SIZE,
-)
-_reranker = rerankers.build_reranker(
+_reranker = rerank.load_reranker(
     backend=RERANK_BACKEND,
     model=RERANK_MODEL,
     max_length=RERANK_MAX_LENGTH,
@@ -1683,14 +1414,7 @@ _reranker = rerankers.build_reranker(
     device=RERANK_DEVICE,
 )
 RERANK_NAME = _reranker.name
-log.info("reranker ready backend=%s model=%s", RERANK_NAME, _reranker.model)
 
 
 async def _rerank_scored(query: str, documents: list[str]) -> list[tuple[int, float]]:
-    """Rerank documents via the configured local backend.
-
-    Cross-encoder inference can take tens of ms per call. Backend adapters
-    offload synchronous model work so concurrent scraping/searching stays
-    responsive.
-    """
-    return await _reranker.rerank(query, documents)
+    return await rerank.rerank_scored(query, documents)

@@ -1,4 +1,4 @@
-"""The four public Python-API impls: search, extract, map, crawl.
+"""Public Python-API impls: search, research, extract, map, crawl.
 
 Each returns a structured dict. `@mcp.tool` wrappers in server.py call
 these, then push the result through a formatter in formatters.py to
@@ -224,19 +224,15 @@ async def _scrape_search_entries(results: list[dict], scrape_budget: int) -> tup
     return entries, to_scrape, warnings
 
 
-async def _merge_semantic_cache_entries(
-    *, entries: list[dict], results: list[dict], query: str,
-    max_passages: int, source_types: list[str] | None,
+async def _append_vector_memory_entries(
+    *, entries: list[dict], query: str, max_passages: int,
+    source_types: list[str] | None, existing_urls: set[str],
 ) -> int:
-    """Append cached/semantic evidence not already present in entries."""
-    cached_entries = await asyncio.gather(
-        *(cache_module.semantic_cache.get(core._normalize_url(r.get("url", ""))) for r in results)
-    )
+    """Append chunk-level semantic/vector hits from semantic.py."""
     semantic_hits = await semantic.search(query)
     by_cached_url: dict[str, list[dict]] = defaultdict(list)
     for hit in semantic_hits:
         by_cached_url[core._normalize_url(hit["url"])].append(hit)
-    existing_urls = {core._normalize_url(entry["url"]) for entry in entries if entry.get("url")}
     added = 0
     for normalized, hits in by_cached_url.items():
         if normalized in existing_urls:
@@ -251,9 +247,26 @@ async def _merge_semantic_cache_entries(
             "content": _CHUNK_GAP.join(hit["text"] for hit in hits[:max_passages]),
             "scraped": True,
             "metadata": first.get("metadata") or {},
+            "retrieval_source": "semantic_memory",
         })
         existing_urls.add(normalized)
         added += 1
+    return added
+
+
+async def _append_page_memory_entries(
+    *, entries: list[dict], results: list[dict], source_types: list[str] | None,
+    existing_urls: set[str],
+) -> int:
+    """Append page-level retrieval-memory hits from cache.py."""
+    keys = [core._normalize_url(r.get("url", "")) for r in results]
+    cached_entries = await asyncio.gather(*(cache_module.page_memory_cache.get(key) for key in keys))
+    missing = [key for key, cached in zip(keys, cached_entries) if cached is None]
+    if missing and hasattr(cache_module, "legacy_page_memory_cache"):
+        legacy_entries = await asyncio.gather(*(cache_module.legacy_page_memory_cache.get(key) for key in missing))
+        legacy_iter = iter(legacy_entries)
+        cached_entries = [next(legacy_iter) if cached is None else cached for cached in cached_entries]
+    added = 0
     for cached in cached_entries:
         if not cached or not cached.get("content"):
             continue
@@ -266,9 +279,27 @@ async def _merge_semantic_cache_entries(
             "content": cached.get("content", ""),
             "scraped": True,
             "metadata": cached.get("metadata") or {},
+            "retrieval_source": "page_memory",
         })
         existing_urls.add(normalized)
         added += 1
+    return added
+
+
+async def _merge_memory_entries(
+    *, entries: list[dict], results: list[dict], query: str,
+    max_passages: int, source_types: list[str] | None,
+) -> int:
+    """Append memory evidence not already present in entries."""
+    existing_urls = {core._normalize_url(entry["url"]) for entry in entries if entry.get("url")}
+    added = await _append_vector_memory_entries(
+        entries=entries, query=query, max_passages=max_passages,
+        source_types=source_types, existing_urls=existing_urls,
+    )
+    added += await _append_page_memory_entries(
+        entries=entries, results=results, source_types=source_types,
+        existing_urls=existing_urls,
+    )
     return added
 
 
@@ -351,8 +382,14 @@ async def _build_structured_search_results(
             "passages": [{"text": chunk, "score": score} for chunk, score in top],
             "scraped": entry["scraped"],
             "seen_recently": seen_recently,
+            "retrieval_source": entry.get("retrieval_source", "live_search"),
         }
+        if top:
+            structured["best_score"] = top[0][1]
         metadata = entry.get("metadata") or {}
+        latest_date = metadata.get("date") if isinstance(metadata, dict) else None
+        if latest_date:
+            structured["latest_date"] = latest_date
         if metadata:
             structured["metadata"] = metadata
         structured_results.append(structured)
@@ -366,7 +403,7 @@ async def _persist_search_memory(structured_results: list[dict], normalized_urls
     for result in structured_results:
         if result.get("scraped") and result.get("content"):
             content = result.get("content")
-            writes.append(cache_module.semantic_cache.set(core._normalize_url(result["url"]), {
+            writes.append(cache_module.page_memory_cache.set(core._normalize_url(result["url"]), {
                 "url": result["url"], "title": result["title"], "domain": result["domain"],
                 "source_type": result.get("source_type"), "content": content,
                 "metadata": result.get("metadata") or {}, "updated_at": int(time.time()),
@@ -465,7 +502,7 @@ async def search_impl(
     degraded = degraded or any(w.get("type") == "scrape_failed" for w in scrape_warnings)
 
     semantic_started = time.monotonic()
-    semantic_hits = await _merge_semantic_cache_entries(
+    semantic_hits = await _merge_memory_entries(
         entries=entries, results=results, query=query,
         max_passages=max_passages, source_types=source_types,
     )
@@ -490,6 +527,7 @@ async def search_impl(
     brief = evidence.brief_from_results(structured_results)
     findings = evidence.research_findings(structured_results) if profile == "research" else []
     answer = findings  # backward-compatible meta field; prefer findings.
+    summary = evidence.research_summary(structured_results, warnings) if profile == "research" else []
     key_evidence = evidence.research_key_evidence(structured_results) if profile == "research" else []
     gaps = evidence.research_gaps(structured_results, warnings) if profile == "research" else []
     next_actions = evidence.next_actions(profile, degraded, structured_results, warnings)
@@ -506,6 +544,7 @@ async def search_impl(
             "brief": brief,
             "findings": findings,
             "answer": answer,
+            "summary": summary,
             "key_evidence": key_evidence,
             "gaps": gaps,
             "next_actions": next_actions,
@@ -609,6 +648,7 @@ async def extract_impl(
             "content": content,
             "chars_shown": len(content),
             "total_chars": total_chars,
+            "truncated": document.get("truncated", len(content) < total_chars),
             "total_chunks": document.get("total_chunks"),
             "shown_chunk_ids": document.get("shown_chunk_ids", []),
             "chunk_mode": document.get("chunk_mode"),

@@ -52,14 +52,14 @@ claude mcp add --transport http web-search http://localhost:8002/mcp
 | Tool | Purpose |
 |---|---|
 | `search` | Start here for unknown/current facts. Returns ranked sources with evidence passages. |
-| `extract` | Read known URLs in more detail after `search`. |
+| `extract` | Read the full cleaned body of known URLs after `search`. |
 | `map` | List URLs on one site; does not read page content. |
 | `research` | Hard/broad questions. Multi-query search, compact brief, cited evidence. |
 | `crawl` | Read several pages from one site/docs tree. |
 
-Small-model agent rule of thumb: use `search` first with `num_results=3..5`; use `extract` only for sources that need more context. Use `research` for hard/broad/current questions. Use `map` to plan a docs/site read, then `crawl` a small tree. Use `site:domain.com terms` in `search` for focused docs/site lookup. The MCP tools expose few knobs on purpose; retrieval depth, passage limits, and raw-content fallbacks are sane internal defaults.
+Small-model agent rule of thumb: use `search` first with `num_results=3..5`; use `extract` to read selected sources as full documents. Use `research` for hard/broad/current questions. Use `map` to plan a docs/site read, then `crawl` a small tree. Use `site:domain.com terms` in `search` for focused docs/site lookup. The MCP tools expose few knobs on purpose; retrieval depth, passage limits, and raw-content fallbacks are sane internal defaults.
 
-`extract` handles HTML, common text formats, and born-digital PDFs locally.
+`search`/`research` are the compression tools; `extract` is the document reader. `extract` handles HTML, common text formats, and born-digital PDFs locally.
 PDF downloads are capped by `MAX_PDF_BYTES` before parsing so large files do
 not exhaust memory; scanned/image-only PDFs require a future OCR backend.
 
@@ -67,15 +67,11 @@ not exhaust memory; scanned/image-only PDFs require a future OCR backend.
 
 `just setup` generates `.env` from `env.sample`. See `env.sample` for available knobs. SearXNG engine config lives in `searxng/config/settings.yml.template`.
 
-Semantic cache is enabled in the compose stack by default. It uses
-Valkey Search from `valkey/valkey-bundle` to keep a TTL-bounded HNSW
-vector index over recently scraped chunks. Normal searches write only to
-the configured cache TTL and Valkey maxmemory/LRU policy still bounds
-growth; there is no separate permanent vector database.
+Semantic retrieval is enabled in the compose stack by default and can augment live search. The cache layers are intentionally separate: `page_cache` stores canonical fetched/extracted documents, `page_memory` (`ws:page_memory`) stores retrieval-ready page text, and `semantic.py` owns the TTL-bounded Valkey Search HNSW chunk/vector index over recently scraped chunks. Normal searches write only to the configured cache TTL and Valkey maxmemory/LRU policy still bounds growth; there is no separate permanent vector database.
 
 Observability endpoints:
 
-- `/metrics`: JSON cache and semantic-index counters for quick inspection.
+- `/metrics`: JSON page, SearXNG, seen-URL, page-memory, and semantic-index counters for quick inspection.
 - `/metrics/prometheus`: Prometheus text metrics for tool requests, warnings,
   stage latency histograms, cache counters, and semantic-index gauges.
 Each tool response also includes `meta.request_id`, which is mirrored in
@@ -122,10 +118,15 @@ flake.nix                           Nix devshell + deploy/teardown
 justfile                            task runner recipes
 requirements.in / .txt              Python deps (uv-compiled, hash-locked)
 src/
-  server.py                         FastMCP entry point and tool wrappers
-  impls.py                          search, extract, map, crawl implementations
-  core.py                           HTTP clients, reranker, caching, text processing
+  server.py                         FastMCP entry point, tool wrappers, health/metrics
+  impls.py                          orchestration for search, extract, map, crawl
+  core.py                           HTTP clients, scraping/extraction, shared helpers
+  crawl.py                          site mapping/crawling helpers
+  rerank.py                         rerank utilities and scoring helpers
   rerankers.py                      local reranker backend adapters
+  text_utils.py                     text chunking/cleaning utilities
+  urls.py                           URL normalization and filtering helpers
+  validators.py                     parameter validation helpers
   models.py                         Pydantic response models
   formatters.py                     dict → markdown rendering
 searxng/config/

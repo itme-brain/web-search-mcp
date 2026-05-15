@@ -83,10 +83,11 @@ async def metrics(_: Request) -> JSONResponse:
 
     Plain INCR counters; no TTL. Reset by flushing Valkey.
     """
-    page, searxng, seen, semantic_cache = await asyncio.gather(
+    page, searxng, seen, page_memory, semantic_cache = await asyncio.gather(
         cache.page_cache.stats(),
         cache.searxng_cache.stats(),
         cache.seen_urls.stats(),
+        cache.page_memory_cache.stats(),
         semantic.stats(),
     )
     return JSONResponse({
@@ -94,18 +95,20 @@ async def metrics(_: Request) -> JSONResponse:
             "page": page,
             "searxng": searxng,
             "seen_urls": seen,
+            "page_memory": page_memory,
         },
-        "semantic_cache": semantic_cache,
+        "semantic_index": semantic_cache,
     })
 
 
 @mcp.custom_route("/metrics/prometheus", methods=["GET"])
 async def prometheus_metrics(_: Request) -> PlainTextResponse:
     """Prometheus text metrics for tool/stage observability."""
-    page, searxng, seen, semantic_cache = await asyncio.gather(
+    page, searxng, seen, page_memory, semantic_cache = await asyncio.gather(
         cache.page_cache.stats(),
         cache.searxng_cache.stats(),
         cache.seen_urls.stats(),
+        cache.page_memory_cache.stats(),
         semantic.stats(),
     )
     gauges = {
@@ -115,6 +118,8 @@ async def prometheus_metrics(_: Request) -> PlainTextResponse:
         "web_search_mcp_searxng_cache_misses": (searxng["misses"], {"cache": "searxng"}),
         "web_search_mcp_seen_url_cache_hits": (seen["hits"], {"cache": "seen_urls"}),
         "web_search_mcp_seen_url_cache_misses": (seen["misses"], {"cache": "seen_urls"}),
+        "web_search_mcp_page_memory_cache_hits": (page_memory["hits"], {"cache": "page_memory"}),
+        "web_search_mcp_page_memory_cache_misses": (page_memory["misses"], {"cache": "page_memory"}),
         "web_search_mcp_semantic_index_ready": (1 if semantic_cache.get("index_ready") else 0, {}),
         "web_search_mcp_semantic_indexed_chunks": (semantic_cache.get("indexed_chunks", 0), {}),
     }

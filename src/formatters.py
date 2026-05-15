@@ -74,23 +74,20 @@ def _document_meta_line(r: dict) -> str | None:
     shown_chunk_ids = r.get("shown_chunk_ids", []) or []
     total_chunks = r.get("total_chunks")
     chunk_mode = r.get("chunk_mode")
-    chunk_span = _chunk_range(shown_chunk_ids)
     if total_chunks:
+        chunk_span = _chunk_range(shown_chunk_ids)
         if chunk_span:
             meta_parts.append(f"chunks: {chunk_span} of 0..{total_chunks - 1}")
-        else:
+        elif chunk_mode == "document":
             meta_parts.append(f"chunks: 0..{total_chunks - 1}")
-    if chunk_mode == "relevant":
-        meta_parts.append("mode: relevant")
-    elif chunk_mode == "document":
-        meta_parts.append("mode: document")
-    elif chunk_mode == "selected":
-        meta_parts.append("mode: selected")
+    if chunk_mode in {"relevant", "document", "selected"}:
+        meta_parts.append(f"mode: {chunk_mode}")
 
     total_chars = r.get("total_chars")
     chars_shown = r.get("chars_shown", len(r.get("content", "")))
     if total_chars and chars_shown:
-        meta_parts.append(f"{chars_shown:,} of {total_chars:,} chars")
+        suffix = " shown" if r.get("truncated") else ""
+        meta_parts.append(f"{chars_shown:,} of {total_chars:,} chars{suffix}")
     if not meta_parts:
         return None
     return " | ".join(meta_parts)
@@ -145,6 +142,9 @@ def _format_search_results(response: dict) -> str:
 
     sections = [header]
     if meta.get("profile") == "research":
+        summary = meta.get("summary") or []
+        if summary:
+            sections.append("summary:\n" + "\n".join(f"- {line}" for line in summary))
         findings = meta.get("findings") or meta.get("answer") or []
         if findings:
             sections.append("findings:\n" + "\n".join(f"- {line}" for line in findings))
@@ -174,17 +174,17 @@ def _format_search_results(response: dict) -> str:
         if domain:
             meta_parts.append(domain)
         source_type = r.get("source_type")
-        if source_type:
-            meta_parts.append(f"source: {source_type}")
+        if source_type and source_type != "web":
+            meta_parts.append(source_type)
         metadata = r.get("metadata") or {}
         if isinstance(metadata, dict) and metadata.get("date"):
             meta_parts.append(str(metadata["date"]))
-        if isinstance(rank, int):
+        if isinstance(rank, int) and rank <= 3:
             meta_parts.append(_rank_band(rank))
         if r.get("scraped") is False and content:
-            meta_parts.append("snippet only")
+            meta_parts.append("snippet")
         else:
-            meta_parts.append("scraped page evidence")
+            meta_parts.append("scraped")
         meta_line = "_{}_".format(" | ".join(meta_parts)) if meta_parts else ""
         section_lines = [f"## {title_prefix}[{title}]({url})"]
         if meta_line:
@@ -253,7 +253,8 @@ def _format_document_section(r: dict, *, show_meta_inline: bool = True) -> str:
             f"{reason}"
         )
     elif content:
-        section = f"## [{title}]({url})\n\n{content}"
+        notice = "\n\n_[truncated]_" if r.get("truncated") else ""
+        section = f"## [{title}]({url})\n\n{content}{notice}"
     else:
         section = f"## [{title}]({url})"
 

@@ -48,6 +48,7 @@ SEARXNG_CACHE_TTL_S = _ttl_env("SEARXNG_CACHE_TTL_S", min(_DEFAULT_TTL_S, 900) i
 PAGE_CACHE_TTL_S = _ttl_env("PAGE_CACHE_TTL_S", max(_DEFAULT_TTL_S, 86400) if _DEFAULT_TTL_S else 0)
 SEEN_URL_TTL_S = _ttl_env("SEEN_URL_TTL_S", _DEFAULT_TTL_S)
 CONTENT_ALIAS_TTL_S = _ttl_env("CONTENT_ALIAS_TTL_S", PAGE_CACHE_TTL_S)
+PAGE_MEMORY_CACHE_TTL_S = _ttl_env("PAGE_MEMORY_CACHE_TTL_S", PAGE_CACHE_TTL_S)
 SEMANTIC_CACHE_TTL_S = _ttl_env("SEMANTIC_CACHE_TTL_S", PAGE_CACHE_TTL_S)
 # Short TTL for failed / rejected page entries. Long enough to prevent
 # immediate retry thrash on bad URLs, short enough that a transient
@@ -173,9 +174,12 @@ seen_urls = KVCache("ws:seen", ttl=SEEN_URL_TTL_S)
 # identical content we write only one full entry and alias the rest
 # through this map. See core._page_set / core._page_get.
 content_alias = KVCache("ws:content", ttl=CONTENT_ALIAS_TTL_S)
-# Lightweight local retrieval index entries. Stored in Valkey as
-# normalized_url -> {url,title,domain,source_type,content,metadata,updated_at}.
-# Search can re-rank cached pages alongside live SearXNG candidates to
-# reduce repeat scraping and approximate a local semantic memory without
-# adding a vector database dependency.
-semantic_cache = KVCache("ws:semantic", ttl=SEMANTIC_CACHE_TTL_S)
+# Page-level retrieval memory entries. Stored in Valkey as normalized_url
+# -> {url,title,domain,source_type,content,metadata,updated_at}. Distinct
+# from semantic.py, which owns chunk-level vector/FT indexing.
+page_memory_cache = KVCache("ws:page_memory", ttl=PAGE_MEMORY_CACHE_TTL_S)
+# Backward-compatible handle for deployments/tests that still read the old
+# page-memory prefix. New writes go to page_memory_cache only.
+legacy_page_memory_cache = KVCache("ws:semantic", ttl=SEMANTIC_CACHE_TTL_S)
+# Backward-compatible alias for older imports/tests.
+semantic_cache = page_memory_cache

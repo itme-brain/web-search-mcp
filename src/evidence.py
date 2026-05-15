@@ -42,6 +42,25 @@ def research_answer(results: list[dict]) -> list[str]:
     return research_findings(results)
 
 
+def research_summary(results: list[dict], warnings: list[dict]) -> list[str]:
+    """Return a conservative answer-first assessment for research output."""
+    if not results:
+        return ["No reliable assessment is possible because no supporting sources were found."]
+    summary: list[str] = []
+    top_titles = [r.get("title") or "Untitled" for r in results[:3]]
+    summary.append(f"Top retrieved evidence centers on: {', '.join(top_titles)}.")
+    dated = [r.get("latest_date") for r in results if r.get("latest_date")]
+    if dated:
+        summary.append(f"Newest dated source in the retrieved set: {max(str(d) for d in dated)}.")
+    else:
+        summary.append("Retrieved sources are undated or dates were not detected; treat freshness as uncertain.")
+    if len(results) < 3:
+        summary.append("Evidence coverage is thin, so conclusions should remain tentative.")
+    if any(w.get("type") in {"search_failed", "scrape_failed", "rerank_failed"} for w in warnings):
+        summary.append("Some retrieval steps were degraded; verify important claims against extracted sources.")
+    return summary[:4]
+
+
 def research_key_evidence(results: list[dict]) -> list[str]:
     evidence: list[str] = []
     for result in results[:5]:

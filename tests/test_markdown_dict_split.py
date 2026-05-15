@@ -152,8 +152,8 @@ def test_search_markdown_marks_snippet_fallback_results():
     # Snippet-fallback result is marked; fully-scraped one is not.
     snippet_section = markdown.split("## 2.")[1]
     full_section = markdown.split("## 1.")[1].split("## 2.")[0]
-    assert "snippet only" in snippet_section
-    assert "snippet only" not in full_section
+    assert "snippet" in snippet_section
+    assert "snippet" not in full_section
 
 
 def test_search_warning_lines_are_rendered_as_issues():
