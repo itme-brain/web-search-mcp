@@ -30,6 +30,7 @@ class WarningModel(StrictModel):
 class TimingModel(StrictModel):
     search: int | None = None
     scrape: int | None = None
+    semantic: int | None = None
     rerank: int | None = None
     total: int
 
@@ -77,6 +78,7 @@ class SearchResultModel(StrictModel):
 
 
 class SearchMetaModel(StrictModel):
+    request_id: str | None = None
     profile: str = "search"
     brief: list[str] = []
     findings: list[str] = []
@@ -93,6 +95,7 @@ class SearchMetaModel(StrictModel):
     source_types: list[str] | None = None
     search_backend: str
     reranker: RerankerModel
+    semantic_hits: int = 0
     degraded: bool
     warnings: list[WarningModel]
     timings_ms: TimingModel
@@ -128,6 +131,7 @@ class ExtractResultModel(StrictModel):
 
 
 class ExtractMetaModel(StrictModel):
+    request_id: str | None = None
     urls_requested: int
     urls_succeeded: int
     urls_failed: int
@@ -152,6 +156,7 @@ class MapResultModel(StrictModel):
 
 
 class MapMetaModel(StrictModel):
+    request_id: str | None = None
     max_urls_requested: int
     urls_returned: int
     pages_visited: int
@@ -186,6 +191,7 @@ class CrawlResultModel(StrictModel):
 
 
 class CrawlMetaModel(StrictModel):
+    request_id: str | None = None
     max_urls_requested: int
     urls_discovered: int
     urls_returned: int

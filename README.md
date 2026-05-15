@@ -69,6 +69,14 @@ vector index over recently scraped chunks. Normal searches write only to
 the configured cache TTL and Valkey maxmemory/LRU policy still bounds
 growth; there is no separate permanent vector database.
 
+Observability endpoints:
+
+- `/metrics`: JSON cache and semantic-index counters for quick inspection.
+- `/metrics/prometheus`: Prometheus text metrics for tool requests, warnings,
+  stage latency histograms, cache counters, and semantic-index gauges.
+Each tool response also includes `meta.request_id`, which is mirrored in
+server logs for correlation.
+
 Reranking is local and pluggable. The compose default is the English
 Sentence Transformers CrossEncoder `cross-encoder/ms-marco-MiniLM-L4-v2`,
 which matched the larger MiniLM rerankers on the bundled eval set while

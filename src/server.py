@@ -10,7 +10,7 @@ import asyncio
 from fastmcp import Context, FastMCP
 from fastmcp.tools.tool import ToolResult
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, PlainTextResponse
 
 # Module-qualified imports so `unittest.mock.patch("impls.X")` catches
 # the calls made here — `from impls import X` would bind X locally and
@@ -18,6 +18,8 @@ from starlette.responses import JSONResponse
 import cache
 import impls
 import models
+import observability
+import semantic
 from core import (
     CRAWL4AI_URL,
     RERANK_NAME,
@@ -85,7 +87,7 @@ async def metrics(_: Request) -> JSONResponse:
         cache.page_cache.stats(),
         cache.searxng_cache.stats(),
         cache.seen_urls.stats(),
-        __import__("semantic").stats(),
+        semantic.stats(),
     )
     return JSONResponse({
         "caches": {
@@ -95,6 +97,31 @@ async def metrics(_: Request) -> JSONResponse:
         },
         "semantic_cache": semantic_cache,
     })
+
+
+@mcp.custom_route("/metrics/prometheus", methods=["GET"])
+async def prometheus_metrics(_: Request) -> PlainTextResponse:
+    """Prometheus text metrics for tool/stage observability."""
+    page, searxng, seen, semantic_cache = await asyncio.gather(
+        cache.page_cache.stats(),
+        cache.searxng_cache.stats(),
+        cache.seen_urls.stats(),
+        semantic.stats(),
+    )
+    gauges = {
+        "web_search_mcp_cache_hits": (page["hits"], {"cache": "page"}),
+        "web_search_mcp_cache_misses": (page["misses"], {"cache": "page"}),
+        "web_search_mcp_searxng_cache_hits": (searxng["hits"], {"cache": "searxng"}),
+        "web_search_mcp_searxng_cache_misses": (searxng["misses"], {"cache": "searxng"}),
+        "web_search_mcp_seen_url_cache_hits": (seen["hits"], {"cache": "seen_urls"}),
+        "web_search_mcp_seen_url_cache_misses": (seen["misses"], {"cache": "seen_urls"}),
+        "web_search_mcp_semantic_index_ready": (1 if semantic_cache.get("index_ready") else 0, {}),
+        "web_search_mcp_semantic_indexed_chunks": (semantic_cache.get("indexed_chunks", 0), {}),
+    }
+    return PlainTextResponse(
+        observability.prometheus_text(gauges),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
 
 
 @mcp.custom_route("/ready", methods=["GET"])

@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import time
+import uuid
 from collections import defaultdict
 
 # Module-qualified import so `unittest.mock.patch("core.X")` intercepts
@@ -24,6 +25,7 @@ import evidence
 import query_expansion
 import search_config
 import semantic
+import observability
 import source_quality
 from core import (
     MAX_RESULTS,
@@ -144,7 +146,7 @@ def _validated_response(model_cls, response: dict) -> dict:
 
 
 def _empty_search_response(
-    *, query: str, profile: str, time_range: str | None,
+    *, request_id: str, query: str, profile: str, time_range: str | None,
     include_domains: list[str] | None, exclude_domains: list[str] | None,
     num_results: int, scrape_budget: int, max_passages: int,
     max_chars_per_result: int, search_queries: list[str],
@@ -158,6 +160,7 @@ def _empty_search_response(
         "exclude_domains": exclude_domains,
         "results": [],
         "meta": {
+            "request_id": request_id,
             "profile": profile,
             "brief": [],
             "findings": [],
@@ -174,6 +177,7 @@ def _empty_search_response(
             "source_types": source_types,
             "search_backend": "searxng",
             "reranker": {"name": RERANK_NAME, "model": RERANK_MODEL},
+            "semantic_hits": 0,
             "degraded": degraded,
             "warnings": warnings or [core._warning("no_results", "searxng", query)],
             "timings_ms": {**timings_ms, "total": int((time.monotonic() - started) * 1000)},
@@ -223,7 +227,7 @@ async def _scrape_search_entries(results: list[dict], scrape_budget: int) -> tup
 async def _merge_semantic_cache_entries(
     *, entries: list[dict], results: list[dict], query: str,
     max_passages: int, source_types: list[str] | None,
-) -> None:
+) -> int:
     """Append cached/semantic evidence not already present in entries."""
     cached_entries = await asyncio.gather(
         *(cache_module.semantic_cache.get(core._normalize_url(r.get("url", ""))) for r in results)
@@ -233,6 +237,7 @@ async def _merge_semantic_cache_entries(
     for hit in semantic_hits:
         by_cached_url[core._normalize_url(hit["url"])].append(hit)
     existing_urls = {core._normalize_url(entry["url"]) for entry in entries if entry.get("url")}
+    added = 0
     for normalized, hits in by_cached_url.items():
         if normalized in existing_urls:
             continue
@@ -248,6 +253,7 @@ async def _merge_semantic_cache_entries(
             "metadata": first.get("metadata") or {},
         })
         existing_urls.add(normalized)
+        added += 1
     for cached in cached_entries:
         if not cached or not cached.get("content"):
             continue
@@ -262,6 +268,8 @@ async def _merge_semantic_cache_entries(
             "metadata": cached.get("metadata") or {},
         })
         existing_urls.add(normalized)
+        added += 1
+    return added
 
 
 async def _rank_search_entries(
@@ -390,6 +398,7 @@ async def search_impl(
     Results are backed by shared Valkey caches across requests.
     """
     query = core._validate_query(query)
+    request_id = uuid.uuid4().hex
     num_results = core._validate_positive_int("num_results", num_results, maximum=MAX_RESULTS)
     profile = search_config.normalize_profile(profile)
     time_range = core._normalize_time_range(time_range)
@@ -407,7 +416,8 @@ async def search_impl(
     started = time.monotonic()
     warnings: list[dict] = []
     degraded = False
-    timings_ms = {"search": 0, "scrape": 0, "rerank": 0, "total": 0}
+    timings_ms = {"search": 0, "scrape": 0, "semantic": 0, "rerank": 0, "total": 0}
+    semantic_hits = 0
 
     # --- search (profile-aware multi-page retrieval) ---
     search_started = time.monotonic()
@@ -436,7 +446,7 @@ async def search_impl(
     timings_ms["search"] = int((time.monotonic() - search_started) * 1000)
     if not results:
         response = _empty_search_response(
-            query=query, profile=profile, time_range=time_range,
+            request_id=request_id, query=query, profile=profile, time_range=time_range,
             include_domains=include_domains, exclude_domains=exclude_domains,
             num_results=num_results, scrape_budget=scrape_budget,
             max_passages=max_passages, max_chars_per_result=max_chars_per_result,
@@ -444,6 +454,8 @@ async def search_impl(
             degraded=degraded, warnings=warnings, timings_ms=timings_ms,
             started=started,
         )
+        observability.observe_tool_response(profile, response)
+        log.info("request_id=%s query=%r profile=%s results=0 degraded=%s", request_id, query, profile, degraded)
         return _validated_response(models.SearchResponseModel, response)
 
     scrape_started = time.monotonic()
@@ -452,10 +464,12 @@ async def search_impl(
     warnings.extend(scrape_warnings)
     degraded = degraded or any(w.get("type") == "scrape_failed" for w in scrape_warnings)
 
-    await _merge_semantic_cache_entries(
+    semantic_started = time.monotonic()
+    semantic_hits = await _merge_semantic_cache_entries(
         entries=entries, results=results, query=query,
         max_passages=max_passages, source_types=source_types,
     )
+    timings_ms["semantic"] = int((time.monotonic() - semantic_started) * 1000)
 
     rerank_started = time.monotonic()
     ranked_entry_idxs, entry_chunks, chunk_count, rank_degraded, _ = await _rank_search_entries(
@@ -487,6 +501,7 @@ async def search_impl(
         "exclude_domains": exclude_domains,
         "results": structured_results,
         "meta": {
+            "request_id": request_id,
             "profile": profile,
             "brief": brief,
             "findings": findings,
@@ -503,6 +518,7 @@ async def search_impl(
             "source_types": source_types,
             "search_backend": "searxng",
             "reranker": {"name": RERANK_NAME, "model": RERANK_MODEL},
+            "semantic_hits": semantic_hits,
             "degraded": degraded,
             "warnings": warnings,
             "timings_ms": {
@@ -515,7 +531,11 @@ async def search_impl(
     # --- persist to shared cache ---
     await _persist_search_memory(structured_results, new_urls)
 
-    log.info("query=%r chunks=%d pages=%d", query, chunk_count, len(entries))
+    observability.observe_tool_response(profile, response)
+    log.info(
+        "request_id=%s query=%r profile=%s chunks=%d pages=%d semantic_hits=%d degraded=%s",
+        request_id, query, profile, chunk_count, len(entries), semantic_hits, degraded,
+    )
 
     return _validated_response(models.SearchResponseModel, response)
 
@@ -540,6 +560,7 @@ async def extract_impl(
     urls: list[str],
     query: str | None = None,
     chunk_ids: list[int] | None = None,
+    observe: bool = True,
 ) -> dict:
     """Extract a batch of URLs with per-URL status reporting.
 
@@ -551,6 +572,7 @@ async def extract_impl(
     document by stable id (see the `chunks` field on the response).
     """
     urls = core._validate_urls(urls, maximum=_MAX_EXTRACT_URLS)
+    request_id = uuid.uuid4().hex
     if chunk_ids is not None and any(i < 0 for i in chunk_ids):
         raise ValueError("chunk_ids entries must be >= 0")
     normalized_query = core._coerce_optional_str(query)
@@ -607,6 +629,7 @@ async def extract_impl(
         "query": normalized_query,
         "results": results,
         "meta": {
+            "request_id": request_id,
             "urls_requested": len(urls),
             "urls_succeeded": urls_succeeded,
             "urls_failed": urls_failed,
@@ -615,7 +638,12 @@ async def extract_impl(
             },
         },
     }
-    log.info("extract requested=%d succeeded=%d failed=%d", len(urls), urls_succeeded, urls_failed)
+    if observe:
+        observability.observe_tool_response("extract", response)
+    log.info(
+        "request_id=%s extract requested=%d succeeded=%d failed=%d",
+        request_id, len(urls), urls_succeeded, urls_failed,
+    )
     return _validated_response(models.ExtractResponseModel, response)
 
 
@@ -623,6 +651,7 @@ async def map_impl(
     url: str,
     max_urls: int = 25,
     include_patterns: list[str] | None = None,
+    observe: bool = True,
 ) -> dict:
     """Discover an in-scope site tree rooted at one URL.
 
@@ -632,6 +661,7 @@ async def map_impl(
     selected nodes.
     """
     root_url = core._validate_urls([url], maximum=1)[0]
+    request_id = uuid.uuid4().hex
     max_urls = core._validate_positive_int("max_urls", max_urls, maximum=_MAX_MAP_URLS)
     include_patterns = core._normalize_glob_patterns(include_patterns, field_name="include_patterns")
 
@@ -711,6 +741,7 @@ async def map_impl(
         "url": root_url,
         "results": results,
         "meta": {
+            "request_id": request_id,
             "max_urls_requested": max_urls,
             "urls_returned": len(results),
             "pages_visited": pages_visited,
@@ -720,9 +751,11 @@ async def map_impl(
             },
         },
     }
+    if observe:
+        observability.observe_tool_response("map", response)
     log.info(
-        "map url=%s returned=%d warnings=%d",
-        root_url, len(results), len(warnings),
+        "request_id=%s map url=%s returned=%d warnings=%d",
+        request_id, root_url, len(results), len(warnings),
     )
     return _validated_response(models.MapResponseModel, response)
 
@@ -745,12 +778,14 @@ async def crawl_impl(
         max_urls,
         maximum=min(_MAX_MAP_URLS, _MAX_EXTRACT_URLS),
     )
+    request_id = uuid.uuid4().hex
     normalized_query = core._coerce_optional_str(query)
     started = time.monotonic()
     tree = await map_impl(
         url=url,
         max_urls=effective_max_urls,
         include_patterns=include_patterns,
+        observe=False,
     )
     root_url = tree["url"]
     urls = [entry["url"] for entry in tree["results"]]
@@ -778,6 +813,7 @@ async def crawl_impl(
             urls=urls,
             query=None,
             chunk_ids=None,
+            observe=False,
         )
         urls_succeeded = extracted["meta"]["urls_succeeded"]
         urls_failed = extracted["meta"]["urls_failed"]
@@ -831,6 +867,7 @@ async def crawl_impl(
         "query": normalized_query,
         "results": results,
         "meta": {
+            "request_id": request_id,
             "max_urls_requested": effective_max_urls,
             "urls_discovered": len(tree["results"]),
             "urls_returned": len(results),
@@ -844,8 +881,10 @@ async def crawl_impl(
             },
         },
     }
+    observability.observe_tool_response("crawl", response)
     log.info(
-        "crawl url=%s query=%r discovered=%d returned=%d dedup=%d succeeded=%d failed=%d",
+        "request_id=%s crawl url=%s query=%r discovered=%d returned=%d dedup=%d succeeded=%d failed=%d",
+        request_id,
         root_url,
         normalized_query,
         response["meta"]["urls_discovered"],
