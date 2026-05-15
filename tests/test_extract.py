@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -6,6 +7,30 @@ import cache as cache_module
 from tests.conftest import server_module
 
 PATCH_EXTRACT_URL_DOCUMENT = "core._extract_url_document"
+
+
+class _FakePdfPage:
+    def __init__(self, text: str):
+        self.text = text
+
+    def extract_text(self, **_kwargs):
+        return self.text
+
+
+class _FakePdfReader:
+    def __init__(self, *_args, **_kwargs):
+        self.pages = [
+            _FakePdfPage("Production PDF extraction works."),
+            _FakePdfPage("Self hosted search can read local papers."),
+        ]
+        self.metadata = SimpleNamespace(
+            title="PDF Manual",
+            author="Example Author",
+            subject="PDF extraction test",
+            creator=None,
+            producer=None,
+        )
+        self.is_encrypted = False
 
 
 @pytest.mark.asyncio
@@ -174,31 +199,43 @@ async def test_single_extract_markdown_omits_redundant_success_header():
 
 
 @pytest.mark.asyncio
-async def test_extract_url_document_reports_unsupported_binary_file_types():
-    with patch("core._detect_file_type", AsyncMock(return_value=("pdf", "application/pdf"))):
+async def test_extract_url_document_extracts_pdf_text():
+    with (
+        patch("core._detect_file_type", AsyncMock(return_value=("pdf", "application/pdf"))),
+        patch(
+            "core._download_document_bytes",
+            AsyncMock(return_value=(b"%PDF fixture", "application/pdf", "https://example.com/manual.pdf")),
+        ),
+        patch("core.PdfReader", _FakePdfReader),
+    ):
         result = await server_module._extract_url_document(
             "https://example.com/manual.pdf",
             query=None,
             cache=cache_module.page_cache,
         )
 
-    assert result["status"] == "unsupported"
+    assert result["status"] == "ok"
     assert result["file_type"] == "pdf"
-    assert "local pdf extraction" in result["error"]
-    assert result["content"] == ""
+    assert result["content_type"] == "application/pdf"
+    assert result["title"] == "PDF Manual"
+    assert "## Page 1" in result["content"]
+    assert "Production PDF extraction works." in result["content"]
+    assert result["metadata"]["page_count"] == 2
+    assert result["metadata"]["author"] == "Example Author"
+    assert result["total_chunks"] >= 1
 
 
 @pytest.mark.asyncio
-async def test_extract_cache_hit_preserves_unsupported_metadata():
+async def test_extract_cache_hit_preserves_pdf_metadata():
     await cache_module.page_cache.set("https://example.com/manual.pdf", {
-        "status": "unsupported",
+        "status": "ok",
         "url": "https://example.com/manual.pdf",
         "content_type": "application/pdf",
         "file_type": "pdf",
-        "title": None,
-        "content": "",
-        "total_chars": 0,
-        "error": "local pdf extraction is not supported yet",
+        "title": "PDF Manual",
+        "content": "Production PDF extraction works.",
+        "total_chars": 32,
+        "metadata": {"page_count": 1, "word_count": 4},
     })
 
     result = await server_module._extract_url_document(
@@ -206,9 +243,10 @@ async def test_extract_cache_hit_preserves_unsupported_metadata():
     )
 
     assert result["cached"] is True
-    assert result["status"] == "unsupported"
+    assert result["status"] == "ok"
     assert result["file_type"] == "pdf"
-    assert "local pdf extraction" in result["error"]
+    assert result["metadata"]["page_count"] == 1
+    assert "Production PDF extraction works." in result["content"]
 
 
 def test_guess_file_type_supports_binary_and_text_formats():

@@ -7,6 +7,7 @@ langchain-text-splitters==1.1.2
 mdformat==0.7.22
 python-magic==0.4.27
 pydantic-settings==2.13.1
+pypdf==6.11.0
 pytest==8.4.2
 pytest-asyncio==1.2.0
 rapidfuzz==3.14.1

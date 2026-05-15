@@ -59,6 +59,10 @@ claude mcp add --transport http web-search http://localhost:8002/mcp
 
 Small-model agent rule of thumb: use `search` first with `num_results=3..5`; use `extract` only for sources that need more context. Use `research` for hard/broad/current questions. Use `map` to plan a docs/site read, then `crawl` a small tree. Use `site:domain.com terms` in `search` for focused docs/site lookup. The MCP tools expose few knobs on purpose; retrieval depth, passage limits, and raw-content fallbacks are sane internal defaults.
 
+`extract` handles HTML, common text formats, and born-digital PDFs locally.
+PDF downloads are capped by `MAX_PDF_BYTES` before parsing so large files do
+not exhaust memory; scanned/image-only PDFs require a future OCR backend.
+
 ## Configuration
 
 `just setup` generates `.env` from `env.sample`. See `env.sample` for available knobs. SearXNG engine config lives in `searxng/config/settings.yml.template`.
