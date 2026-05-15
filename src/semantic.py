@@ -1,9 +1,9 @@
-"""Optional CPU-only semantic cache backed by Valkey.
+"""Optional CPU-only semantic cache backed by Valkey Search.
 
-This is deliberately simple: no vector DB service, no GPU use. Page
-chunks are embedded with a small sentence-transformers model and stored
-in Valkey. Search embeds the query, scans cached vectors, and returns the
-nearest chunks to merge with live web candidates.
+Page chunks are embedded with a small sentence-transformers model and
+stored as Valkey HASH records. Valkey Search maintains an HNSW vector
+index over those hashes, giving us bounded TTL cache semantics without a
+separate vector database service.
 """
 
 from __future__ import annotations
@@ -15,6 +15,8 @@ import logging
 import os
 import time
 from typing import Any
+
+from redis.exceptions import ResponseError
 
 import cache
 import core
@@ -28,14 +30,19 @@ ENABLED = os.environ.get(
 MODEL_NAME = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
 DEVICE = os.environ.get("EMBEDDING_DEVICE", "cpu")
 TOP_K = int(os.environ.get("SEMANTIC_TOP_K", "20"))
-MAX_SCAN = int(os.environ.get("SEMANTIC_MAX_SCAN", "5000"))
 MIN_SCORE = float(os.environ.get("SEMANTIC_MIN_SCORE", "0.45"))
 MAX_CHUNKS_PER_PAGE = int(os.environ.get("SEMANTIC_MAX_CHUNKS_PER_PAGE", "40"))
-_INDEX_KEY = "ws:semantic:index"
+BACKEND = os.environ.get("SEMANTIC_BACKEND", "valkey-search").strip().lower()
+_KEY_PREFIX = "ws:semantic:chunk:"
+_MODEL_KEY = hashlib.sha256(MODEL_NAME.encode()).hexdigest()[:12]
+_INDEX_NAME = f"ws:semantic:idx:{_MODEL_KEY}"
 _MODEL: Any | None = None
 _MODEL_LOCK: asyncio.Lock | None = None
-_LAST_SCAN_COUNT = 0
+_INDEX_READY = False
+_INDEX_DIM: int | None = None
+_LAST_RESULT_COUNT = 0
 _LAST_STALE_PRUNED = 0
+_LAST_ERROR: str | None = None
 
 
 def _lock() -> asyncio.Lock:
@@ -79,6 +86,91 @@ def _chunk_id(url: str, text: str) -> str:
     return hashlib.sha256(f"{core._normalize_url(url)}\n{text}".encode()).hexdigest()
 
 
+def _vector_blob(vector: Any) -> bytes:
+    import numpy as np
+
+    return np.asarray(vector, dtype=np.float32).tobytes()
+
+
+def _score_from_distance(distance: float) -> float:
+    # Valkey Search COSINE returns distance as 1 - cosine_similarity.
+    return 1.0 - distance
+
+
+def _chunk_key(chunk_id: str) -> str:
+    return f"{_KEY_PREFIX}{chunk_id}"
+
+
+def _response_error_text(exc: ResponseError) -> str:
+    return str(exc).lower()
+
+
+async def _ensure_index(dim: int) -> bool:
+    """Create the Valkey Search HNSW index if needed.
+
+    Returns False when the connected Valkey does not have Search loaded.
+    """
+    global _INDEX_READY, _INDEX_DIM, _LAST_ERROR
+    if _INDEX_READY and _INDEX_DIM == dim:
+        return True
+    if BACKEND != "valkey-search":
+        _LAST_ERROR = f"unsupported semantic backend: {BACKEND}"
+        return False
+
+    client = cache._get_client()
+    try:
+        await client.execute_command("FT.INFO", _INDEX_NAME)
+        _INDEX_READY = True
+        _INDEX_DIM = dim
+        _LAST_ERROR = None
+        return True
+    except ResponseError as exc:
+        message = _response_error_text(exc)
+        if "unknown index" not in message and "no such index" not in message:
+            _LAST_ERROR = str(exc)
+            log.warning("valkey search index check failed: %s", exc)
+            return False
+
+    try:
+        await client.execute_command(
+            "FT.CREATE",
+            _INDEX_NAME,
+            "ON", "HASH",
+            "PREFIX", "1", _KEY_PREFIX,
+            "SCHEMA",
+            "vector", "VECTOR", "HNSW", "10",
+            "TYPE", "FLOAT32",
+            "DIM", str(dim),
+            "DISTANCE_METRIC", "COSINE",
+            "M", "16",
+            "EF_CONSTRUCTION", "200",
+            "model", "TAG",
+            "domain", "TAG",
+            "updated_at", "NUMERIC",
+            "url", "TEXT", "NOSTEM",
+            "title", "TEXT",
+            "text", "TEXT",
+        )
+    except ResponseError as exc:
+        message = _response_error_text(exc)
+        if "index already exists" in message:
+            _INDEX_READY = True
+            _INDEX_DIM = dim
+            _LAST_ERROR = None
+            return True
+        if "unknown command" in message or "wrong number of arguments" in message:
+            _LAST_ERROR = "valkey-search module is not loaded"
+        else:
+            _LAST_ERROR = str(exc)
+        log.warning("valkey search index creation failed: %s", exc)
+        return False
+
+    _INDEX_READY = True
+    _INDEX_DIM = dim
+    _LAST_ERROR = None
+    return True
+
+
 async def index_page(url: str, title: str, content: str, metadata: dict | None = None) -> None:
     """Embed and store chunks for one page. No-op unless enabled."""
     if not ENABLED or not content:
@@ -89,92 +181,108 @@ async def index_page(url: str, title: str, content: str, metadata: dict | None =
     if cache.SEMANTIC_CACHE_TTL_S == 0:
         return
     vectors = await _embed(chunks, is_query=False)
+    if vectors.size == 0:
+        return
+    if not await _ensure_index(int(vectors.shape[1])):
+        return
     client = cache._get_client()  # internal service module; intentional shared Valkey connection
     normalized = core._normalize_url(url)
     domain = core._domain_from_url(url)
     pipe = client.pipeline()
     now = int(time.time())
-    ids: list[str] = []
     for idx, (chunk, vector) in enumerate(zip(chunks, vectors)):
         cid = _chunk_id(url, chunk)
-        ids.append(cid)
-        payload = {
+        key = _chunk_key(cid)
+        pipe.hset(key, mapping={
             "id": cid,
             "url": url,
             "normalized_url": normalized,
             "domain": domain,
-            "title": title,
+            "title": title or "",
             "chunk_index": idx,
             "text": chunk,
-            "metadata": metadata or {},
+            "metadata": json.dumps(metadata or {}),
             "updated_at": now,
             "model": MODEL_NAME,
-            "vector": vector.tolist(),
-        }
-        pipe.set(f"ws:semantic:chunk:{cid}", json.dumps(payload), ex=cache.SEMANTIC_CACHE_TTL_S)
-    if ids:
-        pipe.sadd(_INDEX_KEY, *ids)
+            "vector": _vector_blob(vector),
+        })
+        pipe.expire(key, cache.SEMANTIC_CACHE_TTL_S)
     await pipe.execute()
 
 
-async def stats() -> dict[str, int | str | bool]:
+async def stats() -> dict[str, int | str | bool | None]:
     client = cache._get_client()
+    indexed_chunks = 0
+    if ENABLED and _INDEX_READY:
+        try:
+            info = await client.execute_command("FT.INFO", _INDEX_NAME)
+            if isinstance(info, list):
+                pairs = dict(zip(info[::2], info[1::2]))
+                indexed_chunks = int(pairs.get("num_docs", 0))
+        except Exception as exc:
+            log.debug("valkey search stats failed: %s", exc)
     return {
         "enabled": ENABLED,
+        "backend": BACKEND,
         "model": MODEL_NAME,
         "device": DEVICE,
         "top_k": TOP_K,
-        "max_scan": MAX_SCAN,
         "min_score": MIN_SCORE,
         "max_chunks_per_page": MAX_CHUNKS_PER_PAGE,
-        "indexed_chunks": await client.scard(_INDEX_KEY) if ENABLED else 0,
-        "last_scan_count": _LAST_SCAN_COUNT,
+        "index_name": _INDEX_NAME,
+        "index_ready": _INDEX_READY,
+        "indexed_chunks": indexed_chunks,
+        "last_result_count": _LAST_RESULT_COUNT,
         "last_stale_pruned": _LAST_STALE_PRUNED,
+        "last_error": _LAST_ERROR,
     }
 
 
 async def search(query: str, *, top_k: int | None = None) -> list[dict]:
     """Return cached semantic chunks nearest to query. No-op unless enabled."""
-    global _LAST_SCAN_COUNT, _LAST_STALE_PRUNED
+    global _LAST_RESULT_COUNT, _LAST_STALE_PRUNED, _LAST_ERROR
     if not ENABLED:
         return []
+    qvec = await _embed([query], is_query=True)
+    if qvec.size == 0:
+        return []
+    if not await _ensure_index(int(qvec.shape[1])):
+        return []
     client = cache._get_client()
-    ids = list(await client.smembers(_INDEX_KEY))
-    if not ids:
-        return []
-    if MAX_SCAN > 0 and len(ids) > MAX_SCAN:
-        ids = ids[-MAX_SCAN:]
-    _LAST_SCAN_COUNT = len(ids)
-    keys = [f"ws:semantic:chunk:{cid}" for cid in ids]
-    raws = await client.mget(keys)
-    records = []
-    stale_ids = []
-    for cid, raw in zip(ids, raws):
-        if not raw:
-            stale_ids.append(cid)
-            continue
-        record = json.loads(raw)
-        if record.get("model") == MODEL_NAME:
-            records.append(record)
-    _LAST_STALE_PRUNED = len(stale_ids)
-    if stale_ids:
-        await client.srem(_INDEX_KEY, *stale_ids)
-    if not records:
-        return []
-    import numpy as np
-
-    qvec = (await _embed([query], is_query=True))[0]
-    vectors = np.asarray([r["vector"] for r in records], dtype=np.float32)
-    scores = vectors @ qvec
     limit = top_k or TOP_K
-    order = np.argsort(-scores)[:limit]
+    try:
+        response = await client.execute_command(
+            "FT.SEARCH",
+            _INDEX_NAME,
+            f"*=>[KNN {limit} @vector $query_vec AS distance]",
+            "PARAMS", "2", "query_vec", _vector_blob(qvec[0]),
+            "SORTBY", "distance",
+            "RETURN", "9",
+            "id", "url", "domain", "title", "chunk_index", "text", "metadata", "updated_at", "distance",
+            "DIALECT", "2",
+        )
+    except ResponseError as exc:
+        _LAST_ERROR = str(exc)
+        log.warning("valkey search query failed: %s", exc)
+        return []
+
     out: list[dict] = []
-    for i in order:
-        score = float(scores[int(i)])
+    total = response[0] if isinstance(response, list) and response else 0
+    _LAST_RESULT_COUNT = int(total or 0)
+    _LAST_STALE_PRUNED = 0
+    for _key, fields in zip(response[1::2], response[2::2]):
+        if not isinstance(fields, list):
+            continue
+        record = dict(zip(fields[::2], fields[1::2]))
+        distance = float(record.get("distance", 1.0))
+        score = _score_from_distance(distance)
         if score < MIN_SCORE:
             continue
-        record = records[int(i)]
-        record = {k: v for k, v in record.items() if k != "vector"}
         record["score"] = score
+        record["metadata"] = json.loads(record.get("metadata") or "{}")
+        record["chunk_index"] = int(record.get("chunk_index", 0))
+        record["updated_at"] = int(record.get("updated_at", 0))
         out.append(record)
+        if len(out) >= limit:
+            break
     return out

@@ -49,12 +49,13 @@ def _semantic_status() -> dict:
         return {"enabled": False, "status": "error", "detail": str(exc)}
     return {
         "enabled": semantic.ENABLED,
+        "backend": semantic.BACKEND,
         "model": semantic.MODEL_NAME,
         "device": semantic.DEVICE,
         "top_k": semantic.TOP_K,
-        "max_scan": semantic.MAX_SCAN,
         "min_score": semantic.MIN_SCORE,
         "max_chunks_per_page": semantic.MAX_CHUNKS_PER_PAGE,
+        "index_name": semantic._INDEX_NAME,
     }
 
 

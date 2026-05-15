@@ -25,7 +25,8 @@ services:
       - MAX_SCRAPE=${MAX_SCRAPE:-10}
       - CACHE_TTL_S=${CACHE_TTL_S:-3600}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - ENABLE_SEMANTIC_CACHE=${ENABLE_SEMANTIC_CACHE:-${ENABLE_SEMANTIC_INDEX:-0}}
+      - ENABLE_SEMANTIC_CACHE=${ENABLE_SEMANTIC_CACHE:-${ENABLE_SEMANTIC_INDEX:-1}}
+      - SEMANTIC_BACKEND=${SEMANTIC_BACKEND:-valkey-search}
       - SEMANTIC_MIN_SCORE=${SEMANTIC_MIN_SCORE:-0.45}
       - SEMANTIC_MAX_CHUNKS_PER_PAGE=${SEMANTIC_MAX_CHUNKS_PER_PAGE:-40}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}
@@ -69,12 +70,12 @@ services:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:11235/health', timeout=3).read()"]
 
   valkey:
-    image: ${VALKEY_IMAGE:-valkey/valkey:8-alpine}
+    image: ${VALKEY_IMAGE:-valkey/valkey-bundle:9.0.1}
     container_name: valkey
     restart: unless-stopped
     # RDB snapshots are enough: the cache is regenerable — we don't need AOF durability.
     # Save after: 5m & ≥1 key, 1m & ≥100 keys, 30s & ≥10k keys.
-    command: ["valkey-server", "--save", "300 1", "--save", "60 100", "--save", "30 10000", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    command: ["--save", "300 1", "--save", "60 100", "--save", "30 10000", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
     volumes:
       - valkey-data:/data
     healthcheck:

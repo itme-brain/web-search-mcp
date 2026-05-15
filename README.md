@@ -63,6 +63,12 @@ Small-model agent rule of thumb: use `search` first with `num_results=3..5`; use
 
 `just setup` generates `.env` from `env.sample`. See `env.sample` for available knobs. SearXNG engine config lives in `searxng/config/settings.yml.template`.
 
+Semantic cache is enabled in the compose stack by default. It uses
+Valkey Search from `valkey/valkey-bundle` to keep a TTL-bounded HNSW
+vector index over recently scraped chunks. Normal searches write only to
+the configured cache TTL and Valkey maxmemory/LRU policy still bounds
+growth; there is no separate permanent vector database.
+
 Reranking is local and pluggable. The compose default is the English
 Sentence Transformers CrossEncoder `cross-encoder/ms-marco-MiniLM-L4-v2`,
 which matched the larger MiniLM rerankers on the bundled eval set while
