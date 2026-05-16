@@ -34,7 +34,7 @@ from web_search_mcp.tools.map import map_impl
 from web_search_mcp.tools.crawl import crawl_impl  # noqa: F401
 
 
-mcp = FastMCP("Web Search", version="0.7.0")
+mcp = FastMCP("Web Search", version="0.7.1")
 
 __all__ = ["mcp", "search_impl", "research_impl", "extract_impl", "map_impl", "crawl_impl"]
 
