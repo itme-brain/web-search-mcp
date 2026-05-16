@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 import cache as cache_module
+import wikimedia
 from tests.conftest import server_module
 
 PATCH_EXTRACT_URL_DOCUMENT = "core._extract_url_document"
@@ -237,6 +238,105 @@ async def test_extract_cache_hit_preserves_pdf_metadata():
     assert result["file_type"] == "pdf"
     assert result["metadata"]["page_count"] == 1
     assert "Production PDF extraction works." in result["content"]
+
+
+def test_parse_wikipedia_article_url_normalizes_article_target():
+    article = wikimedia.parse_wikipedia_article_url(
+        "https://en.wikipedia.org/wiki/Artificial_intelligence?oldformat=true#History",
+    )
+
+    assert article is not None
+    assert article.api_url == "https://en.wikipedia.org/w/api.php"
+    assert article.article_url == "https://en.wikipedia.org/wiki/Artificial_intelligence"
+    assert article.title == "Artificial intelligence"
+    assert article.language == "en"
+
+
+def test_parse_wikipedia_article_url_rejects_non_articles():
+    assert wikimedia.parse_wikipedia_article_url("https://example.com/wiki/Page") is None
+    assert wikimedia.parse_wikipedia_article_url("https://en.wikipedia.org/w/api.php") is None
+
+
+@pytest.mark.asyncio
+async def test_extract_url_document_prefers_wikimedia_api_before_type_detection():
+    api_result = {
+        "status": "ok",
+        "url": "https://en.wikipedia.org/wiki/Artificial_intelligence",
+        "content_type": "text/html",
+        "file_type": "html",
+        "title": "Artificial intelligence",
+        "content": "# Artificial intelligence\n\nArtificial intelligence is useful text.",
+        "total_chars": 64,
+        "metadata": {"source": "wikimedia_api"},
+    }
+
+    with (
+        patch("core.wikimedia.extract_document", AsyncMock(return_value=api_result)) as api_mock,
+        patch("core._detect_file_type", AsyncMock(return_value=("unknown", None))) as detect_mock,
+    ):
+        result = await server_module._extract_url_document(
+            "https://en.wikipedia.org/wiki/Artificial_intelligence",
+            cache=cache_module.page_cache,
+        )
+
+    api_mock.assert_awaited_once()
+    detect_mock.assert_not_awaited()
+    assert result["status"] == "ok"
+    assert result["metadata"]["source"] == "wikimedia_api"
+    assert result["file_type"] == "html"
+    assert "Artificial intelligence is useful text." in result["content"]
+
+
+@pytest.mark.asyncio
+async def test_extract_wikimedia_document_uses_action_api():
+    class _FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "query": {
+                    "pages": [{
+                        "pageid": 123,
+                        "title": "Artificial intelligence",
+                        "fullurl": "https://en.wikipedia.org/wiki/Artificial_intelligence",
+                        "extract": "Artificial intelligence is intelligence exhibited by machines.",
+                    }],
+                },
+            }
+
+    class _FakeClient:
+        last_request = None
+
+        def __init__(self, *args, **kwargs):
+            self.headers = kwargs.get("headers") or {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url, params=None):
+            _FakeClient.last_request = (url, params, self.headers)
+            return _FakeResponse()
+
+    with patch("wikimedia.httpx.AsyncClient", _FakeClient):
+        result = await wikimedia.extract_document(
+            "https://en.wikipedia.org/wiki/Artificial_intelligence",
+        )
+
+    url, params, headers = _FakeClient.last_request
+    assert url == "https://en.wikipedia.org/w/api.php"
+    assert params["prop"] == "extracts|info"
+    assert params["explaintext"] == "1"
+    assert params["titles"] == "Artificial intelligence"
+    assert "User-Agent" in headers
+    assert result["status"] == "ok"
+    assert result["title"] == "Artificial intelligence"
+    assert result["metadata"]["source"] == "wikimedia_api"
+    assert result["metadata"]["pageid"] == 123
+    assert "Artificial intelligence is intelligence exhibited by machines." in result["content"]
 
 
 def test_guess_file_type_supports_binary_and_text_formats():

@@ -27,6 +27,7 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 import text_utils
 import urls
 import validators
+import wikimedia
 
 import cache as cache_module
 import crawl
@@ -1321,28 +1322,30 @@ async def _extract_url_document(
 
     file_type = "unknown"
     content_type = None
-    try:
-        file_type, content_type = await _detect_file_type(url)
-        if file_type == "html":
-            extracted = await _extract_web_document(url)
-        elif file_type == "pdf":
-            extracted = await _extract_pdf_document(url, content_type)
-        elif file_type in _LOCAL_EXTRACT_TYPES:
-            extracted = await _extract_text_document(url, file_type)
-        else:
-            extracted = _unsupported_file_document(url, file_type, content_type)
-    except Exception as exc:
-        extracted = {
-            "status": "error",
-            "url": url,
-            "content_type": content_type,
-            "file_type": file_type,
-            "title": None,
-            "content": "",
-            "total_chars": 0,
-            "metadata": {},
-            "error": str(exc),
-        }
+    extracted = await wikimedia.extract_document(url)
+    if extracted is None:
+        try:
+            file_type, content_type = await _detect_file_type(url)
+            if file_type == "html":
+                extracted = await _extract_web_document(url)
+            elif file_type == "pdf":
+                extracted = await _extract_pdf_document(url, content_type)
+            elif file_type in _LOCAL_EXTRACT_TYPES:
+                extracted = await _extract_text_document(url, file_type)
+            else:
+                extracted = _unsupported_file_document(url, file_type, content_type)
+        except Exception as exc:
+            extracted = {
+                "status": "error",
+                "url": url,
+                "content_type": content_type,
+                "file_type": file_type,
+                "title": None,
+                "content": "",
+                "total_chars": 0,
+                "metadata": {},
+                "error": str(exc),
+            }
 
     if extracted["status"] == "ok":
         # Cache successful local extracts so repeated calls do not
