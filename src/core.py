@@ -28,6 +28,7 @@ import text_utils
 import urls
 import validators
 import wikimedia
+import http_policy
 
 import cache as cache_module
 import crawl
@@ -1007,7 +1008,11 @@ def _page_entry(
 
 async def _head_content_type(url: str) -> str | None:
     try:
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, follow_redirects=True) as client:
+        async with httpx.AsyncClient(
+            timeout=_HTTP_TIMEOUT,
+            follow_redirects=True,
+            headers=http_policy.browser_compatible_headers(),
+        ) as client:
             resp = await client.head(url)
             resp.raise_for_status()
             return resp.headers.get("content-type")
@@ -1022,8 +1027,8 @@ async def _sniff_content_type(url: str) -> str | None:
                 "GET",
                 url,
                 headers={
+                    **http_policy.identity_headers(),
                     "Range": f"bytes=0-{_SNIFF_MAX_BYTES - 1}",
-                    "Accept-Encoding": "identity",
                 },
             ) as resp:
                 resp.raise_for_status()
@@ -1108,7 +1113,11 @@ async def _extract_web_document(url: str) -> dict:
 
 
 async def _extract_text_document(url: str, file_type: str) -> dict:
-    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=REQUEST_TIMEOUT,
+        follow_redirects=True,
+        headers=http_policy.browser_compatible_headers(accept="text/plain,text/*;q=0.9,*/*;q=0.5"),
+    ) as client:
         resp = await client.get(url)
         resp.raise_for_status()
         return {
@@ -1128,7 +1137,7 @@ async def _extract_text_document(url: str, file_type: str) -> dict:
 async def _download_document_bytes(url: str, *, max_bytes: int) -> tuple[bytes, str | None, str]:
     """Fetch a bounded binary document into memory for local extraction."""
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, follow_redirects=True) as client:
-        async with client.stream("GET", url, headers={"Accept-Encoding": "identity"}) as resp:
+        async with client.stream("GET", url, headers=http_policy.identity_headers()) as resp:
             resp.raise_for_status()
             content_length = resp.headers.get("content-length")
             if content_length is not None and int(content_length) > max_bytes:

@@ -5,17 +5,13 @@ pipeline. Wikipedia article URLs are public web pages, but Wikimedia exposes a
 stable Action API that returns cleaner article text than scraping page chrome.
 """
 
-import os
 from dataclasses import dataclass
 from urllib.parse import unquote, urlparse
 
 import httpx
 
+import http_policy
 
-DEFAULT_USER_AGENT = (
-    "web-search-mcp/0.1 "
-    "(+https://github.com/itme-brain/web-search-mcp; contact=https://github.com/itme-brain/web-search-mcp/issues)"
-)
 REQUEST_TIMEOUT = 30
 
 
@@ -28,15 +24,6 @@ class WikimediaArticle:
     host: str
     title: str
     language: str | None
-
-
-def _request_headers() -> dict[str, str]:
-    user_agent = os.environ.get("WEB_SEARCH_MCP_USER_AGENT", DEFAULT_USER_AGENT)
-    return {
-        "User-Agent": user_agent,
-        "Api-User-Agent": user_agent,
-        "Accept": "application/json",
-    }
 
 
 def parse_wikipedia_article_url(url: str) -> WikimediaArticle | None:
@@ -121,7 +108,7 @@ async def extract_document(url: str) -> dict | None:
         async with httpx.AsyncClient(
             timeout=REQUEST_TIMEOUT,
             follow_redirects=True,
-            headers=_request_headers(),
+            headers=http_policy.wikimedia_api_headers(),
         ) as client:
             resp = await client.get(article.api_url, params=params)
             resp.raise_for_status()
