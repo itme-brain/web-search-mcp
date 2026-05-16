@@ -10,6 +10,7 @@ from fastmcp.tools.tool import ToolResult
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
 
+from web_search_mcp.http import policy as http_policy
 from web_search_mcp.storage import cache
 from web_search_mcp.presentation import models
 from web_search_mcp import observability
@@ -261,6 +262,8 @@ for _tool in (search, extract, map, research, crawl):
 
 
 if __name__ == "__main__":
+    # Initialize dynamic Firefox UA at startup so all tools use the latest version string
+    asyncio.run(http_policy.ensure_user_agent_initialized())
     mcp.run(
         transport="http",
         host="0.0.0.0",
