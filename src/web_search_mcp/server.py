@@ -1,7 +1,6 @@
 """MCP entry point: FastMCP instance, /health + /ready routes, and the five @mcp.tool wrappers.
 
-Run with `python server.py` inside the container (WORKDIR /app, where
-the sibling modules live).
+Run with `python -m web_search_mcp.server` inside the container.
 """
 
 import asyncio
@@ -11,30 +10,27 @@ from fastmcp.tools.tool import ToolResult
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
 
-# Module-qualified imports so `unittest.mock.patch("impls.X")` catches
-# the calls made here — `from impls import X` would bind X locally and
-# require a second patch target.
-import cache
-import impls
-import models
-import observability
-import semantic
-from core import (
+from web_search_mcp.storage import cache
+from web_search_mcp.presentation import models
+from web_search_mcp import observability
+from web_search_mcp.storage import semantic
+from web_search_mcp.config.settings import (
     CRAWL4AI_URL,
-    RERANK_NAME,
     RERANK_MODEL,
     SEARXNG_URL,
-    _probe_dependency,
 )
-from formatters import (
+from web_search_mcp.ranking.service import RERANK_NAME
+from web_search_mcp.search_client import _probe_dependency
+from web_search_mcp.presentation.formatters import (
     _format_crawl_results,
     _format_extract_results,
     _format_map_results,
     _format_search_results,
 )
-# Re-export impls as server-level attributes so `from server
-# import search_impl` still works for Python scripters.
-from impls import crawl_impl, extract_impl, map_impl, research_impl, search_impl  # noqa: F401
+from web_search_mcp.tools.search import search_impl, research_impl
+from web_search_mcp.tools.extract import extract_impl
+from web_search_mcp.tools.map import map_impl
+from web_search_mcp.tools.crawl import crawl_impl  # noqa: F401
 
 
 mcp = FastMCP("Web Search", version="0.6.3")
@@ -45,7 +41,7 @@ __all__ = ["mcp", "search_impl", "research_impl", "extract_impl", "map_impl", "c
 def _semantic_status() -> dict:
     """Return semantic-index config without importing heavy deps at startup."""
     try:
-        import semantic
+        from web_search_mcp.storage import semantic
     except Exception as exc:
         return {"enabled": False, "status": "error", "detail": str(exc)}
     return {
@@ -172,7 +168,7 @@ async def search(
         include_domains: Keep only these bare domains.
         exclude_domains: Drop these bare domains.
     """
-    response = await impls.search_impl(
+    response = await search_impl(
         query=query,
         num_results=num_results,
         profile="search",
@@ -190,7 +186,7 @@ async def extract(url: str) -> ToolResult:
     Args:
         url: URL to read.
     """
-    response = await impls.extract_impl(urls=[url], chunk_ids=None)
+    response = await extract_impl(urls=[url], chunk_ids=None)
     return _tool_result(response, _format_extract_results)
 
 
@@ -205,7 +201,7 @@ async def map(
         url: Site/root URL.
         max_urls: URLs to return, 1-50.
     """
-    response = await impls.map_impl(
+    response = await map_impl(
         url=url,
         max_urls=max_urls,
         include_patterns=None,
@@ -228,7 +224,7 @@ async def research(
         time_range: Optional: `day`, `week`, `month`, or `year`.
         source_types: Optional kinds to keep: docs, repo, issue, mailing_list, qa, blog, web.
     """
-    response = await impls.research_impl(
+    response = await research_impl(
         query=query,
         num_results=num_results,
         time_range=time_range,
@@ -250,7 +246,7 @@ async def crawl(
         query: Optional focus question for ranking pages/chunks.
         max_urls: Pages to read, 1-20.
     """
-    response = await impls.crawl_impl(
+    response = await crawl_impl(
         url=url,
         max_urls=max_urls,
         include_patterns=None,

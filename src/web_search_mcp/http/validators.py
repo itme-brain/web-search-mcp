@@ -5,7 +5,7 @@ import ipaddress
 import socket
 from urllib.parse import urlparse
 
-import urls as url_utils
+from web_search_mcp.http import urls as url_utils
 
 VALID_TIME_RANGES = frozenset({"day", "week", "month", "year"})
 

@@ -10,8 +10,8 @@ import os
 
 
 DEFAULT_USER_AGENT = (
-    "web-search-mcp/0.1 "
-    "(+https://github.com/itme-brain/web-search-mcp; contact=https://github.com/itme-brain/web-search-mcp/issues)"
+    "Mozilla/5.0"
+    "(X11; Linux x86_64; rv:150.0) Gecko/20100101 Firefox/150.0"
 )
 DEFAULT_ACCEPT_LANGUAGE = "en-US,en;q=0.8"
 

@@ -3,7 +3,7 @@
 Every `@mcp.tool` wrapper calls one of these to convert its impl's
 structured dict into the string the LLM consumes. Kept separate from
 the impls so the dict shape is independently testable and the Python
-scripting layer (`from impls import search_impl`) gets untouched dicts.
+scripting layer (`from web_search_mcp.tools.search import search_impl`) gets untouched dicts.
 """
 
 import mdformat

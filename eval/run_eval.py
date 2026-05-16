@@ -11,13 +11,9 @@ sys.path.insert(0, str(ROOT / "src"))
 
 
 def _load_server_module():
-    """Import impls from the src/ package path.
-
-    Project layout is flat files in src/ that cross-import each other;
-    adding src/ to sys.path lets us import them as top-level modules.
-    """
-    import impls  # noqa: F401  (triggers core + ranker init)
-    import server  # noqa: F401
+    """Import the server package from the src package path."""
+    from web_search_mcp.tools import search as _search_tool  # noqa: F401
+    from web_search_mcp import server  # noqa: F401
     return server
 
 

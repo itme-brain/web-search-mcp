@@ -88,8 +88,7 @@ class KVCache:
     """Async dict-like facade with a key prefix and TTL.
 
     Values are JSON-serialized on write and parsed on read. Mirrors the
-    read/write surface the old TTLCache exposed (contains / get / set)
-    so call sites in core.py change minimally.
+    read/write surface the old TTLCache exposed (contains / get / set).
 
     Every `get` increments a per-cache hit/miss counter at
     `ws:stats:<prefix>:{hits,misses}`. These are plain Valkey INCR
@@ -174,7 +173,7 @@ searxng_cache = KVCache("ws:searxng", ttl=SEARXNG_CACHE_TTL_S)
 seen_urls = KVCache("ws:seen", ttl=SEEN_URL_TTL_S)
 # content_hash → canonical normalized URL. When two URLs scrape byte-
 # identical content we write only one full entry and alias the rest
-# through this map. See core._page_set / core._page_get.
+# through this map. See storage.pages._page_set / _page_get.
 content_alias = KVCache("ws:content", ttl=CONTENT_ALIAS_TTL_S)
 # Page-level retrieval memory entries. Stored in Valkey as normalized_url
 # -> {url,title,domain,source_type,content,metadata,updated_at}. Distinct

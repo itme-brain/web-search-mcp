@@ -3,8 +3,7 @@ import types
 
 import pytest
 
-import core
-import rerankers
+from web_search_mcp.ranking import rerankers
 
 
 @pytest.mark.asyncio
@@ -115,5 +114,6 @@ def test_invalid_backend_settings_raise_clear_errors():
         )
 
 
-def test_core_uses_flashrank_by_default():
-    assert core.RERANK_NAME == "flashrank"
+def test_reranker_service_uses_flashrank_by_default():
+    from web_search_mcp.ranking.service import RERANK_NAME
+    assert RERANK_NAME == "flashrank"

@@ -10,7 +10,7 @@ from urllib.parse import unquote, urlparse
 
 import httpx
 
-import http_policy
+from web_search_mcp.http import policy as http_policy
 
 REQUEST_TIMEOUT = 30
 
@@ -86,7 +86,7 @@ async def extract_document(url: str) -> dict | None:
     """Extract a Wikipedia article through the MediaWiki Action API.
 
     Returns None when the URL is not a supported Wikipedia article URL. For
-    supported URLs, returns the same document envelope shape as core extractors.
+    supported URLs, returns the same document envelope shape as local extractors.
     """
     article = parse_wikipedia_article_url(url)
     if article is None:

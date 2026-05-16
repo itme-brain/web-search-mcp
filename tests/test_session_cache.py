@@ -1,13 +1,13 @@
 import asyncio
 from unittest.mock import AsyncMock, patch
 
-import cache as cache_module
+from web_search_mcp.storage import cache as cache_module
 import pytest
 from tests.conftest import SCRAPE_CONTENT, URLS_A, URLS_B, make_search_results, server_module
 
-PATCH_SEARCH = "core._search"
-PATCH_SCRAPE = "core._scrape"
-PATCH_RERANK = "core._rerank_scored"
+PATCH_SEARCH = "web_search_mcp.tools.search._search"
+PATCH_SCRAPE = "web_search_mcp.storage.pages._scrape"
+PATCH_RERANK = "web_search_mcp.tools.search._rerank_scored"
 
 URLS_C = [
     "https://example.com/c1",
@@ -482,7 +482,7 @@ async def test_final_results_are_domain_diversified():
 @pytest.mark.asyncio
 async def test_kvcache_hit_miss_counters():
     """KVCache increments per-cache hit/miss counters on every get."""
-    import cache as cache_module
+    from web_search_mcp.storage import cache as cache_module
 
     kv = cache_module.KVCache("test-counter")
     assert (await kv.stats()) == {"hits": 0, "misses": 0}
@@ -530,7 +530,7 @@ async def test_cache_ttl_zero_disables_reads_and_writes():
     # A non-zero per-call override also gets short-circuited because the
     # cache itself is disabled — the intent of CACHE_TTL_S=0 is "no cache
     # anywhere", not "per-call defaults only". Failure-TTL writes from
-    # core._page_set pass `ttl=FAILURE_TTL_S`; when that resolves to 0
+    # storage.pages._page_set passes `ttl=FAILURE_TTL_S`; when that resolves to 0
     # (because CACHE_TTL_S=0 clamps FAILURE_TTL_S too), the write is
     # dropped. Simulate that here directly.
     await cache.set("k", {"v": 2}, ttl=0)

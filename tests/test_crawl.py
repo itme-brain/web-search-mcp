@@ -4,8 +4,8 @@ import pytest
 
 from tests.conftest import server_module
 
-PATCH_MAP_IMPL = "impls.map_impl"
-PATCH_EXTRACT_IMPL = "impls.extract_impl"
+PATCH_MAP_IMPL = "web_search_mcp.tools.crawl.map_impl"
+PATCH_EXTRACT_IMPL = "web_search_mcp.tools.crawl.extract_impl"
 
 
 def _map_result(
@@ -253,8 +253,8 @@ async def test_crawl_query_reorders_by_relevance():
 
     with (
         patch(PATCH_MAP_IMPL, AsyncMock(return_value=map_payload)),
-        patch("core._extract_url_document", AsyncMock(side_effect=_fake_extract_url_document)),
-        patch("core._rerank_scored", AsyncMock(side_effect=_fake_rerank)),
+        patch("web_search_mcp.extraction.documents._extract_url_document", AsyncMock(side_effect=_fake_extract_url_document)),
+        patch("web_search_mcp.tools.crawl._rerank_scored", AsyncMock(side_effect=_fake_rerank)),
     ):
         payload = await server_module.crawl_impl(
             "https://docs.example.com",

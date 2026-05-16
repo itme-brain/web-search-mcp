@@ -5,11 +5,11 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-# Make the server's flat-layout modules importable as top-level names.
+# Make the src package importable.
 _SRC = Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(_SRC))
 
-# Stub flashrank BEFORE src/core.py gets imported, because the default
+# Stub flashrank BEFORE the reranker service gets imported, because the default
 # reranker backend is instantiated at module-load time.
 _flashrank = types.ModuleType("flashrank")
 
@@ -42,13 +42,19 @@ if "trafilatura" not in sys.modules:
     _trafilatura.extract_metadata = lambda *args, **kwargs: None
     sys.modules["trafilatura"] = _trafilatura
 
-# Import the split modules. `core` pulls in Settings + the configured
-# reranker on first import; the stub above has to be in place first.
-import cache  # noqa: E402
-import core  # noqa: E402
-import formatters  # noqa: E402
-import impls  # noqa: E402
-import server  # noqa: E402
+# Import the split modules after dependency stubs are in place.
+from web_search_mcp.storage import cache  # noqa: E402
+from web_search_mcp import common  # noqa: E402
+from web_search_mcp.crawling import operations as crawl_operations  # noqa: E402
+from web_search_mcp.extraction import documents, file_types, html, pdf  # noqa: E402
+from web_search_mcp.storage import pages  # noqa: E402
+from web_search_mcp.presentation import formatters  # noqa: E402
+from web_search_mcp.ranking import service as ranking_service  # noqa: E402
+from web_search_mcp import server  # noqa: E402
+from web_search_mcp.tools import crawl as crawl_tool  # noqa: E402
+from web_search_mcp.tools import extract as extract_tool  # noqa: E402
+from web_search_mcp.tools import map as map_tool  # noqa: E402
+from web_search_mcp.tools import search as search_tool  # noqa: E402
 
 server_app = server.mcp
 
@@ -57,12 +63,25 @@ class _ServerModuleProxy:
     """Test facade resolving attributes across split modules.
 
     Tests reference `server_module.X` — resolve X by walking the split
-    modules in order. New tests can also `import core`, `import impls`,
-    etc. directly. `unittest.mock.patch` targets (the "core.X" / "impls.X"
-    strings) always point at the module that defines X, since mock.patch
-    uses sys.modules rather than attribute lookup.
+    modules in order. `unittest.mock.patch` targets point at the module
+    that defines or imports the runtime use site.
     """
-    _search_order = (server, impls, core, formatters)
+    _search_order = (
+        server,
+        search_tool,
+        extract_tool,
+        map_tool,
+        crawl_tool,
+        documents,
+        file_types,
+        pdf,
+        html,
+        pages,
+        crawl_operations,
+        ranking_service,
+        common,
+        formatters,
+    )
 
     def __getattr__(self, name):
         for mod in self._search_order:

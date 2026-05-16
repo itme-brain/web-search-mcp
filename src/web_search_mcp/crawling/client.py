@@ -6,7 +6,7 @@ import json
 import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-import urls as url_utils
+from web_search_mcp.http import urls as url_utils
 
 DEFAULT_CRAWL_CONFIG = {
     "type": "CrawlerRunConfig",

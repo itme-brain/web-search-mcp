@@ -7,12 +7,12 @@ import pytest
 
 from tests.conftest import URLS_A, make_search_results, server_module
 
-PATCH_SEARCH = "core._search"
-PATCH_SCRAPE = "core._scrape"
-PATCH_RERANK = "core._rerank_scored"
-PATCH_EXTRACT_URL_DOCUMENT = "core._extract_url_document"
-PATCH_MAP_IMPL = "impls.map_impl"
-PATCH_EXTRACT_IMPL = "impls.extract_impl"
+PATCH_SEARCH = "web_search_mcp.tools.search._search"
+PATCH_SCRAPE = "web_search_mcp.storage.pages._scrape"
+PATCH_RERANK = "web_search_mcp.tools.search._rerank_scored"
+PATCH_EXTRACT_URL_DOCUMENT = "web_search_mcp.extraction.documents._extract_url_document"
+PATCH_MAP_IMPL = "web_search_mcp.tools.crawl.map_impl"
+PATCH_EXTRACT_IMPL = "web_search_mcp.tools.crawl.extract_impl"
 
 # Fields that are part of the structured dict for scripting access but
 # must never appear as literal keys in the LLM-facing markdown output.
@@ -249,7 +249,7 @@ async def test_map_markdown_does_not_leak_metadata_fields():
         ],
     })
 
-    with patch("core._discover_page_links", discover_mock):
+    with patch("web_search_mcp.crawling.operations._discover_page_links", discover_mock):
         markdown = await server_module.map.fn(
             "https://docs.example.com", max_urls=5,
         )
@@ -275,7 +275,7 @@ async def test_crawl_markdown_does_not_leak_metadata_fields():
         },
     ])
 
-    with patch("core._deep_crawl", deep_crawl_mock):
+    with patch("web_search_mcp.tools.map._deep_crawl", deep_crawl_mock):
         markdown = await server_module.crawl.fn(
             "https://docs.example.com", max_urls=1,
         )

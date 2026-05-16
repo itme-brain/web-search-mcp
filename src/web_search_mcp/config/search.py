@@ -1,7 +1,7 @@
 """Internal search profiles and lightweight validators."""
 
-import core
-from core import MAX_SCRAPE
+from web_search_mcp.common import _validate_positive_int
+from web_search_mcp.config.settings import MAX_SCRAPE
 
 VALID_PROFILES = frozenset({"search", "research"})
 
@@ -29,4 +29,4 @@ def default_chars_per_result(profile: str) -> int:
 def validate_optional_positive_int(name: str, value: int | None, *, maximum: int) -> int | None:
     if value is None:
         return None
-    return core._validate_positive_int(name, value, maximum=maximum)
+    return _validate_positive_int(name, value, maximum=maximum)

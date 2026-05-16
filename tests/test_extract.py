@@ -3,11 +3,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-import cache as cache_module
-import wikimedia
+from web_search_mcp.storage import cache as cache_module
+from web_search_mcp.extraction.providers import wikimedia
 from tests.conftest import server_module
 
-PATCH_EXTRACT_URL_DOCUMENT = "core._extract_url_document"
+PATCH_EXTRACT_URL_DOCUMENT = "web_search_mcp.extraction.documents._extract_url_document"
 
 
 class _FakePdfPage:
@@ -193,12 +193,12 @@ async def test_single_extract_markdown_omits_redundant_success_header():
 @pytest.mark.asyncio
 async def test_extract_url_document_extracts_pdf_text():
     with (
-        patch("core._detect_file_type", AsyncMock(return_value=("pdf", "application/pdf"))),
+        patch("web_search_mcp.extraction.documents._detect_file_type", AsyncMock(return_value=("pdf", "application/pdf"))),
         patch(
-            "core._download_document_bytes",
+            "web_search_mcp.extraction.pdf._download_document_bytes",
             AsyncMock(return_value=(b"%PDF fixture", "application/pdf", "https://example.com/manual.pdf")),
         ),
-        patch("core.PdfReader", _FakePdfReader),
+        patch("web_search_mcp.extraction.pdf.PdfReader", _FakePdfReader),
     ):
         result = await server_module._extract_url_document(
             "https://example.com/manual.pdf",
@@ -271,8 +271,8 @@ async def test_extract_url_document_prefers_wikimedia_api_before_type_detection(
     }
 
     with (
-        patch("core.wikimedia.extract_document", AsyncMock(return_value=api_result)) as api_mock,
-        patch("core._detect_file_type", AsyncMock(return_value=("unknown", None))) as detect_mock,
+        patch("web_search_mcp.extraction.documents.wikimedia.extract_document", AsyncMock(return_value=api_result)) as api_mock,
+        patch("web_search_mcp.extraction.documents._detect_file_type", AsyncMock(return_value=("unknown", None))) as detect_mock,
     ):
         result = await server_module._extract_url_document(
             "https://en.wikipedia.org/wiki/Artificial_intelligence",
@@ -321,7 +321,7 @@ async def test_extract_wikimedia_document_uses_action_api():
             _FakeClient.last_request = (url, params, self.headers)
             return _FakeResponse()
 
-    with patch("wikimedia.httpx.AsyncClient", _FakeClient):
+    with patch("web_search_mcp.extraction.providers.wikimedia.httpx.AsyncClient", _FakeClient):
         result = await wikimedia.extract_document(
             "https://en.wikipedia.org/wiki/Artificial_intelligence",
         )
@@ -360,8 +360,8 @@ def test_guess_file_type_supports_binary_and_text_formats():
 @pytest.mark.asyncio
 async def test_detect_file_type_prefers_head_content_type_when_specific():
     with (
-        patch("core._head_content_type", AsyncMock(return_value="text/html")),
-        patch("core._sniff_content_type", AsyncMock(return_value="application/pdf")),
+        patch("web_search_mcp.extraction.documents._head_content_type", AsyncMock(return_value="text/html")),
+        patch("web_search_mcp.extraction.documents._sniff_content_type", AsyncMock(return_value="application/pdf")),
     ):
         file_type, content_type = await server_module._detect_file_type("https://example.com/download")
 
@@ -372,8 +372,8 @@ async def test_detect_file_type_prefers_head_content_type_when_specific():
 @pytest.mark.asyncio
 async def test_detect_file_type_falls_back_to_head_content_type():
     with (
-        patch("core._sniff_content_type", AsyncMock(return_value=None)),
-        patch("core._head_content_type", AsyncMock(return_value="text/plain; charset=utf-8")),
+        patch("web_search_mcp.extraction.documents._sniff_content_type", AsyncMock(return_value=None)),
+        patch("web_search_mcp.extraction.documents._head_content_type", AsyncMock(return_value="text/plain; charset=utf-8")),
     ):
         file_type, content_type = await server_module._detect_file_type("https://example.com/notes")
 
@@ -384,8 +384,8 @@ async def test_detect_file_type_falls_back_to_head_content_type():
 @pytest.mark.asyncio
 async def test_detect_file_type_sniffs_when_head_is_generic():
     with (
-        patch("core._head_content_type", AsyncMock(return_value="application/octet-stream")),
-        patch("core._sniff_content_type", AsyncMock(return_value="application/pdf")),
+        patch("web_search_mcp.extraction.documents._head_content_type", AsyncMock(return_value="application/octet-stream")),
+        patch("web_search_mcp.extraction.documents._sniff_content_type", AsyncMock(return_value="application/pdf")),
     ):
         file_type, content_type = await server_module._detect_file_type("https://example.com/download")
 
@@ -425,13 +425,13 @@ async def test_sniff_content_type_bails_when_range_is_ignored():
         def stream(self, *args, **kwargs):
             return _FakeStream()
 
-    with patch("core.httpx.AsyncClient", _FakeClient):
+    with patch("web_search_mcp.extraction.documents.httpx.AsyncClient", _FakeClient):
         assert await server_module._sniff_content_type("https://example.com/file.pdf") is None
 
 
 @pytest.mark.asyncio
 async def test_extract_url_document_reports_unknown_types_unsupported_by_default():
-    with patch("core._detect_file_type", AsyncMock(return_value=("unknown", "application/octet-stream"))):
+    with patch("web_search_mcp.extraction.documents._detect_file_type", AsyncMock(return_value=("unknown", "application/octet-stream"))):
         result = await server_module._extract_url_document(
             "https://example.com/blob.bin",
             cache=cache_module.page_cache,
@@ -536,7 +536,7 @@ async def test_failure_entries_get_short_ttl():
     default 3600s, so transient upstream issues recover quickly."""
     url = "https://example.com/failed"
     fake_scrape = AsyncMock(return_value={"content": None, "title": None, "metadata": {}})
-    with patch("core._scrape", fake_scrape):
+    with patch("web_search_mcp.storage.pages._scrape", fake_scrape):
         await server_module._scrape_cached(url, cache_module.page_cache)
 
     # Inspect the raw Valkey TTL on the key.
@@ -556,7 +556,7 @@ async def test_success_entries_get_default_ttl():
         "so this entry becomes a full successful cache write."
     )
     fake_scrape = AsyncMock(return_value={"content": content, "title": "OK", "metadata": {}})
-    with patch("core._scrape", fake_scrape):
+    with patch("web_search_mcp.storage.pages._scrape", fake_scrape):
         await server_module._scrape_cached(url, cache_module.page_cache)
 
     normalized = server_module._normalize_url(url)
@@ -581,7 +581,7 @@ async def test_scrape_cache_rejects_under_length_floor():
         "title": "Access Blocked",
         "metadata": {},
     })
-    with patch("core._scrape", fake_scrape):
+    with patch("web_search_mcp.storage.pages._scrape", fake_scrape):
         envelope = await server_module._scrape_cached(url, cache_module.page_cache)
 
     # Short content rejected at write time → cached as failure.
@@ -608,7 +608,7 @@ async def test_scrape_cache_rejects_login_wall():
     fake_scrape = AsyncMock(return_value={
         "content": facebook_wall, "title": "Facebook", "metadata": {},
     })
-    with patch("core._scrape", fake_scrape):
+    with patch("web_search_mcp.storage.pages._scrape", fake_scrape):
         envelope = await server_module._scrape_cached(url, cache_module.page_cache)
 
     assert envelope["status"] == "error"
@@ -652,7 +652,7 @@ async def test_content_hash_alias_collapses_duplicate_content_at_different_urls(
         "title": "Canonical",
         "metadata": {},
     })
-    with patch("core._scrape", fake_scrape):
+    with patch("web_search_mcp.storage.pages._scrape", fake_scrape):
         # First URL writes the canonical entry.
         await server_module._scrape_cached(
             "https://example.com/canonical", cache_module.page_cache,
@@ -694,7 +694,7 @@ async def test_dangling_alias_treated_as_miss():
     fake_scrape = AsyncMock(return_value={
         "content": content, "title": "T", "metadata": {},
     })
-    with patch("core._scrape", fake_scrape):
+    with patch("web_search_mcp.storage.pages._scrape", fake_scrape):
         await server_module._scrape_cached(
             "https://example.com/canonical", cache_module.page_cache,
         )
@@ -728,7 +728,7 @@ async def test_extract_sees_search_scrape_as_cache_hit():
         "title": "Shared",
         "metadata": {"word_count": 32},
     })
-    with patch("core._scrape", fake_scrape):
+    with patch("web_search_mcp.storage.pages._scrape", fake_scrape):
         envelope = await server_module._scrape_cached(url, cache_module.page_cache)
 
     assert envelope["_schema_version"] == 1
@@ -740,8 +740,8 @@ async def test_extract_sees_search_scrape_as_cache_hit():
     extract_scrape = AsyncMock(side_effect=AssertionError("should not re-scrape"))
     extract_detect = AsyncMock(side_effect=AssertionError("should not re-detect"))
     with (
-        patch("core._scrape", extract_scrape),
-        patch("core._detect_file_type", extract_detect),
+        patch("web_search_mcp.storage.pages._scrape", extract_scrape),
+        patch("web_search_mcp.extraction.documents._detect_file_type", extract_detect),
     ):
         result = await server_module._extract_url_document(
             url, cache=cache_module.page_cache,

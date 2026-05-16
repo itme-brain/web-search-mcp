@@ -5,9 +5,9 @@ from fastmcp import Client
 
 from tests.conftest import URLS_A, make_search_results, server_app, server_module
 
-PATCH_SEARCH = "core._search"
-PATCH_EXTRACT_IMPL = "impls.extract_impl"
-PATCH_RERANK = "core._rerank_scored"
+PATCH_SEARCH = "web_search_mcp.tools.search._search"
+PATCH_EXTRACT_IMPL = "web_search_mcp.server.extract_impl"
+PATCH_RERANK = "web_search_mcp.tools.search._rerank_scored"
 
 
 def _identity_rerank(_query: str, documents: list[str]) -> list[tuple[int, float]]:
@@ -84,7 +84,7 @@ async def test_extract_rejects_private_ip_urls():
 async def test_extract_rejects_hostnames_that_resolve_private():
     fake_addrinfo = [(2, 1, 6, "", ("10.0.0.8", 0))]
     with (
-        patch("validators.socket.getaddrinfo", return_value=fake_addrinfo),
+        patch("web_search_mcp.http.validators.socket.getaddrinfo", return_value=fake_addrinfo),
         pytest.raises(ValueError, match="private or reserved target"),
     ):
         await server_module.extract_impl(urls=["http://internal.example.test/secret"])
@@ -97,7 +97,7 @@ async def test_search_returns_structured_json():
 
     with (
         patch(PATCH_SEARCH, search_mock),
-        patch("core._scrape", AsyncMock(return_value={"content": "# Page\n\nfull page body text with at least enough words to clear the speculative cache admission floor for tests.", "title": None, "screenshot": None})),
+        patch("web_search_mcp.storage.pages._scrape", AsyncMock(return_value={"content": "# Page\n\nfull page body text with at least enough words to clear the speculative cache admission floor for tests.", "title": None, "screenshot": None})),
         patch(PATCH_RERANK, rerank_mock),
     ):
         payload = await server_module.search_impl("test query", num_results=2)

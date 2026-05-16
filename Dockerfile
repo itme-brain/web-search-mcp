@@ -20,6 +20,8 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN uv pip install --system --no-cache --require-hashes -r requirements.txt
 
-COPY src/*.py ./
+COPY src/ ./src/
 
-CMD ["python", "server.py"]
+ENV PYTHONPATH=/app/src
+
+CMD ["python", "-m", "web_search_mcp.server"]

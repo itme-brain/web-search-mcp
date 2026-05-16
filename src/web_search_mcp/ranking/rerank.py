@@ -2,7 +2,7 @@
 
 import logging
 
-import rerankers
+from web_search_mcp.ranking import rerankers
 
 log = logging.getLogger("web-search-mcp")
 

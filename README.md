@@ -112,17 +112,18 @@ flake.nix                           Nix devshell + deploy/teardown
 justfile                            task runner recipes
 requirements.in / .txt              Python deps (uv-compiled, hash-locked)
 src/
-  server.py                         FastMCP entry point, tool wrappers, health/metrics
-  impls.py                          orchestration for search, extract, map, crawl
-  core.py                           HTTP clients, scraping/extraction, shared helpers
-  crawl.py                          site mapping/crawling helpers
-  rerank.py                         rerank utilities and scoring helpers
-  rerankers.py                      local reranker backend adapters
-  text_utils.py                     text chunking/cleaning utilities
-  urls.py                           URL normalization and filtering helpers
-  validators.py                     parameter validation helpers
-  models.py                         Pydantic response models
-  formatters.py                     dict → markdown rendering
+  web_search_mcp/
+    server.py                       FastMCP entry point, tool wrappers, health/metrics
+    common.py                       shared warnings, validation, URL, and dedup helpers
+    search_client.py                SearXNG and dependency-probe HTTP clients
+    config/                         settings and search profile budgets
+    http/                           request policy, URL utilities, target validators
+    storage/                        Valkey cache, page envelopes, semantic index
+    extraction/                     HTML/text/PDF extraction and provider adapters
+    crawling/                       Crawl4AI client/config/result parsing
+    ranking/                        reranker lifecycle, evidence, source quality
+    presentation/                   Pydantic models and markdown formatters
+    tools/                          search, research, extract, map, crawl implementations
 searxng/config/
   settings.yml.template             engine allowlist, weights, safesearch
 tests/                              pytest suite

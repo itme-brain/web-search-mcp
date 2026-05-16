@@ -1,4 +1,4 @@
-import http_policy
+from web_search_mcp.http import policy as http_policy
 
 
 def test_browser_compatible_headers_are_stable_and_configurable(monkeypatch):

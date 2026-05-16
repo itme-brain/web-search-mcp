@@ -1,6 +1,6 @@
 """Deterministic query expansion for the research tool."""
 
-import core
+import re
 
 _STOP_WORDS = {
     "a", "an", "and", "are", "as", "at", "by", "for", "from", "how", "in", "is",
@@ -10,7 +10,7 @@ _STOP_WORDS = {
 
 
 def query_terms(query: str) -> list[str]:
-    terms = [term for term in core.re.findall(r"[A-Za-z0-9_.+-]{3,}", query) if term.lower() not in _STOP_WORDS]
+    terms = [term for term in re.findall(r"[A-Za-z0-9_.+-]{3,}", query) if term.lower() not in _STOP_WORDS]
     return terms[:8]
 
 

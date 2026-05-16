@@ -1,11 +1,11 @@
 from unittest.mock import AsyncMock, patch
 
-import core
+from web_search_mcp.crawling import operations as crawl_operations
 import pytest
 
 from tests.conftest import server_module
 
-PATCH_DEEP_CRAWL = "core._deep_crawl"
+PATCH_DEEP_CRAWL = "web_search_mcp.tools.map._deep_crawl"
 
 
 def _page(
@@ -158,7 +158,7 @@ def test_registrable_domain_basic():
 
 
 def test_deep_crawl_config_uses_discovery_base_config():
-    config = core._deep_crawl_config(
+    config = crawl_operations._deep_crawl_config(
         root_url="https://docs.example.com",
         max_depth=3,
         max_pages=25,

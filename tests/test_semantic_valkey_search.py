@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 from redis.exceptions import ResponseError
 
-import cache
-import semantic
+from web_search_mcp.storage import cache
+from web_search_mcp.storage import semantic
 
 
 class FakeSearchPipeline:

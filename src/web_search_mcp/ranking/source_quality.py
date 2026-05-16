@@ -1,8 +1,9 @@
 """Source classification, filtering, and lightweight ranking boosts."""
 
 from collections import defaultdict
+from urllib.parse import urlparse
 
-import core
+from web_search_mcp.common import _domain_from_url
 
 _PRIMARY_DOMAINS = {
     "developer.mozilla.org", "docs.python.org", "go.dev", "doc.rust-lang.org",
@@ -36,8 +37,8 @@ SOURCE_TYPE_ALIASES = {
 
 
 def source_type(url: str) -> str:
-    domain = core._domain_from_url(url).lower()
-    path = core.urlparse(url).path.lower()
+    domain = _domain_from_url(url).lower()
+    path = urlparse(url).path.lower()
     if domain in _PRIMARY_DOMAINS:
         return "official_docs"
     if domain in {"github.com", "gitlab.com", "bitbucket.org", "sourceforge.net"}:
@@ -91,7 +92,7 @@ def source_boost(kind: str) -> float:
 
 
 def domain_quality_boost(url: str) -> float:
-    domain = core._domain_from_url(url).lower()
+    domain = _domain_from_url(url).lower()
     if domain in _PRIMARY_DOMAINS:
         return 0.035
     if domain in _LOW_QUALITY_DOMAINS:

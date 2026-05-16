@@ -18,8 +18,8 @@ from typing import Any
 
 from redis.exceptions import ResponseError
 
-import cache
-import core
+from web_search_mcp.storage import cache
+from web_search_mcp.common import _chunk_text, _domain_from_url, _normalize_url
 
 log = logging.getLogger("web-search-mcp")
 
@@ -80,7 +80,7 @@ async def _embed(texts: list[str], *, is_query: bool = False):
 
 
 def _chunk_id(url: str, text: str) -> str:
-    return hashlib.sha256(f"{core._normalize_url(url)}\n{text}".encode()).hexdigest()
+    return hashlib.sha256(f"{_normalize_url(url)}\n{text}".encode()).hexdigest()
 
 
 def _vector_blob(vector: Any) -> bytes:
@@ -172,7 +172,7 @@ async def index_page(url: str, title: str, content: str, metadata: dict | None =
     """Embed and store chunks for one page. No-op unless enabled."""
     if not ENABLED or not content:
         return
-    chunks = core._chunk_text(content)[:MAX_CHUNKS_PER_PAGE]
+    chunks = _chunk_text(content)[:MAX_CHUNKS_PER_PAGE]
     if not chunks:
         return
     if cache.SEMANTIC_INDEX_TTL_S == 0:
@@ -183,8 +183,8 @@ async def index_page(url: str, title: str, content: str, metadata: dict | None =
     if not await _ensure_index(int(vectors.shape[1])):
         return
     client = cache._get_client()  # internal service module; intentional shared Valkey connection
-    normalized = core._normalize_url(url)
-    domain = core._domain_from_url(url)
+    normalized = _normalize_url(url)
+    domain = _domain_from_url(url)
     pipe = client.pipeline()
     now = int(time.time())
     for idx, (chunk, vector) in enumerate(zip(chunks, vectors)):

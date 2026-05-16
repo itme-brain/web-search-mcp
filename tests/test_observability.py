@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-import observability
+from web_search_mcp import observability
 from tests.conftest import URLS_A, make_search_results, server_module
 
 
@@ -31,9 +31,9 @@ async def test_search_response_has_request_id_and_records_metrics():
     rerank_mock = AsyncMock(side_effect=_identity_rerank)
 
     with (
-        patch("core._search", search_mock),
-        patch("core._scrape", scrape_mock),
-        patch("core._rerank_scored", rerank_mock),
+        patch("web_search_mcp.tools.search._search", search_mock),
+        patch("web_search_mcp.storage.pages._scrape", scrape_mock),
+        patch("web_search_mcp.tools.search._rerank_scored", rerank_mock),
     ):
         payload = await server_module.search_impl("observability query", num_results=1)
 

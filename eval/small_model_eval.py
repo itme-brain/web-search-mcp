@@ -16,7 +16,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from impls import search_impl  # noqa: E402
+from web_search_mcp.tools.search import search_impl  # noqa: E402
 
 QUERIES = [
     "current Python pathlib Path.walk docs",

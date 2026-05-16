@@ -9,7 +9,7 @@ class TestExtractMarkdown:
         long_text = "This is substantial extracted content. " * 10
         result = {"html": "<html><body><p>test</p></body></html>", "markdown": "raw md"}
 
-        with patch("core.trafilatura.extract", return_value=long_text) as mock:
+        with patch("web_search_mcp.extraction.html.trafilatura.extract", return_value=long_text) as mock:
             output = server_module._extract_markdown(result)
             mock.assert_called_once()
             assert output == long_text.rstrip()
@@ -20,7 +20,7 @@ class TestExtractMarkdown:
             "markdown": {"fit_markdown": "fit content here", "raw_markdown": "raw content"},
         }
 
-        with patch("core.trafilatura.extract", return_value="x"):
+        with patch("web_search_mcp.extraction.html.trafilatura.extract", return_value="x"):
             output = server_module._extract_markdown(result)
             assert output == "fit content here"
 
@@ -30,7 +30,7 @@ class TestExtractMarkdown:
             "markdown": {"fit_markdown": "fit md", "raw_markdown": "raw md"},
         }
 
-        with patch("core.trafilatura.extract", return_value=None):
+        with patch("web_search_mcp.extraction.html.trafilatura.extract", return_value=None):
             output = server_module._extract_markdown(result)
             assert output == "fit md"
 
@@ -40,7 +40,7 @@ class TestExtractMarkdown:
             "markdown": "string markdown",
         }
 
-        with patch("core.trafilatura.extract", side_effect=Exception("boom")):
+        with patch("web_search_mcp.extraction.html.trafilatura.extract", side_effect=Exception("boom")):
             output = server_module._extract_markdown(result)
             assert output == "string markdown"
 
@@ -105,7 +105,7 @@ class TestDocumentMetadata:
             sitename="Example Blog",
             description="A short description.",
         )
-        with patch("core.trafilatura.extract_metadata", return_value=doc):
+        with patch("web_search_mcp.extraction.html.trafilatura.extract_metadata", return_value=doc):
             metadata = server_module._extract_html_metadata("<html>...</html>")
         assert metadata == {
             "author": "Jane Doe",
@@ -119,15 +119,15 @@ class TestDocumentMetadata:
         assert server_module._extract_html_metadata("") == {}
 
     def test_extract_metadata_returning_none_yields_empty_dict(self):
-        with patch("core.trafilatura.extract_metadata", return_value=None):
+        with patch("web_search_mcp.extraction.html.trafilatura.extract_metadata", return_value=None):
             assert server_module._extract_html_metadata("<html/>") == {}
 
     def test_extract_metadata_raising_yields_empty_dict(self):
-        with patch("core.trafilatura.extract_metadata", side_effect=Exception("boom")):
+        with patch("web_search_mcp.extraction.html.trafilatura.extract_metadata", side_effect=Exception("boom")):
             assert server_module._extract_html_metadata("<html/>") == {}
 
     def test_build_document_metadata_adds_word_count(self):
-        with patch("core.trafilatura.extract_metadata", return_value=self._doc()):
+        with patch("web_search_mcp.extraction.html.trafilatura.extract_metadata", return_value=self._doc()):
             metadata = server_module._build_document_metadata("<html/>", "one two three four five")
         assert metadata == {"word_count": 5, "language": "en"}
 
@@ -137,7 +137,7 @@ class TestDocumentMetadata:
 
     def test_build_document_metadata_keeps_populated_fields(self):
         doc = self._doc(author="Alice", date="2024-03-01")
-        with patch("core.trafilatura.extract_metadata", return_value=doc):
+        with patch("web_search_mcp.extraction.html.trafilatura.extract_metadata", return_value=doc):
             metadata = server_module._build_document_metadata("<html/>", "hello world")
         assert metadata == {
             "author": "Alice",
@@ -154,7 +154,7 @@ class TestDocumentMetadata:
             "## Sub\n\nparagraph\n\n"
             "```python\nprint('x')\n```\n"
         )
-        with patch("core.trafilatura.extract_metadata", return_value=self._doc()):
+        with patch("web_search_mcp.extraction.html.trafilatura.extract_metadata", return_value=self._doc()):
             metadata = server_module._build_document_metadata("<html/>", content)
         assert "headings" not in metadata
         assert "code_blocks" not in metadata
