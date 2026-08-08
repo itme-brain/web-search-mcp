@@ -127,11 +127,28 @@ LFM_HF_FILE=LFM2.5-2.6B-Q8_0.gguf
 Set `LFM_API_KEY` when the endpoint requires authentication. The API key is
 used only as a bearer token and is never included in health/result metadata.
 
+The stack also includes a profile-gated, CPU-only llama.cpp sidecar. It uses an
+upstream image pinned to build `b10326`, persists the 2.87 GB Q8 model in the
+`lfm-models` volume, exposes no host port, and explicitly sets both
+`--device none` and `--n-gpu-layers 0`. Start it with:
+
+```sh
+nix develop --command just up-lfm
+nix develop --command just lfm-health
+```
+
+The defaults cap the sidecar at 8 CPUs and 6 GB RAM with one 8192-token slot.
+Tune `LFM_CPUS`, `LFM_MEMORY_LIMIT`, `LFM_THREADS`, and `LFM_CTX_SIZE` in `.env`
+for the production host. The first start downloads the model and can take
+several minutes. To keep using an existing external llama-server instead, run
+the normal stack and set `ENABLE_LFM_PREPROCESSING=1` plus its `LFM_BASE_URL`.
+
 ## Developer workflows
 
 ```sh
 nix develop --command just setup-python
 nix develop --command just test
+nix develop --command just up-lfm
 nix develop --command just smoke --url http://localhost:8002/mcp
 ```
 

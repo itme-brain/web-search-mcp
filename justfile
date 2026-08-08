@@ -30,6 +30,10 @@ setup:
 up: setup
     {{ compose }} up -d --build
 
+# Start the stack with the CPU-only LFM2.5 Q8 preprocessing sidecar.
+up-lfm: setup
+    COMPOSE_PROFILES=lfm ENABLE_LFM_PREPROCESSING=1 {{ compose }} up -d --build
+
 # Stop and remove containers, keep volumes.
 down:
     {{ compose }} down
@@ -62,6 +66,10 @@ restart:
 # Check that the MCP's /ready endpoint is reachable on the configured host port.
 health:
     @curl -fsS "http://localhost:${MCP_HOST_PORT:-8002}/ready" && echo
+
+# Check the internal LFM sidecar from the MCP container.
+lfm-health:
+    {{ compose }} exec -T web-search-mcp python -c "import urllib.request; print(urllib.request.urlopen('http://lfm:8080/health', timeout=5).read().decode())"
 
 # Run the Python test suite through the uv-managed virtualenv.
 test: setup-python

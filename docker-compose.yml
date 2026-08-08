@@ -37,7 +37,7 @@ services:
       - SEMANTIC_TOP_K=${SEMANTIC_TOP_K:-20}
       - EVIDENCE_TTL_S=${EVIDENCE_TTL_S:-604800}
       - ENABLE_LFM_PREPROCESSING=${ENABLE_LFM_PREPROCESSING:-0}
-      - LFM_BASE_URL=${LFM_BASE_URL:-}
+      - LFM_BASE_URL=${LFM_BASE_URL:-http://lfm:8080/v1}
       - LFM_MODEL=${LFM_MODEL:-LFM2.5-2.6B-Q8_0.gguf}
       - LFM_HF_REPO=${LFM_HF_REPO:-LiquidAI/LFM2.5-2.6B-GGUF}
       - LFM_HF_FILE=${LFM_HF_FILE:-LFM2.5-2.6B-Q8_0.gguf}
@@ -54,6 +54,51 @@ services:
         condition: service_healthy
       valkey:
         condition: service_healthy
+
+  lfm:
+    image: ${LLAMA_CPP_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b10326@sha256:bedbb0f38ff2c84893d2df350473fd438875d9ec23d23ce98e96df240e77d6ba}
+    container_name: web-search-lfm
+    profiles: ["lfm"]
+    restart: unless-stopped
+    cpus: ${LFM_CPUS:-8}
+    mem_limit: ${LFM_MEMORY_LIMIT:-6g}
+    environment:
+      - LLAMA_CACHE=/models
+    command:
+      - --hf-repo
+      - ${LFM_HF_REPO:-LiquidAI/LFM2.5-2.6B-GGUF}
+      - --hf-file
+      - ${LFM_HF_FILE:-LFM2.5-2.6B-Q8_0.gguf}
+      - --alias
+      - ${LFM_MODEL:-LFM2.5-2.6B-Q8_0.gguf}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --device
+      - none
+      - --n-gpu-layers
+      - "0"
+      - --ctx-size
+      - ${LFM_CTX_SIZE:-8192}
+      - --parallel
+      - "1"
+      - --threads
+      - ${LFM_THREADS:-8}
+      - --threads-batch
+      - ${LFM_THREADS_BATCH:-8}
+      - --batch-size
+      - ${LFM_BATCH_SIZE:-512}
+      - --ubatch-size
+      - ${LFM_UBATCH_SIZE:-128}
+    volumes:
+      - lfm-models:/models
+    healthcheck:
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10m
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
 
   searxng:
     image: ${SEARXNG_IMAGE:-docker.io/searxng/searxng:2026.8.5-1689cb1b5}
@@ -97,3 +142,4 @@ services:
 volumes:
   searxng-data:
   valkey-data:
+  lfm-models:
