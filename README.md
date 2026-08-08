@@ -3,10 +3,13 @@
 Self-hosted MCP web search for local and hosted LLM agents.
 
 What it does:
+
 - web search with compact evidence and citations
+- stable document/chunk handles for targeted follow-up reads
 - full-page document extraction for known URLs
 - site mapping and small-tree crawling
-- local reranking, caching, and optional semantic retrieval
+- intent-aware candidate reranking, freshness-safe caching, and optional semantic retrieval
+- optional LFM2.5 preprocessing for research planning and cited evidence compression
 - no paid search API required
 
 The server is designed for small tool-using models: few tools, sane defaults, transparent output, and minimal knobs exposed to the model.
@@ -17,21 +20,13 @@ The server is designed for small tool-using models: few tools, sane defaults, tr
 ## Install
 
 Tags:
+
 - https://github.com/itme-brain/web-search-mcp/tags
 
 Download a tagged version from GitHub, extract it, and `cd` into the extracted directory.
 
-**Without Nix**
-
-Requires `docker compose`, `just`, and `uv`.
-
-```sh
-uv venv .venv && uv pip sync --python .venv/bin/python requirements.txt
-just setup
-docker compose up -d --build
-```
-
-**With Nix**
+Nix provides the pinned development and deployment tools. The host must provide
+a running Docker daemon.
 
 ```sh
 nix run .#deploy
@@ -69,10 +64,13 @@ Add this to your Pi MCP server config:
 | `map` | List URLs under one site/root without reading page content. |
 | `research` | Broader, slower, multi-source search for harder questions. |
 | `crawl` | Read a small site/docs subtree, optionally ranked for a query. |
+| `read_evidence` | Expand a stable document or chunk reference already returned by search. |
 
 Rule of thumb:
+
 - use `search` first
-- use `extract` to read the best page in full
+- use `read_evidence` to expand an already-retrieved passage/document without another web fetch
+- use `extract` when you already know the URL
 - use `research` for hard, comparative, or current questions
 - use `map` then `crawl` for docs/site exploration
 
@@ -100,7 +98,42 @@ ENABLE_SEMANTIC_CACHE=1
 ```
 
 Notes:
+
 - Advanced config options are documented in `env.sample`
+- `research` and `crawl` support optional MCP background-task execution
+- FastMCP 4 is deliberately pinned to the `4.0.0b1` beta; the server negotiates
+  both modern sessionless and legacy session-based MCP transports
+
+### Optional LFM2.5 preprocessing
+
+The preprocessing layer is fail-open and applies only to `research`. It can
+refine query intent/search variants and compress retrieved passages into
+validated cited statements. Deterministic extraction, retrieval, reranking, and
+the original evidence remain authoritative.
+
+The pinned artifact is
+[`LiquidAI/LFM2.5-2.6B-GGUF`](https://huggingface.co/LiquidAI/LFM2.5-2.6B-GGUF),
+file `LFM2.5-2.6B-Q8_0.gguf`. Serve it from an OpenAI-compatible llama.cpp
+endpoint, preferably with that filename as its model alias, then configure:
+
+```dotenv
+ENABLE_LFM_PREPROCESSING=1
+LFM_BASE_URL=http://your-llama-host:8000/v1
+LFM_MODEL=LFM2.5-2.6B-Q8_0.gguf
+LFM_HF_REPO=LiquidAI/LFM2.5-2.6B-GGUF
+LFM_HF_FILE=LFM2.5-2.6B-Q8_0.gguf
+```
+
+Set `LFM_API_KEY` when the endpoint requires authentication. The API key is
+used only as a bearer token and is never included in health/result metadata.
+
+## Developer workflows
+
+```sh
+nix develop --command just setup-python
+nix develop --command just test
+nix develop --command just smoke --url http://localhost:8002/mcp
+```
 
 ## Layout
 
@@ -116,14 +149,15 @@ src/
     server.py                       FastMCP entry point, tool wrappers, health/metrics
     common.py                       shared warnings, validation, URL, and dedup helpers
     search_client.py                SearXNG and dependency-probe HTTP clients
-    config/                         settings and search profile budgets
+    config/                         settings, search budgets, freshness policy
     http/                           request policy, URL utilities, target validators
-    storage/                        Valkey cache, page envelopes, semantic index
+    storage/                        Valkey cache, durable evidence, semantic index
     extraction/                     HTML/text/PDF extraction and provider adapters
     crawling/                       Crawl4AI client/config/result parsing
-    ranking/                        reranker lifecycle, evidence, source quality
+    ranking/                        intent, reranker lifecycle, evidence, source quality
+    preprocessing/                  optional LFM query planning/evidence digest
     presentation/                   Pydantic models and markdown formatters
-    tools/                          search, research, extract, map, crawl implementations
+    tools/                          search, research, extract, map, crawl, evidence tools
 searxng/config/
   settings.yml.template             engine allowlist, weights, safesearch
 tests/                              pytest suite

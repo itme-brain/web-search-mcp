@@ -67,6 +67,15 @@ health:
 test: setup-python
     .venv/bin/pytest -q
 
+# Run one test module or node id, e.g. `just test-target tests/test_tools.py`.
+test-target target: setup-python
+    .venv/bin/pytest -q "{{ target }}"
+
+# Probe the optional OpenAI-compatible preprocessing endpoint. LFM_API_KEY is
+# inherited from `.env` when required by the backend.
+lfm-smoke endpoint model="LFM2.5-2.6B-Q8_0.gguf": setup-python
+    PYTHONPATH=src .venv/bin/python scripts/lfm_smoke.py --base-url "{{ endpoint }}" --model "{{ model }}"
+
 # Run the benchmark query set and write a JSONL run under eval/runs/.
 eval: setup-python
     .venv/bin/python eval/run_eval.py

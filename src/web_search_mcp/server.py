@@ -1,4 +1,4 @@
-"""MCP entry point: FastMCP instance, /health + /ready routes, and the five @mcp.tool wrappers.
+"""MCP entry point, health routes, resources, and six tool wrappers.
 
 Run with `python -m web_search_mcp.server` inside the container.
 """
