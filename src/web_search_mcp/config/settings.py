@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     request_timeout: int = 30
     max_results: int = 10
     max_scrape: int = 5
+    max_candidates: int = 60
     max_pdf_bytes: int = 25 * 1024 * 1024
 
 
@@ -31,6 +32,7 @@ RERANK_MAX_LENGTH = settings.rerank_max_length
 REQUEST_TIMEOUT = settings.request_timeout
 MAX_RESULTS = settings.max_results
 MAX_SCRAPE = settings.max_scrape
+MAX_CANDIDATES = settings.max_candidates
 MAX_PDF_BYTES = settings.max_pdf_bytes
 
 _HTTP_TIMEOUT = max(REQUEST_TIMEOUT // 2, 10)

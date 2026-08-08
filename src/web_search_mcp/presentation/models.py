@@ -28,6 +28,7 @@ class WarningModel(StrictModel):
 
 class TimingModel(StrictModel):
     search: int | None = None
+    candidate_rerank: int | None = None
     scrape: int | None = None
     semantic: int | None = None
     rerank: int | None = None
@@ -83,6 +84,8 @@ class SearchResultModel(StrictModel):
 class SearchMetaModel(StrictModel):
     request_id: str | None = None
     profile: str = "search"
+    intent: str = "general_web_research"
+    candidate_pool_size: int = 0
     brief: list[str] = []
     findings: list[str] = []
     answer: list[str] = []

@@ -19,20 +19,22 @@ def keyphrase(query: str) -> str:
     return " ".join(terms[:5]) or query
 
 
-def search_queries(query: str, profile: str) -> list[str]:
-    """Return one query for normal search, expanded variants for research."""
+def search_queries(query: str, profile: str, intent: str = "general_web_research") -> list[str]:
+    """Return intent-aware query variants for the research profile."""
     if profile != "research":
         return [query]
     phrase = keyphrase(query)
     quoted = f'"{phrase}"' if phrase != query or len(query) <= 80 else query
-    variants = [
-        query,
-        quoted,
-        f"{phrase} documentation docs official",
-        f"{phrase} github gitlab repository",
-        f"{phrase} issue discussion mailing list",
-        f"{phrase} example case study",
-    ]
+    suffixes = {
+        "technical_documentation": ["official documentation reference", "github gitlab repository", "issue discussion mailing list", "example implementation"],
+        "current_events": ["latest announcement", "official statement", "recent reporting"],
+        "academic_research": ["paper arxiv doi", "systematic review", "study results methodology"],
+        "product_research": ["official specifications", "independent review", "pricing comparison"],
+        "comparison": ["official documentation comparison", "independent analysis", "differences advantages disadvantages"],
+        "factual_lookup": ["official source", "reference"],
+        "general_web_research": ["official source", "analysis", "case study"],
+    }.get(intent, ["official source", "analysis"])
+    variants = [query, quoted, *(f"{phrase} {suffix}" for suffix in suffixes)]
     deduped: list[str] = []
     seen: set[str] = set()
     for variant in variants:

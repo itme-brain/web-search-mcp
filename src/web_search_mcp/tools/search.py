@@ -32,6 +32,7 @@ from web_search_mcp.common import (
 )
 from web_search_mcp.presentation import models
 from web_search_mcp.ranking import evidence
+from web_search_mcp.ranking import intent as intent_module
 from web_search_mcp.ranking import query_expansion
 from web_search_mcp.config import search as search_config
 from web_search_mcp.storage import semantic
@@ -105,7 +106,7 @@ async def _collect_search_candidates(
     *,
     search_queries: list[str],
     profile: str,
-    num_results: int,
+    candidate_budget: int,
     searx_pages: int,
     time_range: str | None,
     language: str | None,
@@ -123,7 +124,7 @@ async def _collect_search_candidates(
             try:
                 page = await _searxng_cached(
                     search_query,
-                    num_results=num_results,
+                    num_results=candidate_budget,
                     time_range=time_range,
                     language=language,
                     pageno=pageno,
@@ -140,7 +141,7 @@ async def _collect_search_candidates(
             filtered_so_far = _dedup_results(
                 _filter_results_by_domain(raw_results, include_domains, exclude_domains)
             )
-            if profile == "search" and len(filtered_so_far) >= num_results:
+            if profile == "search" and len(filtered_so_far) >= candidate_budget:
                 break
         if profile != "research":
             break
@@ -148,6 +149,40 @@ async def _collect_search_candidates(
     results = _dedup_results(_filter_results_by_domain(raw_results, include_domains, exclude_domains))
     results = [r for r in results if source_quality.matches_source_types(r.get("url", ""), source_types)]
     return results, unresponsive_engines, warnings, degraded
+
+
+async def _rank_search_candidates(
+    query: str,
+    results: list[dict],
+    intent_profile: intent_module.IntentProfile,
+    warnings: list[dict],
+) -> tuple[list[dict], bool]:
+    """Rerank title/snippet candidates before selecting pages to scrape."""
+    if not results:
+        return [], False
+    documents = [
+        "\n".join(filter(None, [
+            result.get("title", ""), result.get("content", ""), result.get("url", ""),
+        ]))
+        for result in results
+    ]
+    try:
+        scored = await _rerank_scored(query, documents)
+    except Exception as exc:
+        log.warning("candidate rerank failed query=%r err=%s", query, exc)
+        warnings.append(_warning("candidate_rerank_failed", RERANK_NAME, str(exc)))
+        return results, True
+    scores = {idx: score for idx, score in scored}
+    entries = [{"url": result.get("url", ""), "title": result.get("title", "")} for result in results]
+    ranked = sorted(
+        range(len(results)),
+        key=lambda idx: source_quality.entry_sort_score(idx, entries, scores, intent_profile),
+        reverse=True,
+    )
+    ranked = source_quality.diversify_by_source_type(
+        _diversify_ranked_entries(ranked, entries), entries,
+    )
+    return [results[idx] for idx in ranked], False
 
 
 def _validated_response(model_cls, response: dict) -> dict:
@@ -438,13 +473,13 @@ async def search_impl(
 ) -> dict:
     """Search the web, scrape top results, and return structured JSON ranked by relevance.
 
-    Pipeline: SearXNG search -> Crawl4AI scrape -> chunk -> local reranker -> formatted output.
-    Scraped pages are split into paragraphs and reranked at the chunk level, so only
-    the most query-relevant excerpts from each page are returned.
+    Pipeline: broad SearXNG search -> candidate rerank -> selective scrape ->
+    chunk rerank -> formatted evidence. Scraped pages are split into paragraphs
+    and reranked at the chunk level, so only query-relevant excerpts are returned.
 
-    Fetches page 2 from SearXNG only if page 1 after dedup/filter is short of
-    `num_results`. Always scrapes `min(num_results, MAX_SCRAPE)` top candidates.
-    Results are backed by shared Valkey caches across requests.
+    Candidate retrieval is intentionally broader than `num_results`; scraping
+    remains bounded by the profile and MAX_SCRAPE. Results are backed by shared
+    Valkey caches across requests.
     """
     query = _validate_query(query)
     request_id = uuid.uuid4().hex
@@ -461,11 +496,13 @@ async def search_impl(
     max_chars_per_result = search_config.validate_optional_positive_int(
         "max_chars_per_result", max_chars_per_result, maximum=8000
     ) or default_chars
-    search_queries = query_expansion.search_queries(query, profile)
+    intent_profile = intent_module.classify(query, time_range=time_range)
+    search_queries = query_expansion.search_queries(query, profile, intent_profile.name)
+    candidate_budget = search_config.candidate_budget(profile, num_results)
     started = time.monotonic()
     warnings: list[dict] = []
     degraded = False
-    timings_ms = {"search": 0, "scrape": 0, "semantic": 0, "rerank": 0, "total": 0}
+    timings_ms = {"search": 0, "candidate_rerank": 0, "scrape": 0, "semantic": 0, "rerank": 0, "total": 0}
     semantic_hits = 0
 
     # --- search (profile-aware multi-page retrieval) ---
@@ -473,7 +510,7 @@ async def search_impl(
     results, unresponsive_engines, search_warnings, search_degraded = await _collect_search_candidates(
         search_queries=search_queries,
         profile=profile,
-        num_results=num_results,
+        candidate_budget=candidate_budget,
         searx_pages=searx_pages,
         time_range=time_range,
         language=language,
@@ -483,7 +520,7 @@ async def search_impl(
     )
     warnings.extend(search_warnings)
     degraded = degraded or search_degraded
-    results = results[:max(num_results, scrape_budget)]
+    results = results[:candidate_budget]
 
     # Surface per-engine failures from SearXNG (e.g. "google: CAPTCHA").
     # Does NOT flip `degraded` — the multi-engine hedge means a single
@@ -506,6 +543,13 @@ async def search_impl(
         observability.observe_tool_response(profile, response)
         log.info("request_id=%s query=%r profile=%s results=0 degraded=%s", request_id, query, profile, degraded)
         return _validated_response(models.SearchResponseModel, response)
+
+    candidate_rerank_started = time.monotonic()
+    results, candidate_rank_degraded = await _rank_search_candidates(
+        query, results, intent_profile, warnings,
+    )
+    timings_ms["candidate_rerank"] = int((time.monotonic() - candidate_rerank_started) * 1000)
+    degraded = degraded or candidate_rank_degraded
 
     scrape_started = time.monotonic()
     entries, to_scrape, scrape_warnings = await _scrape_search_entries(results, scrape_budget)
@@ -554,6 +598,8 @@ async def search_impl(
         "meta": {
             "request_id": request_id,
             "profile": profile,
+            "intent": intent_profile.name,
+            "candidate_pool_size": len(results),
             "brief": brief,
             "findings": findings,
             "answer": answer,

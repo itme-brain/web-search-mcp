@@ -114,14 +114,19 @@ def content_quality_boost(entry: dict) -> float:
     return 0.0
 
 
-def entry_sort_score(eidx: int, entries: list[dict], entry_best: dict[int, float | None]) -> float:
+def entry_sort_score(eidx: int, entries: list[dict], entry_best: dict[int, float | None], intent_profile=None) -> float:
     entry = entries[eidx]
     url = entry["url"]
+    intent_boost = 0.0
+    if intent_profile is not None:
+        from web_search_mcp.ranking.intent import preference_boost
+        intent_boost = preference_boost(source_type(url), intent_profile)
     return (
         (entry_best.get(eidx) or 0.0)
         + source_boost(source_type(url))
         + domain_quality_boost(url)
         + content_quality_boost(entry)
+        + intent_boost
     )
 
 

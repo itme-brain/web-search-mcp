@@ -178,8 +178,8 @@ async def test_concurrent_searches_single_flight_to_searxng():
         search_gate.set()
         await asyncio.gather(task_a, task_b)
 
-    # Two concurrent callers, one upstream SearXNG call.
-    assert call_count == 1
+    # Two concurrent callers share one upstream call for each candidate-pool page.
+    assert call_count == 2
 
 
 @pytest.mark.asyncio
@@ -226,9 +226,9 @@ async def test_query_cache_miss_on_different_query_triggers_fresh_pipeline():
 
         await server_module.search_impl("different query", num_results=3)
 
-    search_mock.assert_called_once()
+    assert search_mock.call_count == 2
     assert scrape_mock.call_count == 3
-    rerank_mock.assert_called_once()
+    assert rerank_mock.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -340,7 +340,7 @@ async def test_tool_works_without_session_context():
 
     assert result["query"] == "direct call"
     assert result["results"][0]["url"] == "https://example.com/a1"
-    search_mock.assert_called_once()
+    assert search_mock.call_count == 2
 
 
 @pytest.mark.asyncio

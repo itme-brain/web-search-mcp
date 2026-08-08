@@ -76,8 +76,8 @@ async def test_page2_fetched_when_page1_underfills():
 
 
 @pytest.mark.asyncio
-async def test_page2_skipped_when_page1_already_full():
-    # Page 1 already yields 3 unique, non-filtered results → no page 2.
+async def test_page2_fetched_until_candidate_pool_is_filled():
+    # Three final results do not fill the broader pre-scrape candidate pool.
     page1 = make_search_results(URLS_A[:3], prefix="P1")
 
     search_mock = AsyncMock(return_value=page1)
@@ -91,7 +91,7 @@ async def test_page2_skipped_when_page1_already_full():
     ):
         await server_module.search_impl(query="test", num_results=3)
 
-    assert search_mock.call_count == 1
+    assert search_mock.call_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -111,11 +111,11 @@ async def test_cache_key_includes_time_range():
         patch(PATCH_RERANK, rerank_mock),
     ):
         await server_module.search_impl(query="test", num_results=1)
-        assert search_mock.call_count == 1
+        assert search_mock.call_count == 2
 
         # same query, different time_range — should NOT hit cache
         await server_module.search_impl(query="test", num_results=1, time_range="week")
-        assert search_mock.call_count == 2
+        assert search_mock.call_count == 4
 
 
 # ---------------------------------------------------------------------------
