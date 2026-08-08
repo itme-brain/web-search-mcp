@@ -37,6 +37,7 @@ from web_search_mcp.ranking import query_expansion
 from web_search_mcp.config import search as search_config
 from web_search_mcp.config import freshness as freshness_config
 from web_search_mcp.storage import semantic
+from web_search_mcp.storage import evidence as evidence_store
 from web_search_mcp import observability
 from web_search_mcp.ranking import source_quality
 from web_search_mcp.config.settings import (
@@ -275,6 +276,7 @@ async def _scrape_search_entries(
             "title": result.get("title", "Untitled"),
             "url": result.get("url", ""),
             "content": raw or result.get("content", ""),
+            "full_content": content,
             "scraped": raw is not None,
             "metadata": metadata,
         })
@@ -286,6 +288,24 @@ async def _scrape_search_entries(
             "scraped": False,
             "metadata": {},
         })
+    persisted = await asyncio.gather(*[
+        evidence_store.persist_document(
+            url=entry["url"], title=entry.get("title"),
+            content=entry["full_content"], metadata=entry.get("metadata"),
+        )
+        for entry in entries if entry.get("scraped") and entry.get("full_content")
+    ])
+    persisted_by_url = {_normalize_url(item["url"]): item for item in persisted}
+    for entry in entries:
+        manifest = persisted_by_url.get(_normalize_url(entry.get("url", "")))
+        if not manifest:
+            continue
+        entry["document_id"] = manifest["id"]
+        entry["resource_uri"] = manifest["uri"]
+        chunks = _chunk_text(manifest["content"])
+        entry["chunk_refs"] = {
+            text: manifest["chunks"][idx] for idx, text in enumerate(chunks)
+        }
     return entries, to_scrape, warnings
 
 
@@ -446,14 +466,21 @@ async def _build_structured_search_results(
             "source_type": source_quality.source_type(url),
             "snippet": results[eidx].get("content", "") if eidx < len(results) else "",
             "content": content,
-            "passages": [
-                {"citation": f"{rank}.{idx}", "text": chunk, "score": score}
-                for idx, (chunk, score) in enumerate(top, 1)
-            ],
+            "passages": [],
             "scraped": entry["scraped"],
             "seen_recently": seen_recently,
             "retrieval_source": entry.get("retrieval_source", "live_search"),
         }
+        for idx, (chunk, score) in enumerate(top, 1):
+            passage = {"citation": f"{rank}.{idx}", "text": chunk, "score": score}
+            chunk_ref = (entry.get("chunk_refs") or {}).get(chunk)
+            if chunk_ref:
+                passage["chunk_id"] = chunk_ref["id"]
+                passage["resource_uri"] = chunk_ref["uri"]
+            structured["passages"].append(passage)
+        if entry.get("document_id"):
+            structured["document_id"] = entry["document_id"]
+            structured["resource_uri"] = entry["resource_uri"]
         if top:
             structured["best_score"] = top[0][1]
         metadata = entry.get("metadata") or {}

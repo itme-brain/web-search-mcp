@@ -52,6 +52,7 @@ SEEN_URL_TTL_S = _ttl_env("SEEN_URL_TTL_S", _DEFAULT_TTL_S)
 CONTENT_ALIAS_TTL_S = _ttl_env("CONTENT_ALIAS_TTL_S", PAGE_CACHE_TTL_S)
 PAGE_MEMORY_CACHE_TTL_S = _ttl_env("PAGE_MEMORY_CACHE_TTL_S", PAGE_CACHE_TTL_S)
 SEMANTIC_INDEX_TTL_S = _ttl_env("SEMANTIC_INDEX_TTL_S", PAGE_CACHE_TTL_S)
+EVIDENCE_TTL_S = _ttl_env("EVIDENCE_TTL_S", max(PAGE_CACHE_TTL_S, 604800) if PAGE_CACHE_TTL_S else 0)
 # Short TTL for failed / rejected page entries. Long enough to prevent
 # immediate retry thrash on bad URLs, short enough that a transient
 # upstream failure (CAPTCHA, 5xx, brief timeout) can recover in under a
@@ -179,3 +180,6 @@ content_alias = KVCache("ws:content", ttl=CONTENT_ALIAS_TTL_S)
 # -> {url,title,domain,source_type,content,metadata,updated_at}. Distinct
 # from semantic.py, which owns chunk-level vector/FT indexing.
 page_memory_cache = KVCache("ws:page_memory", ttl=PAGE_MEMORY_CACHE_TTL_S)
+# Content-addressed document/chunk handles returned through MCP Resources.
+document_cache = KVCache("ws:document", ttl=EVIDENCE_TTL_S)
+chunk_cache = KVCache("ws:chunk", ttl=EVIDENCE_TTL_S)

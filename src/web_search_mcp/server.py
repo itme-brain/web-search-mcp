@@ -7,6 +7,7 @@ import asyncio
 
 from fastmcp import FastMCP
 from fastmcp.tools.tool import ToolResult
+from mcp.types import ResourceLink, TextContent
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
 
@@ -32,11 +33,13 @@ from web_search_mcp.tools.search import search_impl, research_impl
 from web_search_mcp.tools.extract import extract_impl
 from web_search_mcp.tools.map import map_impl
 from web_search_mcp.tools.crawl import crawl_impl  # noqa: F401
+from web_search_mcp.tools.evidence import read_evidence_impl
+from web_search_mcp.storage import evidence as evidence_store
 
 
 mcp = FastMCP("Web Search", version="0.7.1")
 
-__all__ = ["mcp", "search_impl", "research_impl", "extract_impl", "map_impl", "crawl_impl"]
+__all__ = ["mcp", "search_impl", "research_impl", "extract_impl", "map_impl", "crawl_impl", "read_evidence_impl"]
 
 
 def _semantic_status() -> dict:
@@ -59,10 +62,39 @@ def _semantic_status() -> dict:
 
 def _tool_result(response: dict, formatter) -> ToolResult:
     """Return curated markdown plus the structured dict payload."""
+    content = [TextContent(type="text", text=formatter(response))]
+    for result in response.get("results", []):
+        resource_uri = result.get("resource_uri")
+        if resource_uri:
+            content.append(ResourceLink(
+                type="resource_link",
+                uri=resource_uri,
+                name=result.get("title") or result.get("document_id") or "retrieved document",
+                description="Complete cleaned document already retrieved by web-search-mcp",
+                mimeType="text/markdown",
+            ))
     return ToolResult(
-        content=formatter(response),
+        content=content,
         structured_content=response,
     )
+
+
+@mcp.resource("web-search://documents/{document_id}", mime_type="text/markdown")
+async def retrieved_document(document_id: str) -> str:
+    """Read a complete document that was already retrieved and persisted."""
+    record = await evidence_store.get_document(document_id)
+    if record is None:
+        raise ValueError("retrieved document not found or expired")
+    return record["content"]
+
+
+@mcp.resource("web-search://chunks/{chunk_id}", mime_type="text/markdown")
+async def retrieved_chunk(chunk_id: str) -> str:
+    """Read one targeted chunk that was already retrieved and persisted."""
+    record = await evidence_store.get_chunk(chunk_id)
+    if record is None:
+        raise ValueError("retrieved chunk not found or expired")
+    return record["text"]
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +288,25 @@ async def crawl(
     return _tool_result(response, _format_crawl_results)
 
 
-for _tool in (search, extract, map, research, crawl):
+@mcp.tool(output_schema=models.EvidenceReadResponseModel.model_json_schema())
+async def read_evidence(reference: str) -> ToolResult:
+    """Expand a document or chunk reference returned by search/research."""
+    response = await read_evidence_impl(reference)
+    return ToolResult(
+        content=[
+            TextContent(type="text", text=response["content"]),
+            ResourceLink(
+                type="resource_link",
+                uri=response["resource_uri"],
+                name=response.get("title") or response.get("chunk_id") or response["document_id"],
+                mimeType="text/markdown",
+            ),
+        ],
+        structured_content=response,
+    )
+
+
+for _tool in (search, extract, map, research, crawl, read_evidence):
     if not hasattr(_tool, "fn"):
         _tool.fn = _tool
 

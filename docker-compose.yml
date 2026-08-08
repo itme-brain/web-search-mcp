@@ -33,6 +33,7 @@ services:
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}
       - EMBEDDING_DEVICE=${EMBEDDING_DEVICE:-cpu}
       - SEMANTIC_TOP_K=${SEMANTIC_TOP_K:-20}
+      - EVIDENCE_TTL_S=${EVIDENCE_TTL_S:-604800}
     healthcheck:
       <<: *healthcheck-defaults
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready', timeout=3).read()"]

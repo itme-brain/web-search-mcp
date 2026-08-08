@@ -62,6 +62,8 @@ class SearchPassageModel(StrictModel):
     citation: str | None = None
     text: str
     score: float | None = None
+    chunk_id: str | None = None
+    resource_uri: str | None = None
 
 
 class SearchResultModel(StrictModel):
@@ -79,6 +81,19 @@ class SearchResultModel(StrictModel):
     scraped: bool
     seen_recently: bool
     metadata: DocumentMetadataModel | None = None
+    document_id: str | None = None
+    resource_uri: str | None = None
+
+
+class EvidenceReadResponseModel(StrictModel):
+    reference: str
+    kind: str
+    document_id: str
+    chunk_id: str | None = None
+    url: str
+    title: str | None = None
+    content: str
+    resource_uri: str
 
 
 class SearchMetaModel(StrictModel):
