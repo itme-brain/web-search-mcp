@@ -2,7 +2,7 @@
 
 Runs representative queries directly against search_impl and reports rough
 answerability signals: output size, source types, warnings, and whether any
-brief/highlights were produced. It is intentionally lightweight and does not
+research overview was produced. It is intentionally lightweight and does not
 require an LLM judge.
 """
 
@@ -35,7 +35,7 @@ async def main() -> None:
         rows.append({
             "query": query,
             "results": len(result.get("results", [])),
-            "brief_items": len(result.get("meta", {}).get("brief", [])),
+            "overview_items": len(result.get("meta", {}).get("overview", [])),
             "source_types": sorted({r.get("source_type") for r in result.get("results", []) if r.get("source_type")}),
             "warnings": [w.get("type") for w in result.get("meta", {}).get("warnings", [])],
             "content_chars": rendered_chars,

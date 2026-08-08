@@ -49,7 +49,7 @@ TESTS = [
         "name": "extract — html page",
         "tool": "extract",
         "args": {
-            "urls": ["https://docs.python.org/3/library/asyncio-task.html"],
+            "url": "https://docs.python.org/3/library/asyncio-task.html",
         },
     },
     {
@@ -76,8 +76,7 @@ FULL_EXTRAS = [
         "name": "extract — PDF with per-page rerank",
         "tool": "extract",
         "args": {
-            "urls": ["https://arxiv.org/pdf/2310.06825.pdf"],
-            "query": "attention mechanism",
+            "url": "https://arxiv.org/pdf/2310.06825.pdf",
         },
     },
     {
@@ -86,8 +85,8 @@ FULL_EXTRAS = [
         "args": None,
     },
     {
-        "name": "chunks — cherry-pick by id",
-        "tool": "__chunk_ids",
+        "name": "evidence — expand stable resource handle",
+        "tool": "__evidence_handle",
         "args": None,
     },
     {
@@ -206,7 +205,7 @@ async def _cache_warmup(client: Client) -> None:
 
     started = time.monotonic()
     try:
-        await client.call_tool("extract", {"urls": [url]})
+        await client.call_tool("extract", {"url": url})
     except Exception as exc:
         print(f"  cold call FAILED: {exc}")
         return
@@ -214,7 +213,7 @@ async def _cache_warmup(client: Client) -> None:
 
     started = time.monotonic()
     try:
-        result = await client.call_tool("extract", {"urls": [url]})
+        result = await client.call_tool("extract", {"url": url})
     except Exception as exc:
         print(f"  warm call FAILED: {exc}")
         return
@@ -233,45 +232,45 @@ async def _cache_warmup(client: Client) -> None:
         print("  !! speedup < 3× — warm call is not reading from cache cleanly")
 
 
-async def _chunk_ids(client: Client) -> None:
-    """Extract a page, then re-request specific chunks by id."""
-    print(f"\n{SEPARATOR}\n[chunks: cherry-pick by id]\n{SEPARATOR}")
-    url = "https://docs.python.org/3/library/asyncio-task.html"
+async def _evidence_handle(client: Client) -> None:
+    """Search once, then expand a returned stable evidence handle."""
+    print(f"\n{SEPARATOR}\n[evidence: expand stable resource handle]\n{SEPARATOR}")
     try:
-        first = await client.call_tool("extract", {"urls": [url], "query": "task group"})
+        first = await client.call_tool(
+            "search",
+            {
+                "query": "python asyncio task group documentation",
+                "include_domains": ["docs.python.org"],
+                "num_results": 1,
+            },
+        )
     except Exception as exc:
-        print(f"  initial extract FAILED: {exc}")
+        print(f"  initial search FAILED: {exc}")
         return
 
     payload = (first.structured_content or {}).get("results") or []
     if not payload:
-        print("  !! no results from initial extract")
+        print("  !! no results from initial search")
         return
-    chunks = payload[0].get("chunks") or []
-    print(f"  initial extract returned {len(chunks)} chunks")
-    if len(chunks) < 2:
-        print("  !! need at least 2 chunks to exercise chunk_ids; skipping")
+    result = payload[0]
+    passages = result.get("passages") or []
+    reference = passages[0].get("resource_uri") if passages else None
+    reference = reference or result.get("resource_uri")
+    if not reference:
+        print("  !! search result did not include a stable evidence handle")
         return
 
-    wanted = [chunks[0]["id"], chunks[-1]["id"]]
     started = time.monotonic()
     try:
-        second = await client.call_tool("extract", {"urls": [url], "chunk_ids": wanted})
+        second = await client.call_tool("read_evidence", {"reference": reference})
     except Exception as exc:
-        print(f"  chunk_ids call FAILED: {exc}")
+        print(f"  read_evidence call FAILED: {exc}")
         return
     elapsed_ms = int((time.monotonic() - started) * 1000)
 
-    second_payload = (second.structured_content or {}).get("results") or []
-    if not second_payload:
-        print("  !! no results from chunk_ids extract")
-        return
-    got = second_payload[0]
-    cached_flag = bool(got.get("cached"))
-    content = got.get("content") or ""
-    print(f"  chunk_ids={wanted}   latency: {elapsed_ms} ms   cached={cached_flag}   chars: {len(content)}")
-    if not cached_flag:
-        print("  !! chunk_ids call did not hit cache — rerank/scrape was re-done")
+    expanded = second.structured_content or {}
+    content = expanded.get("content") or ""
+    print(f"  reference={reference}   latency: {elapsed_ms} ms   chars: {len(content)}")
 
 
 def _looks_like_engine_warning(chunk: str) -> bool:
@@ -312,8 +311,8 @@ async def _main() -> None:
                     await _burst_search(client)
                 elif test["tool"] == "__cache_warmup":
                     await _cache_warmup(client)
-                elif test["tool"] == "__chunk_ids":
-                    await _chunk_ids(client)
+                elif test["tool"] == "__evidence_handle":
+                    await _evidence_handle(client)
                 else:
                     await _run_tool(client, test["name"], test["tool"], test["args"])
     except Exception as exc:
