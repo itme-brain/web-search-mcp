@@ -35,6 +35,7 @@ from web_search_mcp.ranking import evidence
 from web_search_mcp.ranking import intent as intent_module
 from web_search_mcp.ranking import query_expansion
 from web_search_mcp.config import search as search_config
+from web_search_mcp.config import freshness as freshness_config
 from web_search_mcp.storage import semantic
 from web_search_mcp import observability
 from web_search_mcp.ranking import source_quality
@@ -68,6 +69,7 @@ async def _searxng_cached(
     time_range: str | None,
     language: str | None,
     pageno: int,
+    max_age_seconds: int | None = None,
 ) -> dict:
     """Cached, single-flighted SearXNG call."""
     key = hashlib.sha256(
@@ -78,7 +80,13 @@ async def _searxng_cached(
     ).hexdigest()
     cached = await cache_module.searxng_cache.get(key)
     if cached is not None:
-        return cached
+        if "payload" not in cached:
+            if max_age_seconds is None:
+                return cached
+        else:
+            cached_at = cached.get("cached_at", 0)
+            if max_age_seconds is None or time.time() - cached_at <= max_age_seconds:
+                return cached["payload"]
     inflight = _searxng_inflight.get(key)
     if inflight is not None:
         return await inflight
@@ -92,7 +100,10 @@ async def _searxng_cached(
             language=language,
             pageno=pageno,
         )
-        await cache_module.searxng_cache.set(key, result)
+        await cache_module.searxng_cache.set(key, {
+            "cached_at": int(time.time()),
+            "payload": result,
+        })
         fut.set_result(result)
         return result
     except Exception as exc:
@@ -113,6 +124,7 @@ async def _collect_search_candidates(
     include_domains: list[str] | None,
     exclude_domains: list[str] | None,
     source_types: list[str] | None,
+    freshness_policy: freshness_config.FreshnessPolicy,
 ) -> tuple[list[dict], list, list[dict], bool]:
     """Search SearXNG pages and return filtered candidates plus warnings."""
     warnings: list[dict] = []
@@ -128,6 +140,7 @@ async def _collect_search_candidates(
                     time_range=time_range,
                     language=language,
                     pageno=pageno,
+                    max_age_seconds=freshness_policy.search_max_age_seconds,
                 )
             except Exception as exc:
                 if not raw_results and pageno == 1:
@@ -230,11 +243,18 @@ def _empty_search_response(
     }
 
 
-async def _scrape_search_entries(results: list[dict], scrape_budget: int) -> tuple[list[dict], int, list[dict]]:
+async def _scrape_search_entries(
+    results: list[dict],
+    scrape_budget: int,
+    freshness_policy: freshness_config.FreshnessPolicy,
+) -> tuple[list[dict], int, list[dict]]:
     """Scrape top candidates and build page/snippet entries."""
     to_scrape = min(scrape_budget, len(results))
     scraped = await asyncio.gather(*[
-        _scrape_cached(r["url"], cache_module.page_cache) for r in results[:to_scrape]
+        _scrape_cached(
+            r["url"], cache_module.page_cache,
+            max_age_seconds=freshness_policy.page_max_age_seconds,
+        ) for r in results[:to_scrape]
     ])
     warnings: list[dict] = []
     scrape_failures = sum(1 for s in scraped if s.get("content") is None)
@@ -329,8 +349,11 @@ async def _append_page_memory_entries(
 async def _merge_memory_entries(
     *, entries: list[dict], results: list[dict], query: str,
     max_passages: int, source_types: list[str] | None,
+    freshness_policy: freshness_config.FreshnessPolicy,
 ) -> int:
     """Append memory evidence not already present in entries."""
+    if not freshness_policy.allow_unverified_memory:
+        return 0
     existing_urls = {_normalize_url(entry["url"]) for entry in entries if entry.get("url")}
     added = await _append_vector_memory_entries(
         entries=entries, query=query, max_passages=max_passages,
@@ -486,6 +509,7 @@ async def search_impl(
     num_results = _validate_positive_int("num_results", num_results, maximum=MAX_RESULTS)
     profile = search_config.normalize_profile(profile)
     time_range = _normalize_time_range(time_range)
+    freshness_policy = freshness_config.policy_for(time_range)
     language = _coerce_optional_str(language)
     include_domains = _normalize_domains(include_domains, field_name="include_domains")
     exclude_domains = _normalize_domains(exclude_domains, field_name="exclude_domains")
@@ -517,6 +541,7 @@ async def search_impl(
         include_domains=include_domains,
         exclude_domains=exclude_domains,
         source_types=source_types,
+        freshness_policy=freshness_policy,
     )
     warnings.extend(search_warnings)
     degraded = degraded or search_degraded
@@ -552,7 +577,9 @@ async def search_impl(
     degraded = degraded or candidate_rank_degraded
 
     scrape_started = time.monotonic()
-    entries, to_scrape, scrape_warnings = await _scrape_search_entries(results, scrape_budget)
+    entries, to_scrape, scrape_warnings = await _scrape_search_entries(
+        results, scrape_budget, freshness_policy,
+    )
     timings_ms["scrape"] = int((time.monotonic() - scrape_started) * 1000)
     warnings.extend(scrape_warnings)
     degraded = degraded or any(w.get("type") == "scrape_failed" for w in scrape_warnings)
@@ -561,6 +588,7 @@ async def search_impl(
     semantic_hits = await _merge_memory_entries(
         entries=entries, results=results, query=query,
         max_passages=max_passages, source_types=source_types,
+        freshness_policy=freshness_policy,
     )
     timings_ms["semantic"] = int((time.monotonic() - semantic_started) * 1000)
 

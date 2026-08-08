@@ -2,6 +2,7 @@
 
 import logging
 import re
+import time
 
 from web_search_mcp.common import _normalize_url
 from web_search_mcp.crawling.operations import _scrape
@@ -59,7 +60,7 @@ def _is_login_wall(content: str | None) -> bool:
     return len(_LOGIN_WALL_RE.findall(content)) >= _LOGIN_WALL_MIN_HITS
 
 
-async def _scrape_cached(url: str, cache: KVCache) -> dict:
+async def _scrape_cached(url: str, cache: KVCache, *, max_age_seconds: int | None = None) -> dict:
     """Scrape with shared page cache. Returns the full envelope.
 
     The envelope is the same shape a fresh extract would cache, so the
@@ -75,8 +76,19 @@ async def _scrape_cached(url: str, cache: KVCache) -> dict:
     key = _normalize_url(url)
     existing = await _page_get(url, cache)
     if existing is not None:
-        log.debug("page cache hit url=%s", url)
-        return existing
+        retrieved_at = existing.get("retrieved_at")
+        fresh_enough = (
+            max_age_seconds is None
+            or (
+                isinstance(retrieved_at, (int, float))
+                and time.time() - retrieved_at <= max_age_seconds
+            )
+        )
+        if fresh_enough:
+            log.debug("page cache hit url=%s", url)
+            return existing
+        log.info("page cache stale url=%s max_age_seconds=%s", url, max_age_seconds)
+        await cache.delete(key)
     result = await _scrape(url)
     content = result.get("content")
     metadata = result.get("metadata") or {}
@@ -123,6 +135,11 @@ async def _page_set(url: str, entry: dict, cache: KVCache) -> None:
         canonical = await cache.get(canonical_key)
         canonical_hash = (canonical or {}).get("_content_hash")
         if canonical and canonical_hash == content_hash:
+            if entry.get("retrieved_at", 0) > canonical.get("retrieved_at", 0):
+                await cache.set(canonical_key, {
+                    **entry,
+                    "url": canonical.get("url", entry.get("url")),
+                })
             # Existing canonical confirmed — alias through it.
             await cache.set(key, {
                 "_schema_version": 1,
@@ -188,6 +205,7 @@ def _page_entry(
         "content": content,
         "total_chars": len(content) if content else 0,
         "metadata": metadata,
+        "retrieved_at": int(time.time()),
     }
     # Internal-only field: content fingerprint used by _page_set /
     # _page_get for exact-dupe aliasing. Prefixed with '_' so it never
