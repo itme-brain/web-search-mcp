@@ -72,3 +72,27 @@ async def test_completion_uses_openai_tool_call_contract():
     assert message["content"] == "done"
     assert captured["url"] == "http://llama.test/v1/chat/completions"
     assert '"tool_choice":"auto"' in captured["body"]
+
+
+@pytest.mark.asyncio
+async def test_completion_omits_tools_for_final_synthesis():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = request.content.decode()
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": "done"}}]},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await llama_mcp_smoke._completion(
+            client,
+            "http://llama.test/v1",
+            "model",
+            [{"role": "user", "content": "question"}],
+            [],
+        )
+
+    assert '"tools"' not in captured["body"]
+    assert '"tool_choice"' not in captured["body"]

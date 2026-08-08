@@ -66,16 +66,18 @@ async def _completion(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0,
+        "max_tokens": 800,
+    }
+    if tools:
+        body["tools"] = tools
+        body["tool_choice"] = "auto"
     response = await client.post(
         f"{base_url.rstrip('/')}/chat/completions",
-        json={
-            "model": model,
-            "messages": messages,
-            "tools": tools,
-            "tool_choice": "auto",
-            "temperature": 0,
-            "max_tokens": 800,
-        },
+        json=body,
     )
     response.raise_for_status()
     body = response.json()
@@ -153,6 +155,19 @@ async def _run() -> int:
                         "content": content[:_MAX_TOOL_RESULT_CHARS],
                     })
                     called_tools.append(name)
+
+            if not final_answer.strip() and called_tools:
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "The tool-call budget is exhausted. Do not request more tools. "
+                        "Now provide the final answer using the evidence already gathered."
+                    ),
+                })
+                message = await _completion(
+                    llm_client, args.llama_url, args.model, messages, []
+                )
+                final_answer = message.get("content") or ""
 
     if not called_tools:
         raise RuntimeError("production model did not call a canary MCP tool")
