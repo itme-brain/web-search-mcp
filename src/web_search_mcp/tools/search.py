@@ -31,6 +31,7 @@ from web_search_mcp.common import (
     _warning,
 )
 from web_search_mcp.presentation import models
+from web_search_mcp.preprocessing import lfm
 from web_search_mcp.ranking import evidence
 from web_search_mcp.ranking import intent as intent_module
 from web_search_mcp.ranking import query_expansion
@@ -210,7 +211,8 @@ def _empty_search_response(
     num_results: int, scrape_budget: int, max_passages: int,
     max_chars_per_result: int, search_queries: list[str],
     source_types: list[str] | None, degraded: bool, warnings: list[dict],
-    timings_ms: dict, started: float,
+    timings_ms: dict, started: float, intent_name: str,
+    preprocessing: dict,
 ) -> dict:
     return {
         "query": query,
@@ -221,6 +223,7 @@ def _empty_search_response(
         "meta": {
             "request_id": request_id,
             "profile": profile,
+            "intent": intent_name,
             "overview": [],
             "gaps": ["No supporting sources found."] if profile == "research" else [],
             "next_actions": ["No results found; broaden the query or remove filters."],
@@ -233,6 +236,7 @@ def _empty_search_response(
             "source_types": source_types,
             "search_backend": "searxng",
             "reranker": {"name": RERANK_NAME, "model": RERANK_MODEL},
+            "preprocessing": preprocessing,
             "semantic_hits": 0,
             "degraded": degraded,
             "warnings": warnings or [_warning("no_results", "searxng", query)],
@@ -545,14 +549,27 @@ async def search_impl(
     max_chars_per_result = search_config.validate_optional_positive_int(
         "max_chars_per_result", max_chars_per_result, maximum=8000
     ) or default_chars
-    intent_profile = intent_module.classify(query, time_range=time_range)
-    search_queries = query_expansion.search_queries(query, profile, intent_profile.name)
-    candidate_budget = search_config.candidate_budget(profile, num_results)
     started = time.monotonic()
     warnings: list[dict] = []
     degraded = False
-    timings_ms = {"search": 0, "candidate_rerank": 0, "scrape": 0, "semantic": 0, "rerank": 0, "total": 0}
+    timings_ms = {
+        "preprocessing": 0, "search": 0, "candidate_rerank": 0,
+        "scrape": 0, "semantic": 0, "rerank": 0, "total": 0,
+    }
     semantic_hits = 0
+    intent_profile = intent_module.classify(query, time_range=time_range)
+    search_queries = query_expansion.search_queries(query, profile, intent_profile.name)
+    preprocessing = {**lfm.status(), "planning_used": False, "digest_used": False}
+    if profile == "research":
+        preprocessing_started = time.monotonic()
+        plan = await lfm.plan_query(query, intent_profile, search_queries)
+        timings_ms["preprocessing"] = int((time.monotonic() - preprocessing_started) * 1000)
+        intent_profile = plan.intent
+        search_queries = plan.queries
+        preprocessing["planning_used"] = plan.used
+        if plan.error:
+            warnings.append(_warning("lfm_preprocessing_failed", "lfm", plan.error))
+    candidate_budget = search_config.candidate_budget(profile, num_results)
 
     # --- search (profile-aware multi-page retrieval) ---
     search_started = time.monotonic()
@@ -588,7 +605,8 @@ async def search_impl(
             max_passages=max_passages, max_chars_per_result=max_chars_per_result,
             search_queries=search_queries, source_types=source_types,
             degraded=degraded, warnings=warnings, timings_ms=timings_ms,
-            started=started,
+            started=started, intent_name=intent_profile.name,
+            preprocessing=preprocessing,
         )
         observability.observe_tool_response(profile, response)
         log.info("request_id=%s query=%r profile=%s results=0 degraded=%s", request_id, query, profile, degraded)
@@ -635,6 +653,14 @@ async def search_impl(
     )
 
     overview = evidence.research_summary(structured_results, warnings) if profile == "research" else []
+    if profile == "research":
+        preprocessing_started = time.monotonic()
+        digest = await lfm.digest_evidence(query, structured_results, overview)
+        timings_ms["preprocessing"] += int((time.monotonic() - preprocessing_started) * 1000)
+        overview = digest.overview
+        preprocessing["digest_used"] = digest.used
+        if digest.error:
+            warnings.append(_warning("lfm_preprocessing_failed", "lfm", digest.error))
     gaps = evidence.research_gaps(structured_results, warnings) if profile == "research" else []
     next_actions = evidence.next_actions(profile, degraded, structured_results, warnings)
 
@@ -661,6 +687,7 @@ async def search_impl(
             "source_types": source_types,
             "search_backend": "searxng",
             "reranker": {"name": RERANK_NAME, "model": RERANK_MODEL},
+            "preprocessing": preprocessing,
             "semantic_hits": semantic_hits,
             "degraded": degraded,
             "warnings": warnings,

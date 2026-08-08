@@ -27,6 +27,7 @@ class WarningModel(StrictModel):
 
 
 class TimingModel(StrictModel):
+    preprocessing: int | None = None
     search: int | None = None
     candidate_rerank: int | None = None
     scrape: int | None = None
@@ -38,6 +39,15 @@ class TimingModel(StrictModel):
 class RerankerModel(StrictModel):
     name: str
     model: str
+
+
+class PreprocessingModel(StrictModel):
+    enabled: bool = False
+    configured: bool = False
+    model: str
+    artifact: dict[str, str]
+    planning_used: bool = False
+    digest_used: bool = False
 
 
 class DocumentMetadataModel(StrictModel):
@@ -113,6 +123,7 @@ class SearchMetaModel(StrictModel):
     source_types: list[str] | None = None
     search_backend: str
     reranker: RerankerModel
+    preprocessing: PreprocessingModel
     semantic_hits: int = 0
     degraded: bool
     warnings: list[WarningModel]

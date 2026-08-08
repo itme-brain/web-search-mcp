@@ -39,26 +39,43 @@ _TECHNICAL_TERMS = frozenset({
 })
 _FACTUAL_PREFIXES = ("define ", "what is ", "when did ", "where is ", "which ", "who ")
 
+_PROFILES: dict[IntentName, IntentProfile] = {
+    "technical_documentation": IntentProfile(
+        "technical_documentation", ("official_docs", "repo", "issue_tracker", "qa")
+    ),
+    "current_events": IntentProfile("current_events", ("web", "blog"), freshness_sensitive=True),
+    "academic_research": IntentProfile("academic_research", ("pdf", "official_docs", "web")),
+    "product_research": IntentProfile("product_research", ("official_docs", "web", "blog")),
+    "factual_lookup": IntentProfile("factual_lookup", ("official_docs", "web")),
+    "comparison": IntentProfile("comparison", ("official_docs", "web", "blog")),
+    "general_web_research": IntentProfile("general_web_research", ("web", "official_docs", "blog")),
+}
+
+
+def profile_for_name(name: str) -> IntentProfile | None:
+    """Resolve a validated intent name into its retrieval preferences."""
+    return _PROFILES.get(name)  # type: ignore[arg-type]
+
 
 def classify(query: str, *, time_range: str | None = None) -> IntentProfile:
     """Classify a query using conservative, explainable lexical rules."""
     normalized = " ".join(query.lower().split())
     terms = set(normalized.replace("/", " ").split())
     if time_range or terms & _CURRENT_TERMS:
-        return IntentProfile("current_events", ("web", "blog"), freshness_sensitive=True)
+        return _PROFILES["current_events"]
     if " vs " in f" {normalized} " or " versus " in f" {normalized} " or terms & {
         "compare", "comparison", "difference", "differences",
     }:
-        return IntentProfile("comparison", ("official_docs", "web", "blog"))
+        return _PROFILES["comparison"]
     if terms & _ACADEMIC_TERMS:
-        return IntentProfile("academic_research", ("pdf", "official_docs", "web"))
+        return _PROFILES["academic_research"]
     if terms & _PRODUCT_TERMS:
-        return IntentProfile("product_research", ("official_docs", "web", "blog"))
+        return _PROFILES["product_research"]
     if terms & _TECHNICAL_TERMS or terms & {"github", "gitlab"}:
-        return IntentProfile("technical_documentation", ("official_docs", "repo", "issue_tracker", "qa"))
+        return _PROFILES["technical_documentation"]
     if normalized.startswith(_FACTUAL_PREFIXES):
-        return IntentProfile("factual_lookup", ("official_docs", "web"))
-    return IntentProfile("general_web_research", ("web", "official_docs", "blog"))
+        return _PROFILES["factual_lookup"]
+    return _PROFILES["general_web_research"]
 
 
 def preference_boost(source_type: str, profile: IntentProfile) -> float:

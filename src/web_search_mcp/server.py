@@ -17,6 +17,7 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from web_search_mcp.http import policy as http_policy
 from web_search_mcp.storage import cache
 from web_search_mcp.presentation import models
+from web_search_mcp.preprocessing import lfm
 from web_search_mcp import observability
 from web_search_mcp.storage import semantic
 from web_search_mcp.config.settings import (
@@ -134,7 +135,11 @@ async def retrieved_chunk(chunk_id: str) -> str:
 # ---------------------------------------------------------------------------
 @mcp.custom_route("/health", methods=["GET"])
 async def health(_: Request) -> JSONResponse:
-    return JSONResponse({"status": "ok", "reranker": {"name": RERANK_NAME, "model": RERANK_MODEL}})
+    return JSONResponse({
+        "status": "ok",
+        "reranker": {"name": RERANK_NAME, "model": RERANK_MODEL},
+        "preprocessing": lfm.status(),
+    })
 
 
 @mcp.custom_route("/metrics", methods=["GET"])
@@ -208,6 +213,7 @@ async def ready(_: Request) -> JSONResponse:
             "valkey": valkey,
             "reranker": {"status": "ok", "name": RERANK_NAME, "model": RERANK_MODEL},
             "semantic_index": _semantic_status(),
+            "preprocessing": lfm.status(),
         },
     }
     return JSONResponse(payload, status_code=200 if ready_ok else 503)

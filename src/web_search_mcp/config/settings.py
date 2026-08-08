@@ -18,6 +18,14 @@ class Settings(BaseSettings):
     max_scrape: int = 5
     max_candidates: int = 60
     max_pdf_bytes: int = 25 * 1024 * 1024
+    enable_lfm_preprocessing: bool = False
+    lfm_base_url: str = ""
+    lfm_model: str = "LFM2.5-2.6B-Q8_0.gguf"
+    lfm_hf_repo: str = "LiquidAI/LFM2.5-2.6B-GGUF"
+    lfm_hf_file: str = "LFM2.5-2.6B-Q8_0.gguf"
+    lfm_api_key: str = ""
+    lfm_timeout: float = 45.0
+    lfm_max_input_chars: int = 24000
 
 
 settings = Settings()
@@ -34,6 +42,14 @@ MAX_RESULTS = settings.max_results
 MAX_SCRAPE = settings.max_scrape
 MAX_CANDIDATES = settings.max_candidates
 MAX_PDF_BYTES = settings.max_pdf_bytes
+ENABLE_LFM_PREPROCESSING = settings.enable_lfm_preprocessing
+LFM_BASE_URL = settings.lfm_base_url.rstrip("/")
+LFM_MODEL = settings.lfm_model
+LFM_HF_REPO = settings.lfm_hf_repo
+LFM_HF_FILE = settings.lfm_hf_file
+LFM_API_KEY = settings.lfm_api_key
+LFM_TIMEOUT = settings.lfm_timeout
+LFM_MAX_INPUT_CHARS = settings.lfm_max_input_chars
 
 _HTTP_TIMEOUT = max(REQUEST_TIMEOUT // 2, 10)
 _MAX_CONTENT_CHARS = 20000

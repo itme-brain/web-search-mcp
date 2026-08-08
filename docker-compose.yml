@@ -36,6 +36,14 @@ services:
       - EMBEDDING_DEVICE=${EMBEDDING_DEVICE:-cpu}
       - SEMANTIC_TOP_K=${SEMANTIC_TOP_K:-20}
       - EVIDENCE_TTL_S=${EVIDENCE_TTL_S:-604800}
+      - ENABLE_LFM_PREPROCESSING=${ENABLE_LFM_PREPROCESSING:-0}
+      - LFM_BASE_URL=${LFM_BASE_URL:-}
+      - LFM_MODEL=${LFM_MODEL:-LFM2.5-2.6B-Q8_0.gguf}
+      - LFM_HF_REPO=${LFM_HF_REPO:-LiquidAI/LFM2.5-2.6B-GGUF}
+      - LFM_HF_FILE=${LFM_HF_FILE:-LFM2.5-2.6B-Q8_0.gguf}
+      - LFM_API_KEY=${LFM_API_KEY:-}
+      - LFM_TIMEOUT=${LFM_TIMEOUT:-45}
+      - LFM_MAX_INPUT_CHARS=${LFM_MAX_INPUT_CHARS:-24000}
     healthcheck:
       <<: *healthcheck-defaults
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready', timeout=3).read()"]
