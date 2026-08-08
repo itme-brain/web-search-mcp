@@ -1,44 +1,6 @@
 """Small-model evidence shaping helpers."""
 
 
-def brief_from_results(results: list[dict]) -> list[str]:
-    brief: list[str] = []
-    for result in results[:3]:
-        passages = result.get("passages") or []
-        if not passages:
-            continue
-        text = passages[0].get("text", "").replace("\n", " ").strip()
-        if len(text) > 220:
-            text = text[:219].rstrip() + "…"
-        citation = passages[0].get("citation") or str(result["rank"])
-        if text:
-            brief.append(f"[{citation}] {text}")
-    return brief
-
-
-def research_findings(results: list[dict]) -> list[str]:
-    """Return conservative extractive findings with citations.
-
-    This deliberately does not synthesize beyond retrieved text; it gives
-    small models Tavily-like cited findings while keeping this server API-less.
-    """
-    findings: list[str] = []
-    seen: set[str] = set()
-    for result in results[:4]:
-        passages = result.get("passages") or []
-        if not passages:
-            continue
-        text = passages[0].get("text", "").replace("\n", " ").strip()
-        if len(text) > 260:
-            text = text[:259].rstrip() + "…"
-        key = text[:120].lower()
-        citation = passages[0].get("citation") or str(result["rank"])
-        if text and key not in seen:
-            seen.add(key)
-            findings.append(f"[{citation}] {text}")
-    return findings
-
-
 def research_summary(results: list[dict], warnings: list[dict]) -> list[str]:
     """Return a conservative answer-first assessment for research output."""
     if not results:
@@ -56,21 +18,6 @@ def research_summary(results: list[dict], warnings: list[dict]) -> list[str]:
     if any(w.get("type") in {"search_failed", "scrape_failed", "rerank_failed"} for w in warnings):
         summary.append("Some retrieval steps were degraded; verify important claims against extracted sources.")
     return summary[:4]
-
-
-def research_key_evidence(results: list[dict]) -> list[str]:
-    evidence: list[str] = []
-    for result in results[:5]:
-        passages = result.get("passages") or []
-        if not passages:
-            continue
-        text = passages[0].get("text", "").replace("\n", " ").strip()
-        if len(text) > 180:
-            text = text[:179].rstrip() + "…"
-        citation = passages[0].get("citation") or str(result["rank"])
-        if text:
-            evidence.append(f"[{citation}] {result.get('title', 'Untitled')}: {text}")
-    return evidence
 
 
 def research_gaps(results: list[dict], warnings: list[dict]) -> list[str]:

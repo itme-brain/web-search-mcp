@@ -142,22 +142,12 @@ def _format_search_results(response: dict) -> str:
 
     sections = [header]
     if meta.get("profile") == "research":
-        summary = meta.get("summary") or []
-        if summary:
-            sections.append("summary:\n" + "\n".join(f"- {line}" for line in summary))
-        findings = meta.get("findings") or meta.get("answer") or []
-        if findings:
-            sections.append("findings:\n" + "\n".join(f"- {line}" for line in findings))
-        key_evidence = meta.get("key_evidence") or []
-        if key_evidence:
-            sections.append("evidence:\n" + "\n".join(f"- {line}" for line in key_evidence))
+        overview = meta.get("overview") or []
+        if overview:
+            sections.append("overview:\n" + "\n".join(f"- {line}" for line in overview))
         gaps = meta.get("gaps") or []
         if gaps:
             sections.append("gaps:\n" + "\n".join(f"- {line}" for line in gaps))
-    else:
-        brief = meta.get("brief") or []
-        if brief:
-            sections.append("brief:\n" + "\n".join(f"- {line}" for line in brief))
     next_actions = meta.get("next_actions") or []
     if next_actions:
         sections.append("next:\n" + "\n".join(f"- {line}" for line in next_actions))

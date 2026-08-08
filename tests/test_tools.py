@@ -107,3 +107,7 @@ async def test_search_returns_structured_json():
     assert payload["meta"]["num_results_returned"] == 2
     assert payload["results"][0]["url"] == "https://example.com/a1"
     assert payload["results"][0]["scraped"] is True
+    assert payload["results"][0]["passages"]
+    assert "content" not in payload["results"][0]
+    assert "snippet" not in payload["results"][0]
+    assert not ({"brief", "findings", "answer", "summary", "key_evidence"} & payload["meta"].keys())

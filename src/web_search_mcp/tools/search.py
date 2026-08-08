@@ -221,10 +221,7 @@ def _empty_search_response(
         "meta": {
             "request_id": request_id,
             "profile": profile,
-            "brief": [],
-            "findings": [],
-            "answer": [],
-            "key_evidence": [],
+            "overview": [],
             "gaps": ["No supporting sources found."] if profile == "research" else [],
             "next_actions": ["No results found; broaden the query or remove filters."],
             "num_results_requested": num_results,
@@ -457,20 +454,21 @@ async def _build_structured_search_results(
             continue
         entry = entries[eidx]
         url = entry["url"]
-        content = _CHUNK_GAP.join(chunk for chunk, _ in top) if top else entry["content"]
         structured = {
             "rank": rank,
             "title": entry["title"],
             "url": url,
             "domain": _domain_from_url(url),
             "source_type": source_quality.source_type(url),
-            "snippet": results[eidx].get("content", "") if eidx < len(results) else "",
-            "content": content,
             "passages": [],
             "scraped": entry["scraped"],
             "seen_recently": seen_recently,
             "retrieval_source": entry.get("retrieval_source", "live_search"),
         }
+        if not top:
+            structured["content"] = entry["content"]
+        if entry.get("scraped") is False:
+            structured["snippet"] = entry["content"]
         for idx, (chunk, score) in enumerate(top, 1):
             passage = {"citation": f"{rank}.{idx}", "text": chunk, "score": score}
             chunk_ref = (entry.get("chunk_refs") or {}).get(chunk)
@@ -636,11 +634,7 @@ async def search_impl(
         profile=profile,
     )
 
-    brief = evidence.brief_from_results(structured_results)
-    findings = evidence.research_findings(structured_results) if profile == "research" else []
-    answer = findings
-    summary = evidence.research_summary(structured_results, warnings) if profile == "research" else []
-    key_evidence = evidence.research_key_evidence(structured_results) if profile == "research" else []
+    overview = evidence.research_summary(structured_results, warnings) if profile == "research" else []
     gaps = evidence.research_gaps(structured_results, warnings) if profile == "research" else []
     next_actions = evidence.next_actions(profile, degraded, structured_results, warnings)
 
@@ -655,11 +649,7 @@ async def search_impl(
             "profile": profile,
             "intent": intent_profile.name,
             "candidate_pool_size": len(results),
-            "brief": brief,
-            "findings": findings,
-            "answer": answer,
-            "summary": summary,
-            "key_evidence": key_evidence,
+            "overview": overview,
             "gaps": gaps,
             "next_actions": next_actions,
             "num_results_requested": num_results,

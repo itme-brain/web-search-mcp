@@ -177,7 +177,9 @@ async def test_search_separates_reranked_chunks_with_ellipsis_gap():
     ):
         payload = await server_module.search_impl(query="anything", num_results=1)
 
-    content = payload["results"][0]["content"]
+    content = "\n\n[…]\n\n".join(
+        passage["text"] for passage in payload["results"][0]["passages"]
+    )
     # When 2+ chunks are kept, they should be separated by the gap marker.
     assert "[…]" in content, f"expected ellipsis gap in content:\n{content}"
 

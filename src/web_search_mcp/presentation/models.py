@@ -75,8 +75,8 @@ class SearchResultModel(StrictModel):
     retrieval_source: str | None = None
     best_score: float | None = None
     latest_date: str | None = None
-    snippet: str
-    content: str
+    snippet: str | None = None
+    content: str | None = None
     passages: list[SearchPassageModel] = []
     scraped: bool
     seen_recently: bool
@@ -101,11 +101,7 @@ class SearchMetaModel(StrictModel):
     profile: str = "search"
     intent: str = "general_web_research"
     candidate_pool_size: int = 0
-    brief: list[str] = []
-    findings: list[str] = []
-    answer: list[str] = []
-    summary: list[str] = []
-    key_evidence: list[str] = []
+    overview: list[str] = []
     gaps: list[str] = []
     next_actions: list[str] = []
     num_results_requested: int
