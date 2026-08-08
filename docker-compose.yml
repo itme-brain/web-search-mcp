@@ -4,6 +4,40 @@ x-healthcheck-defaults: &healthcheck-defaults
   retries: 6
   start_period: 30s
 
+x-mcp-environment: &mcp-environment
+  SEARXNG_URL: http://searxng:8080
+  CRAWL4AI_URL: http://crawl4ai:11235
+  RERANK_BACKEND: ${RERANK_BACKEND:-flashrank}
+  VALKEY_URL: redis://valkey:6379/0
+  FASTMCP_DOCKET_URL: redis://valkey:6379/1
+  FASTMCP_STATELESS_HTTP: "true"
+  RERANK_MODEL: ${RERANK_MODEL:-ms-marco-MiniLM-L-12-v2}
+  RERANK_DEVICE: ${RERANK_DEVICE:-cpu}
+  RERANK_BATCH_SIZE: ${RERANK_BATCH_SIZE:-16}
+  RERANK_MAX_LENGTH: ${RERANK_MAX_LENGTH:-512}
+  REQUEST_TIMEOUT: ${REQUEST_TIMEOUT:-30}
+  MAX_RESULTS: ${MAX_RESULTS:-20}
+  MAX_SCRAPE: ${MAX_SCRAPE:-10}
+  MAX_CANDIDATES: ${MAX_CANDIDATES:-60}
+  CACHE_TTL_S: ${CACHE_TTL_S:-3600}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  ENABLE_SEMANTIC_CACHE: ${ENABLE_SEMANTIC_CACHE:-1}
+  SEMANTIC_BACKEND: ${SEMANTIC_BACKEND:-valkey-search}
+  SEMANTIC_MIN_SCORE: ${SEMANTIC_MIN_SCORE:-0.45}
+  SEMANTIC_MAX_CHUNKS_PER_PAGE: ${SEMANTIC_MAX_CHUNKS_PER_PAGE:-40}
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}
+  EMBEDDING_DEVICE: ${EMBEDDING_DEVICE:-cpu}
+  SEMANTIC_TOP_K: ${SEMANTIC_TOP_K:-20}
+  EVIDENCE_TTL_S: ${EVIDENCE_TTL_S:-604800}
+  ENABLE_LFM_PREPROCESSING: ${ENABLE_LFM_PREPROCESSING:-0}
+  LFM_BASE_URL: ${LFM_BASE_URL:-http://lfm:8080/v1}
+  LFM_MODEL: ${LFM_MODEL:-LFM2.5-2.6B-Q8_0.gguf}
+  LFM_HF_REPO: ${LFM_HF_REPO:-LiquidAI/LFM2.5-2.6B-GGUF}
+  LFM_HF_FILE: ${LFM_HF_FILE:-LFM2.5-2.6B-Q8_0.gguf}
+  LFM_API_KEY: ${LFM_API_KEY:-}
+  LFM_TIMEOUT: ${LFM_TIMEOUT:-45}
+  LFM_MAX_INPUT_CHARS: ${LFM_MAX_INPUT_CHARS:-24000}
+
 services:
   web-search-mcp:
     build: .
@@ -12,38 +46,29 @@ services:
     ports:
       - "${MCP_HOST_PORT:-8002}:8000"
     environment:
-      - SEARXNG_URL=http://searxng:8080
-      - CRAWL4AI_URL=http://crawl4ai:11235
-      - RERANK_BACKEND=${RERANK_BACKEND:-flashrank}
-      - VALKEY_URL=redis://valkey:6379/0
-      - FASTMCP_DOCKET_URL=redis://valkey:6379/1
-      - FASTMCP_STATELESS_HTTP=true
-      - RERANK_MODEL=${RERANK_MODEL:-ms-marco-MiniLM-L-12-v2}
-      - RERANK_DEVICE=${RERANK_DEVICE:-cpu}
-      - RERANK_BATCH_SIZE=${RERANK_BATCH_SIZE:-16}
-      - RERANK_MAX_LENGTH=${RERANK_MAX_LENGTH:-512}
-      - REQUEST_TIMEOUT=${REQUEST_TIMEOUT:-30}
-      - MAX_RESULTS=${MAX_RESULTS:-20}
-      - MAX_SCRAPE=${MAX_SCRAPE:-10}
-      - MAX_CANDIDATES=${MAX_CANDIDATES:-60}
-      - CACHE_TTL_S=${CACHE_TTL_S:-3600}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - ENABLE_SEMANTIC_CACHE=${ENABLE_SEMANTIC_CACHE:-1}
-      - SEMANTIC_BACKEND=${SEMANTIC_BACKEND:-valkey-search}
-      - SEMANTIC_MIN_SCORE=${SEMANTIC_MIN_SCORE:-0.45}
-      - SEMANTIC_MAX_CHUNKS_PER_PAGE=${SEMANTIC_MAX_CHUNKS_PER_PAGE:-40}
-      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}
-      - EMBEDDING_DEVICE=${EMBEDDING_DEVICE:-cpu}
-      - SEMANTIC_TOP_K=${SEMANTIC_TOP_K:-20}
-      - EVIDENCE_TTL_S=${EVIDENCE_TTL_S:-604800}
-      - ENABLE_LFM_PREPROCESSING=${ENABLE_LFM_PREPROCESSING:-0}
-      - LFM_BASE_URL=${LFM_BASE_URL:-http://lfm:8080/v1}
-      - LFM_MODEL=${LFM_MODEL:-LFM2.5-2.6B-Q8_0.gguf}
-      - LFM_HF_REPO=${LFM_HF_REPO:-LiquidAI/LFM2.5-2.6B-GGUF}
-      - LFM_HF_FILE=${LFM_HF_FILE:-LFM2.5-2.6B-Q8_0.gguf}
-      - LFM_API_KEY=${LFM_API_KEY:-}
-      - LFM_TIMEOUT=${LFM_TIMEOUT:-45}
-      - LFM_MAX_INPUT_CHARS=${LFM_MAX_INPUT_CHARS:-24000}
+      <<: *mcp-environment
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready', timeout=3).read()"]
+    depends_on:
+      searxng:
+        condition: service_healthy
+      crawl4ai:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+
+  web-search-mcp-canary:
+    build: .
+    container_name: web-search-mcp-canary
+    profiles: ["canary"]
+    restart: unless-stopped
+    ports:
+      - "${MCP_CANARY_HOST_PORT:-18002}:8000"
+    environment:
+      <<: *mcp-environment
+      VALKEY_URL: redis://valkey:6379/2
+      FASTMCP_DOCKET_URL: redis://valkey:6379/3
     healthcheck:
       <<: *healthcheck-defaults
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready', timeout=3).read()"]

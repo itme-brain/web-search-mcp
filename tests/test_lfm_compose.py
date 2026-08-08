@@ -13,3 +13,15 @@ def test_lfm_sidecar_is_pinned_internal_and_cpu_only():
     assert '- --n-gpu-layers\n      - "0"' in service
     assert "ports:" not in service
     assert "lfm-models:/models" in service
+
+
+def test_canary_has_separate_port_and_valkey_databases():
+    compose = Path("docker-compose.yml").read_text()
+    service = compose.split("\n  web-search-mcp-canary:\n", 1)[1].split(
+        "\n  lfm:\n", 1
+    )[0]
+
+    assert 'profiles: ["canary"]' in service
+    assert "MCP_CANARY_HOST_PORT:-18002" in service
+    assert "VALKEY_URL: redis://valkey:6379/2" in service
+    assert "FASTMCP_DOCKET_URL: redis://valkey:6379/3" in service

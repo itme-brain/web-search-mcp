@@ -152,6 +152,33 @@ nix develop --command just up-lfm
 nix develop --command just smoke --url http://localhost:8002/mcp
 ```
 
+### Production canary
+
+The `canary` Compose profile runs the candidate MCP on port `18002` beside the
+production service. It shares the existing SearXNG and Crawl4AI services, but
+uses Valkey databases 2 and 3 so retrieval caches, evidence, and background
+tasks remain isolated from production.
+
+```sh
+nix develop --command just canary-up
+nix develop --command just canary-health
+```
+
+To verify the complete agent loop, configure the production llama.cpp endpoint
+without exposing its key in command history:
+
+```dotenv
+AGENT_LLM_BASE_URL=http://localhost:8000/v1
+AGENT_LLM_MODEL=your-production-model-alias
+AGENT_LLM_API_KEY=
+```
+
+Then run `nix develop --command just canary-agent-smoke`. The bounded smoke
+offers only `search`, `research`, and `read_evidence`, executes requested MCP
+calls, and requires the model to return a final answer. It reports tool names
+and answer size, not model reasoning or retrieved content. Stop only the canary
+with `nix develop --command just canary-stop`.
+
 ## Layout
 
 ```

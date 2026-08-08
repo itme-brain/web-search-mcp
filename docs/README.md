@@ -19,3 +19,4 @@ It never replaces extraction, retrieval, reranking, or stored evidence.
 
 - [Retrieval and freshness](retrieval-and-freshness.md)
 - [Evidence resources](evidence-resources.md)
+- [Production canary](production-canary.md)

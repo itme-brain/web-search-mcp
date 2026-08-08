@@ -34,6 +34,14 @@ up: setup
 up-lfm: setup
     COMPOSE_PROFILES=lfm ENABLE_LFM_PREPROCESSING=1 {{ compose }} up -d --build
 
+# Start a candidate MCP beside production on port 18002 with isolated Valkey DBs.
+canary-up: setup
+    COMPOSE_PROFILES=canary {{ compose }} up -d --build web-search-mcp-canary
+
+# Stop the canary without changing production services or shared volumes.
+canary-stop:
+    {{ compose }} --profile canary stop web-search-mcp-canary
+
 # Stop and remove containers, keep volumes.
 down:
     {{ compose }} down
@@ -71,6 +79,10 @@ health:
 lfm-health:
     {{ compose }} exec -T web-search-mcp python -c "import urllib.request; print(urllib.request.urlopen('http://lfm:8080/health', timeout=5).read().decode())"
 
+# Check the candidate MCP's readiness endpoint.
+canary-health:
+    @curl -fsS "http://localhost:${MCP_CANARY_HOST_PORT:-18002}/ready" && echo
+
 # Run the Python test suite through the uv-managed virtualenv.
 test: setup-python
     .venv/bin/pytest -q
@@ -83,6 +95,11 @@ test-target target: setup-python
 # inherited from `.env` when required by the backend.
 lfm-smoke endpoint model="LFM2.5-2.6B-Q8_0.gguf": setup-python
     PYTHONPATH=src .venv/bin/python scripts/lfm_smoke.py --base-url "{{ endpoint }}" --model "{{ model }}"
+
+# Let an OpenAI-compatible production model discover and call the canary MCP.
+# Configure AGENT_LLM_BASE_URL, AGENT_LLM_MODEL, and optionally AGENT_LLM_API_KEY.
+canary-agent-smoke *args: setup-python
+    PYTHONPATH=src .venv/bin/python scripts/llama_mcp_smoke.py --mcp-url "http://localhost:${MCP_CANARY_HOST_PORT:-18002}/mcp" {{ args }}
 
 # Run the benchmark query set and write a JSONL run under eval/runs/.
 eval: setup-python
