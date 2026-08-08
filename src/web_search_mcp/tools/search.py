@@ -495,19 +495,26 @@ async def _build_structured_search_results(
     return structured_results, ranked_normalized
 
 
-async def _persist_search_memory(structured_results: list[dict], normalized_urls: list[str]) -> None:
+async def _persist_search_memory(
+    structured_results: list[dict], normalized_urls: list[str], entries: list[dict]
+) -> None:
     if not normalized_urls:
         return
     writes = [cache_module.seen_urls.set(url, 1) for url in normalized_urls]
+    entries_by_url = {
+        _normalize_url(entry.get("url", "")): entry for entry in entries
+    }
     for result in structured_results:
-        if result.get("scraped") and result.get("content"):
-            content = result.get("content")
+        entry = entries_by_url.get(_normalize_url(result["url"]), {})
+        content = entry.get("full_content") or entry.get("content")
+        if result.get("scraped") and content:
+            metadata = entry.get("metadata") or result.get("metadata") or {}
             writes.append(cache_module.page_memory_cache.set(_normalize_url(result["url"]), {
                 "url": result["url"], "title": result["title"], "domain": result["domain"],
                 "source_type": result.get("source_type"), "content": content,
-                "metadata": result.get("metadata") or {}, "updated_at": int(time.time()),
+                "metadata": metadata, "updated_at": int(time.time()),
             }))
-            writes.append(semantic.index_page(result["url"], result["title"], content, result.get("metadata") or {}))
+            writes.append(semantic.index_page(result["url"], result["title"], content, metadata))
     await asyncio.gather(*writes)
 
 
@@ -699,7 +706,7 @@ async def search_impl(
     }
 
     # --- persist to shared cache ---
-    await _persist_search_memory(structured_results, new_urls)
+    await _persist_search_memory(structured_results, new_urls, entries)
 
     observability.observe_tool_response(profile, response)
     log.info(
