@@ -12,7 +12,7 @@ import httpx
 from fastmcp import Client
 
 _ALLOWED_TOOLS = frozenset({"search", "research", "read_evidence"})
-_MAX_ROUNDS = 4
+_DEFAULT_MAX_ROUNDS = 8
 _MAX_TOOL_RESULT_CHARS = 24000
 
 
@@ -26,11 +26,14 @@ def _arguments() -> argparse.Namespace:
         default="What changed in FastMCP 4 background task support? Use web search and cite sources.",
     )
     parser.add_argument("--timeout", type=float, default=180.0)
+    parser.add_argument("--max-rounds", type=int, default=_DEFAULT_MAX_ROUNDS)
     args = parser.parse_args()
     if not args.llama_url:
         parser.error("--llama-url or AGENT_LLM_BASE_URL is required")
     if not args.model:
         parser.error("--model or AGENT_LLM_MODEL is required")
+    if args.max_rounds < 1:
+        parser.error("--max-rounds must be at least 1")
     return args
 
 
@@ -94,7 +97,8 @@ async def _run() -> int:
             "role": "system",
             "content": (
                 "You are an integration-test agent. Use the supplied web tools before answering. "
-                "Base claims only on tool evidence and include source URLs in the final answer."
+                "Base claims only on tool evidence and include source URLs in the final answer. "
+                "After gathering sufficient evidence, stop calling tools and provide the final answer."
             ),
         },
         {"role": "user", "content": args.question},
@@ -108,7 +112,7 @@ async def _run() -> int:
         if not tools:
             raise RuntimeError("canary MCP exposed none of the allowed smoke-test tools")
         async with httpx.AsyncClient(headers=headers, timeout=args.timeout) as llm_client:
-            for _ in range(_MAX_ROUNDS):
+            for _ in range(args.max_rounds):
                 message = await _completion(
                     llm_client, args.llama_url, args.model, messages, tools
                 )
@@ -153,7 +157,10 @@ async def _run() -> int:
     if not called_tools:
         raise RuntimeError("production model did not call a canary MCP tool")
     if not final_answer.strip():
-        raise RuntimeError("production model did not produce a final answer")
+        raise RuntimeError(
+            "production model did not produce a final answer after "
+            f"{args.max_rounds} rounds; called_tools={called_tools}"
+        )
     print(json.dumps({
         "status": "ok",
         "called_tools": called_tools,

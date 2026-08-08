@@ -11,8 +11,9 @@ stable evidence handles, and task records out of production databases 0 and 1.
 
 `just canary-agent-smoke` connects to the candidate MCP, converts its live input
 schemas to OpenAI function tools, and offers a deliberately small allowlist to
-the configured production model. It executes at most four model/tool rounds and
-caps each tool result sent back to the model at 24,000 characters. A pass
+the configured production model. It executes at most eight model/tool rounds by
+default (`--max-rounds` overrides this) and caps each tool result sent back to
+the model at 24,000 characters. A pass
 requires at least one MCP tool call and a non-empty final response.
 
 The script reads the llama.cpp bearer token only from `AGENT_LLM_API_KEY`. It

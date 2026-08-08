@@ -1,9 +1,20 @@
+import sys
 from types import SimpleNamespace
 
 import httpx
 import pytest
 
 from scripts import llama_mcp_smoke
+
+
+def test_arguments_default_to_bounded_eight_rounds(monkeypatch):
+    monkeypatch.setenv("AGENT_LLM_BASE_URL", "http://llama.test/v1")
+    monkeypatch.setenv("AGENT_LLM_MODEL", "model")
+    monkeypatch.setattr(sys, "argv", ["llama_mcp_smoke.py"])
+
+    args = llama_mcp_smoke._arguments()
+
+    assert args.max_rounds == 8
 
 
 def test_openai_tools_exposes_only_bounded_canary_surface():
