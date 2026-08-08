@@ -21,10 +21,10 @@
             });
             flashrank = self.buildPythonPackage rec {
               pname = "flashrank";
-              version = "0.2.9";
+              version = "0.2.10";
               src = pkgs.fetchurl {
-                url = "https://files.pythonhosted.org/packages/0c/8c/4b44180d4be0f93bffe31db7229c727638994c74f04257f3844bca066b88/FlashRank-0.2.9.tar.gz";
-                sha256 = "475f1192e0722da1a4409812165ebc7e3eccec56e7b7853ed9dd5dd5c9c985f5";
+                url = "https://files.pythonhosted.org/packages/55/1f/176cb4a857a70c3538f637e19389ab6aed21548a1ba1d1424fccc8bba108/FlashRank-0.2.10.tar.gz";
+                sha256 = "f8f82a25c32fdfc668a09dc4089421d6aab8e7f71308424b541f40bb3f01d9db";
               };
               pyproject = true;
               build-system = [ self.setuptools ];
@@ -91,7 +91,7 @@
             # silently re-resolving transitives on every deploy.
             if [[ requirements.in -nt requirements.txt ]]; then
               echo ">> requirements.in is newer than requirements.txt — regenerating lock via uv"
-              uv pip compile --quiet --generate-hashes requirements.in -o requirements.txt
+              uv pip compile --quiet --prerelease=allow --generate-hashes requirements.in -o requirements.txt
             fi
 
             echo ">> building + starting stack"

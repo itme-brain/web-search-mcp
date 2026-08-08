@@ -49,7 +49,7 @@ async def test_extract_url_returns_structured_result_from_tool():
                 {"url": "https://example.com/a1"},
             )
             payload = result.content[0].text
-            structured = result.structuredContent
+            structured = result.structured_content
 
     assert "https://example.com/a1" in payload
     assert "Example" in payload

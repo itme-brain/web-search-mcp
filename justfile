@@ -94,4 +94,4 @@ smoke *args: setup-python
 # Run this after editing requirements.in. `nix run .#deploy` will also
 # auto-regen when .in is newer than .txt.
 lock:
-    uv pip compile --generate-hashes requirements.in -o requirements.txt
+    uv pip compile --prerelease=allow --generate-hashes requirements.in -o requirements.txt

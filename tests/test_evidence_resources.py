@@ -51,7 +51,7 @@ async def test_mcp_resource_template_reads_persisted_document():
         templates = await client.list_resource_templates()
         contents = await client.read_resource(manifest["uri"])
 
-    assert any("web-search://documents/" in str(template.uriTemplate) for template in templates)
+    assert any("web-search://documents/" in str(template.uri_template) for template in templates)
     assert contents[0].text == "# Persisted\n\nComplete resource body."
 
 
@@ -81,7 +81,7 @@ async def test_search_returns_document_and_chunk_resource_links():
         async with Client(server_app) as client:
             result = await client.call_tool_mcp("search", {"query": "page evidence", "num_results": 1})
 
-    structured = result.structuredContent["results"][0]
+    structured = result.structured_content["results"][0]
     assert structured["document_id"]
     assert structured["resource_uri"].startswith("web-search://documents/")
     assert structured["passages"][0]["chunk_id"]

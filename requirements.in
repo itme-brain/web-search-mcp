@@ -1,20 +1,32 @@
-datasketch==1.7.0
-fakeredis==2.32.0
-fastmcp==3.2.4
-flashrank==0.2.9
+datasketch==2.0.0
+fakeredis==2.37.0
+fastmcp[tasks]==4.0.0b1
+flashrank==0.2.10
 httpx==0.28.1
 langchain-text-splitters==1.1.2
-mdformat==0.7.22
+lxml==6.1.1  # Keep FastMCP's prerelease allowance from selecting lxml alphas.
+mdformat==1.0.0
 python-magic==0.4.27
-pydantic-settings==2.13.1
-pypdf==6.11.0
-pytest==8.4.2
-pytest-asyncio==1.2.0
-rapidfuzz==3.14.1
-redis==5.2.1
-sentence-transformers==5.1.2
-numpy==2.3.5
+pydantic-settings==2.15.0
+pypdf==6.15.0
+pytest==9.1.1
+pytest-asyncio==1.4.0
+rapidfuzz==3.14.5
+redis==8.1.0
+sentence-transformers==5.7.0
+numpy==2.5.1
 tenacity==9.1.4
-tldextract==5.3.0
-trafilatura==2.0.0
-url-normalize==2.2.1
+tldextract==5.3.1
+trafilatura==2.2.0
+url-normalize==3.0.0
+
+# FastMCP 4 is a prerelease and requires uv's global prerelease resolver mode.
+# Constrain unrelated transitives to their newest stable releases so that mode
+# cannot silently introduce additional alpha, beta, or release-candidate builds.
+beartype==0.22.9
+cuda-bindings==13.3.1
+cyclopts==4.22.5
+nvidia-nvjitlink==13.3.33
+protobuf==7.35.1
+pydantic==2.13.4
+tokenizers==0.22.2

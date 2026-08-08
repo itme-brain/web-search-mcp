@@ -16,6 +16,8 @@ services:
       - CRAWL4AI_URL=http://crawl4ai:11235
       - RERANK_BACKEND=${RERANK_BACKEND:-flashrank}
       - VALKEY_URL=redis://valkey:6379/0
+      - FASTMCP_DOCKET_URL=redis://valkey:6379/1
+      - FASTMCP_STATELESS_HTTP=true
       - RERANK_MODEL=${RERANK_MODEL:-ms-marco-MiniLM-L-12-v2}
       - RERANK_DEVICE=${RERANK_DEVICE:-cpu}
       - RERANK_BATCH_SIZE=${RERANK_BATCH_SIZE:-16}
@@ -46,7 +48,7 @@ services:
         condition: service_healthy
 
   searxng:
-    image: ${SEARXNG_IMAGE:-docker.io/searxng/searxng:2026.4.16-ae0b0e56a}
+    image: ${SEARXNG_IMAGE:-docker.io/searxng/searxng:2026.8.5-1689cb1b5}
     container_name: searxng
     restart: unless-stopped
     volumes:
@@ -63,7 +65,7 @@ services:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz', timeout=3).read()"]
 
   crawl4ai:
-    image: ${CRAWL4AI_IMAGE:-unclecode/crawl4ai:0.8.6}
+    image: ${CRAWL4AI_IMAGE:-unclecode/crawl4ai:0.9.2}
     container_name: crawl4ai
     restart: unless-stopped
     shm_size: 1g
@@ -72,7 +74,7 @@ services:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:11235/health', timeout=3).read()"]
 
   valkey:
-    image: ${VALKEY_IMAGE:-valkey/valkey-bundle:9.0.1}
+    image: ${VALKEY_IMAGE:-valkey/valkey-bundle:9.0.5}
     container_name: valkey
     restart: unless-stopped
     # RDB snapshots are enough: the cache is regenerable — we don't need AOF durability.

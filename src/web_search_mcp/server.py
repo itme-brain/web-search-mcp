@@ -4,10 +4,13 @@ Run with `python -m web_search_mcp.server` inside the container.
 """
 
 import asyncio
+from typing import Annotated, Literal
 
 from fastmcp import FastMCP
-from fastmcp.tools.tool import ToolResult
+from fastmcp.tools import ToolResult
+from fastmcp_tasks import TasksExtension
 from mcp.types import ResourceLink, TextContent
+from pydantic import Field
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
 
@@ -18,6 +21,7 @@ from web_search_mcp import observability
 from web_search_mcp.storage import semantic
 from web_search_mcp.config.settings import (
     CRAWL4AI_URL,
+    MAX_RESULTS,
     RERANK_MODEL,
     SEARXNG_URL,
 )
@@ -37,7 +41,28 @@ from web_search_mcp.tools.evidence import read_evidence_impl
 from web_search_mcp.storage import evidence as evidence_store
 
 
-mcp = FastMCP("Web Search", version="0.7.1")
+mcp = FastMCP("Web Search", version="0.8.0", strict_input_validation=True)
+mcp.add_extension(TasksExtension())
+
+Query = Annotated[str, Field(min_length=1, max_length=1000)]
+Url = Annotated[str, Field(min_length=8, max_length=4096, pattern=r"^https?://")]
+EvidenceReference = Annotated[str, Field(min_length=1, max_length=256)]
+ResultCount = Annotated[int, Field(ge=1, le=MAX_RESULTS)]
+MapCount = Annotated[int, Field(ge=1, le=50)]
+CrawlCount = Annotated[int, Field(ge=1, le=20)]
+TimeRange = Literal["day", "week", "month", "year"] | None
+DomainList = Annotated[list[Annotated[str, Field(min_length=1, max_length=253)]], Field(max_length=20)] | None
+SourceTypeList = Annotated[
+    list[Literal["docs", "official_docs", "repo", "issue", "mailing_list", "qa", "blog", "pdf", "paper", "web"]],
+    Field(max_length=10),
+] | None
+READ_ONLY_OPEN_WORLD = {
+    "readOnlyHint": True,
+    "destructiveHint": False,
+    "idempotentHint": True,
+    "openWorldHint": True,
+}
+READ_ONLY_CLOSED_WORLD = {**READ_ONLY_OPEN_WORLD, "openWorldHint": False}
 
 __all__ = ["mcp", "search_impl", "research_impl", "extract_impl", "map_impl", "crawl_impl", "read_evidence_impl"]
 
@@ -76,6 +101,13 @@ def _tool_result(response: dict, formatter) -> ToolResult:
     return ToolResult(
         content=content,
         structured_content=response,
+        meta={
+            "dev.web-search/request-id": response.get("meta", {}).get("request_id"),
+            "dev.web-search/timings-ms": response.get("meta", {}).get("timings_ms", {}),
+            "dev.web-search/cache": {
+                "semantic_hits": response.get("meta", {}).get("semantic_hits", 0),
+            },
+        },
     )
 
 
@@ -184,13 +216,13 @@ async def ready(_: Request) -> JSONResponse:
 # ---------------------------------------------------------------------------
 # MCP tools (thin wrappers: call impl → format → return ToolResult)
 # ---------------------------------------------------------------------------
-@mcp.tool(output_schema=models.SearchResponseModel.model_json_schema())
+@mcp.tool(output_schema=models.SearchResponseModel.model_json_schema(), annotations=READ_ONLY_OPEN_WORLD)
 async def search(
-    query: str,
-    num_results: int = 5,
-    time_range: str | None = None,
-    include_domains: list[str] | None = None,
-    exclude_domains: list[str] | None = None,
+    query: Query,
+    num_results: ResultCount = 5,
+    time_range: TimeRange = None,
+    include_domains: DomainList = None,
+    exclude_domains: DomainList = None,
 ) -> ToolResult:
     """Find web sources with compact evidence. Use first.
 
@@ -212,8 +244,8 @@ async def search(
     return _tool_result(response, _format_search_results)
 
 
-@mcp.tool(output_schema=models.ExtractResponseModel.model_json_schema())
-async def extract(url: str) -> ToolResult:
+@mcp.tool(output_schema=models.ExtractResponseModel.model_json_schema(), annotations=READ_ONLY_OPEN_WORLD)
+async def extract(url: Url) -> ToolResult:
     """Read one URL.
 
     Args:
@@ -223,10 +255,10 @@ async def extract(url: str) -> ToolResult:
     return _tool_result(response, _format_extract_results)
 
 
-@mcp.tool(output_schema=models.MapResponseModel.model_json_schema())
+@mcp.tool(output_schema=models.MapResponseModel.model_json_schema(), annotations=READ_ONLY_OPEN_WORLD)
 async def map(
-    url: str,
-    max_urls: int = 25,
+    url: Url,
+    max_urls: MapCount = 25,
 ) -> ToolResult:
     """List URLs on one site. Does not read page content.
 
@@ -242,12 +274,16 @@ async def map(
     return _tool_result(response, _format_map_results)
 
 
-@mcp.tool(output_schema=models.SearchResponseModel.model_json_schema())
+@mcp.tool(
+    output_schema=models.SearchResponseModel.model_json_schema(),
+    annotations=READ_ONLY_OPEN_WORLD,
+    task=True,
+)
 async def research(
-    query: str,
-    num_results: int = 8,
-    time_range: str | None = None,
-    source_types: list[str] | None = None,
+    query: Query,
+    num_results: ResultCount = 8,
+    time_range: TimeRange = None,
+    source_types: SourceTypeList = None,
 ) -> ToolResult:
     """Broader/slower search for hard questions.
 
@@ -266,11 +302,15 @@ async def research(
     return _tool_result(response, _format_search_results)
 
 
-@mcp.tool(output_schema=models.CrawlResponseModel.model_json_schema())
+@mcp.tool(
+    output_schema=models.CrawlResponseModel.model_json_schema(),
+    annotations=READ_ONLY_OPEN_WORLD,
+    task=True,
+)
 async def crawl(
-    url: str,
-    query: str | None = None,
-    max_urls: int = 10,
+    url: Url,
+    query: Query | None = None,
+    max_urls: CrawlCount = 10,
 ) -> ToolResult:
     """Read several pages from one site/docs tree.
 
@@ -288,8 +328,8 @@ async def crawl(
     return _tool_result(response, _format_crawl_results)
 
 
-@mcp.tool(output_schema=models.EvidenceReadResponseModel.model_json_schema())
-async def read_evidence(reference: str) -> ToolResult:
+@mcp.tool(output_schema=models.EvidenceReadResponseModel.model_json_schema(), annotations=READ_ONLY_CLOSED_WORLD)
+async def read_evidence(reference: EvidenceReference) -> ToolResult:
     """Expand a document or chunk reference returned by search/research."""
     response = await read_evidence_impl(reference)
     return ToolResult(
@@ -318,4 +358,5 @@ if __name__ == "__main__":
         transport="http",
         host="0.0.0.0",
         port=8000,
+        stateless_http=True,
     )
