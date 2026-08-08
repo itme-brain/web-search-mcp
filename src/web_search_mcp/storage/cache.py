@@ -135,6 +135,15 @@ class KVCache:
             ex=resolved,
         )
 
+    async def set_many(self, items: list[tuple[str, Any]]) -> None:
+        """Persist a batch through one connection instead of fan-out tasks."""
+        if self._ttl == 0 or not items:
+            return
+        pipe = _get_client().pipeline(transaction=False)
+        for key, value in items:
+            pipe.set(self._key(key), json.dumps(value), ex=self._ttl)
+        await pipe.execute()
+
     async def delete(self, key: str) -> None:
         if self._ttl == 0:
             return

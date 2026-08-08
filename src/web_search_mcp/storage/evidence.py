@@ -41,12 +41,12 @@ async def persist_document(
     document_id = _digest(f"{SCHEMA_VERSION}\n{normalized_url}\n{content_hash}")
     retrieved_at = int(time.time())
     chunk_specs: list[dict] = []
-    writes = []
+    chunk_records = []
     for index, text in enumerate(_chunk_text(content)):
         chunk_id = _digest(f"{document_id}\n{index}\n{_digest(text)}")
         spec = {"id": chunk_id, "index": index, "uri": chunk_uri(chunk_id)}
         chunk_specs.append(spec)
-        writes.append(cache.chunk_cache.set(chunk_id, {
+        chunk_records.append((chunk_id, {
             "schema_version": SCHEMA_VERSION,
             "kind": "chunk",
             "id": chunk_id,
@@ -71,10 +71,8 @@ async def persist_document(
         "retrieved_at": retrieved_at,
         "chunks": chunk_specs,
     }
-    writes.append(cache.document_cache.set(document_id, manifest))
-    if writes:
-        import asyncio
-        await asyncio.gather(*writes)
+    await cache.chunk_cache.set_many(chunk_records)
+    await cache.document_cache.set(document_id, manifest)
     return manifest
 
 

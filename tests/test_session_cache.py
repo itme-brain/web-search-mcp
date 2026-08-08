@@ -500,6 +500,18 @@ async def test_kvcache_hit_miss_counters():
 
 
 @pytest.mark.asyncio
+async def test_kvcache_set_many_persists_large_batch():
+    """Bulk writes use a Redis pipeline and do not fan out connections."""
+    kv = cache_module.KVCache("test-batch")
+    items = [(str(index), {"index": index}) for index in range(250)]
+
+    await kv.set_many(items)
+
+    assert await kv.get("0") == {"index": 0}
+    assert await kv.get("249") == {"index": 249}
+
+
+@pytest.mark.asyncio
 async def test_cache_survives_across_calls(patched_backends):
     """Cache state lives in Valkey and survives across impl calls."""
     r1 = await server_module.search_impl("cross-call query", num_results=2)

@@ -24,6 +24,22 @@ async def test_document_and_chunk_ids_are_stable_for_identical_content():
 
 
 @pytest.mark.asyncio
+async def test_persist_document_batches_chunk_writes(monkeypatch):
+    batched = AsyncMock()
+    monkeypatch.setattr(evidence.cache.chunk_cache, "set_many", batched)
+
+    manifest = await evidence.persist_document(
+        url="https://example.com/batched",
+        title="Batched",
+        content="one\n\n" + "two " * 500,
+    )
+
+    batched.assert_awaited_once()
+    records = batched.await_args.args[0]
+    assert [record[0] for record in records] == [chunk["id"] for chunk in manifest["chunks"]]
+
+
+@pytest.mark.asyncio
 async def test_tool_only_expansion_resolves_chunk_reference():
     manifest = await evidence.persist_document(
         url="https://example.com/article",
