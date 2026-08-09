@@ -131,6 +131,33 @@ async def test_crawl_honors_max_urls():
 
 
 @pytest.mark.asyncio
+async def test_crawl_deduplicates_near_identical_extracted_pages():
+    urls = ["https://docs.example.com/latest", "https://docs.example.com/1.0"]
+    shared = " ".join(["canonical documentation content"] * 30)
+    map_payload = {
+        "url": urls[0],
+        "results": [
+            _map_result(urls[0], depth=0, link_type="seed", rank=1),
+            _map_result(urls[1], depth=1, discovered_from=urls[0], rank=2),
+        ],
+        "meta": {"warnings": [], "urls_returned": 2, "pages_visited": 2},
+    }
+    extract_payload = {
+        "results": [_extract_result(url, content=shared) for url in urls],
+        "meta": {"urls_requested": 2, "urls_succeeded": 2, "urls_failed": 0},
+    }
+
+    with (
+        patch(PATCH_MAP_IMPL, AsyncMock(return_value=map_payload)),
+        patch(PATCH_EXTRACT_IMPL, AsyncMock(return_value=extract_payload)),
+    ):
+        payload = await server_module.crawl_impl(urls[0], max_urls=2)
+
+    assert len(payload["results"]) == 1
+    assert payload["meta"]["urls_deduplicated"] == 1
+
+
+@pytest.mark.asyncio
 async def test_crawl_passes_include_patterns_to_map():
     map_mock = AsyncMock(return_value={
         "url": "https://docs.example.com",

@@ -5,7 +5,7 @@ import logging
 import time
 import uuid
 
-from web_search_mcp.common import _coerce_optional_str, _validate_positive_int, _warning
+from web_search_mcp.common import _coerce_optional_str, _dedup_pages, _validate_positive_int, _warning
 from web_search_mcp.ranking.service import _rerank_scored
 from web_search_mcp.presentation import models
 from web_search_mcp import observability
@@ -118,6 +118,8 @@ async def crawl_impl(
             merged["metadata"] = metadata
         results.append(merged)
 
+    results, urls_deduplicated = _dedup_pages(results)
+
     if normalized_query:
         # Pages with a real score sort by score desc; pages without one
         # (extract failures, no chunks) trail in stable order.
@@ -148,7 +150,7 @@ async def crawl_impl(
             "urls_discovered": len(tree["results"]),
             "urls_returned": len(results),
             "urls_truncated_by_limit": 0,
-            "urls_deduplicated": 0,
+            "urls_deduplicated": urls_deduplicated,
             "sparse": sparse,
             "sparsity_reason": sparsity_reason,
             "urls_succeeded": urls_succeeded,

@@ -192,3 +192,33 @@ async def test_deep_crawl_traverses_client_side_without_server_strategy():
         call.kwargs["crawler_config"] == server_module._MAP_CRAWL_CONFIG
         for call in crawl_post.await_args_list
     )
+
+
+@pytest.mark.asyncio
+async def test_deep_crawl_keeps_docs_rs_within_requested_crate_tree():
+    root = _page("https://docs.rs/tokio/latest/tokio/", title="Tokio", depth=0)
+    root["links"] = {"internal": [
+        {"href": "/tokio/1.53.1/tokio/runtime/", "text": "Runtime"},
+        {"href": "/mio/latest/mio/", "text": "Mio"},
+        {"href": "/parking_lot/latest/parking_lot/", "text": "Parking Lot"},
+    ]}
+    runtime = _page(
+        "https://docs.rs/tokio/1.53.1/tokio/runtime/",
+        title="Runtime",
+        depth=1,
+        parent=root["url"],
+    )
+    crawl_post = AsyncMock(side_effect=[
+        {"results": [root]},
+        {"results": [runtime]},
+    ])
+
+    with patch("web_search_mcp.crawling.operations._crawl_post", crawl_post):
+        pages = await server_module._deep_crawl(
+            [root["url"]],
+            max_depth=2,
+            max_pages=10,
+            same_domain_only=True,
+        )
+
+    assert [page["url"] for page in pages] == [root["url"], runtime["url"]]

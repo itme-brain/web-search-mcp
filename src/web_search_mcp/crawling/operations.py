@@ -8,7 +8,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-from web_search_mcp.common import _domain_from_url, _normalize_url, _registrable_domain
+from web_search_mcp.common import _canonical_hostname, _domain_from_url, _normalize_url
 from web_search_mcp.config.settings import CRAWL4AI_API_TOKEN, CRAWL4AI_URL, REQUEST_TIMEOUT, _HTTP_TIMEOUT
 from web_search_mcp.crawling import client as crawl
 from web_search_mcp.extraction.html import _build_document_metadata, _extract_markdown
@@ -139,14 +139,30 @@ _MAP_CRAWL_CONFIG = {
 def _crawl_url_in_scope(
     url: str,
     *,
-    root_registrable_domain: str,
+    root_url: str,
     same_domain_only: bool,
     include_patterns: list[str] | None,
 ) -> bool:
     if same_domain_only:
-        candidate_domain = _registrable_domain(_domain_from_url(url).lower())
-        if candidate_domain != root_registrable_domain:
+        root = urlparse(root_url)
+        candidate = urlparse(url)
+        if _canonical_hostname(candidate.hostname or "") != _canonical_hostname(root.hostname or ""):
             return False
+        root_parts = [part for part in root.path.split("/") if part]
+        candidate_parts = [part for part in candidate.path.split("/") if part]
+        if root_parts:
+            if _canonical_hostname(root.hostname or "") == "docs.rs" and len(root_parts) >= 3:
+                # docs.rs canonicalizes `latest` to a concrete version. Keep
+                # the crate and rustdoc subtree fixed while allowing that
+                # version segment to change.
+                if (
+                    len(candidate_parts) < len(root_parts)
+                    or candidate_parts[0] != root_parts[0]
+                    or candidate_parts[2 : len(root_parts)] != root_parts[2:]
+                ):
+                    return False
+            elif candidate_parts[: len(root_parts)] != root_parts:
+                return False
     return not include_patterns or any(fnmatchcase(url, pattern) for pattern in include_patterns)
 
 
@@ -251,7 +267,7 @@ async def _deep_crawl(
     if not seeds:
         return []
 
-    root_domain = _registrable_domain(_domain_from_url(seeds[0]).lower())
+    root_url = seeds[0]
     queued: set[str] = set()
     frontier: list[tuple[str, str | None]] = []
     for seed in seeds:
@@ -261,6 +277,7 @@ async def _deep_crawl(
             frontier.append((seed, None))
 
     crawled_pages: list[dict] = []
+    crawled_urls: set[str] = set()
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
         for depth in range(max_depth + 1):
             if not frontier or len(crawled_pages) >= max_pages:
@@ -282,6 +299,11 @@ async def _deep_crawl(
                 page_url = page.get("url") if isinstance(page.get("url"), str) else fallback_url
                 if not page_url:
                     continue
+                normalized_page_url = _normalize_url(page_url)
+                if normalized_page_url in crawled_urls:
+                    continue
+                crawled_urls.add(normalized_page_url)
+                queued.add(normalized_page_url)
                 metadata = dict(page.get("metadata") or {})
                 metadata["depth"] = depth
                 parent = parent_by_url.get(_normalize_url(page_url))
@@ -296,7 +318,7 @@ async def _deep_crawl(
                     normalized = _normalize_url(candidate)
                     if normalized in queued or not _crawl_url_in_scope(
                         candidate,
-                        root_registrable_domain=root_domain,
+                        root_url=root_url,
                         same_domain_only=same_domain_only,
                         include_patterns=include_patterns,
                     ):
