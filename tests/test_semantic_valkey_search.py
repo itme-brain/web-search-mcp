@@ -119,7 +119,7 @@ async def test_index_page_creates_valkey_search_index_and_hashes_chunks(enabled_
     assert create_command[-2:] == ("EF_CONSTRUCTION", "200")
     assert client.hashes
     key, mapping = next(iter(client.hashes.items()))
-    assert key.startswith("ws:semantic:chunk:")
+    assert key.startswith(semantic._KEY_PREFIX)
     assert mapping["url"] == "https://example.com/doc"
     assert mapping["domain"] == "example.com"
     assert mapping["metadata"] == '{"author": "Ada"}'

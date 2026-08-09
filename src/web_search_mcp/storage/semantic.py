@@ -35,10 +35,13 @@ TOP_K = int(os.environ.get("SEMANTIC_TOP_K", "20"))
 MIN_SCORE = float(os.environ.get("SEMANTIC_MIN_SCORE", "0.45"))
 MAX_CHUNKS_PER_PAGE = int(os.environ.get("SEMANTIC_MAX_CHUNKS_PER_PAGE", "40"))
 BACKEND = os.environ.get("SEMANTIC_BACKEND", "valkey-search").strip().lower()
-_KEY_PREFIX = "ws:semantic:chunk:"
+_INDEX_LAYOUT_VERSION = 2
 _MODEL_KEY = hashlib.sha256(
-    json.dumps([MODEL_NAME, QUERY_PREFIX, PASSAGE_PREFIX]).encode()
+    json.dumps([
+        _INDEX_LAYOUT_VERSION, MODEL_NAME, QUERY_PREFIX, PASSAGE_PREFIX,
+    ]).encode()
 ).hexdigest()[:12]
+_KEY_PREFIX = f"ws:semantic:{_MODEL_KEY}:chunk:"
 _INDEX_NAME = f"ws:semantic:idx:{_MODEL_KEY}"
 _MODEL: Any | None = None
 _MODEL_LOCK: asyncio.Lock | None = None
