@@ -77,6 +77,32 @@ def enabled_semantic(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_bge_embedding_instruction_is_query_only(monkeypatch):
+    captured = []
+
+    class FakeModel:
+        def encode(self, texts, **_kwargs):
+            captured.extend(texts)
+            return np.asarray([[1.0, 0.0, 0.0] for _ in texts], dtype=np.float32)
+
+    monkeypatch.setattr(semantic, "_MODEL", FakeModel())
+    monkeypatch.setattr(
+        semantic,
+        "QUERY_PREFIX",
+        "Represent this sentence for searching relevant passages: ",
+    )
+    monkeypatch.setattr(semantic, "PASSAGE_PREFIX", "")
+
+    await semantic._embed(["find this"], is_query=True)
+    await semantic._embed(["passage text"], is_query=False)
+
+    assert captured == [
+        "Represent this sentence for searching relevant passages: find this",
+        "passage text",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_index_page_creates_valkey_search_index_and_hashes_chunks(enabled_semantic):
     client = FakeSearchClient()
     cache.set_client(client)

@@ -26,12 +26,19 @@ log = logging.getLogger("web-search-mcp")
 ENABLED = os.environ.get("ENABLE_SEMANTIC_CACHE", "0").lower() in {"1", "true", "yes", "on"}
 MODEL_NAME = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
 DEVICE = os.environ.get("EMBEDDING_DEVICE", "cpu")
+QUERY_PREFIX = os.environ.get(
+    "EMBEDDING_QUERY_PREFIX",
+    "Represent this sentence for searching relevant passages: ",
+)
+PASSAGE_PREFIX = os.environ.get("EMBEDDING_PASSAGE_PREFIX", "")
 TOP_K = int(os.environ.get("SEMANTIC_TOP_K", "20"))
 MIN_SCORE = float(os.environ.get("SEMANTIC_MIN_SCORE", "0.45"))
 MAX_CHUNKS_PER_PAGE = int(os.environ.get("SEMANTIC_MAX_CHUNKS_PER_PAGE", "40"))
 BACKEND = os.environ.get("SEMANTIC_BACKEND", "valkey-search").strip().lower()
 _KEY_PREFIX = "ws:semantic:chunk:"
-_MODEL_KEY = hashlib.sha256(MODEL_NAME.encode()).hexdigest()[:12]
+_MODEL_KEY = hashlib.sha256(
+    json.dumps([MODEL_NAME, QUERY_PREFIX, PASSAGE_PREFIX]).encode()
+).hexdigest()[:12]
 _INDEX_NAME = f"ws:semantic:idx:{_MODEL_KEY}"
 _MODEL: Any | None = None
 _MODEL_LOCK: asyncio.Lock | None = None
@@ -67,7 +74,7 @@ async def _embed(texts: list[str], *, is_query: bool = False):
     import numpy as np
 
     model = await _model()
-    prefix = "query: " if is_query else "passage: "
+    prefix = QUERY_PREFIX if is_query else PASSAGE_PREFIX
     prepared = [prefix + text.replace("\n", " ") for text in texts]
     vectors = await asyncio.to_thread(
         model.encode,
