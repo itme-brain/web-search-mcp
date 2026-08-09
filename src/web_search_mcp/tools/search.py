@@ -64,6 +64,18 @@ log = logging.getLogger("web-search-mcp")
 _searxng_inflight: dict[str, asyncio.Future] = {}
 
 
+def _interleave_result_groups(groups: list[list[dict]]) -> list[dict]:
+    """Merge query variants fairly before applying the candidate budget."""
+    if not groups:
+        return []
+    return [
+        group[position]
+        for position in range(max(map(len, groups), default=0))
+        for group in groups
+        if position < len(group)
+    ]
+
+
 async def _searxng_cached(
     search_query: str,
     *,
@@ -132,8 +144,9 @@ async def _collect_search_candidates(
     warnings: list[dict] = []
     degraded = False
     unresponsive_engines: list = []
-    raw_results: list[dict] = []
+    result_groups: list[list[dict]] = []
     for search_query in search_queries:
+        query_results: list[dict] = []
         for pageno in range(1, searx_pages + 1):
             try:
                 page = await _searxng_cached(
@@ -145,22 +158,31 @@ async def _collect_search_candidates(
                     max_age_seconds=freshness_policy.search_max_age_seconds,
                 )
             except Exception as exc:
-                if not raw_results and pageno == 1:
+                if not any(result_groups) and not query_results and pageno == 1:
                     degraded = True
                     warnings.append(_warning("search_failed", "searxng", str(exc)))
                 else:
                     warnings.append(_warning("search_failed", "searxng", f"{search_query} page {pageno}: {exc}"))
                 break
-            raw_results.extend(page["results"])
+            query_results.extend(page["results"])
             unresponsive_engines.extend(page.get("unresponsive_engines", []))
             filtered_so_far = _dedup_results(
-                _filter_results_by_domain(raw_results, include_domains, exclude_domains)
+                _filter_results_by_domain(query_results, include_domains, exclude_domains)
             )
             if profile == "search" and len(filtered_so_far) >= candidate_budget:
                 break
+        result_groups.append(query_results)
         if profile != "research":
             break
 
+    # Research variants are intentionally diverse. Round-robin their results so
+    # one broad or poorly interpreted query cannot consume the entire bounded
+    # candidate pool before title/snippet reranking.
+    raw_results = (
+        _interleave_result_groups(result_groups)
+        if profile == "research"
+        else [result for group in result_groups for result in group]
+    )
     results = _dedup_results(_filter_results_by_domain(raw_results, include_domains, exclude_domains))
     results = [r for r in results if source_quality.matches_source_types(r.get("url", ""), source_types)]
     return results, unresponsive_engines, warnings, degraded

@@ -6,6 +6,9 @@ _STOP_WORDS = {
     "a", "an", "and", "are", "as", "at", "by", "for", "from", "how", "in", "is",
     "it", "of", "on", "or", "the", "to", "used", "using", "what", "when", "where",
     "which", "who", "why", "with",
+    # Query-shaping modifiers are useful in the original request, but make poor
+    # leading terms for subject-focused expansion queries (especially on Bing).
+    "best", "current", "latest", "practice", "practices", "recent",
 }
 
 
