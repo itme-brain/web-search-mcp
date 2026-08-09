@@ -336,7 +336,8 @@ async def _scrape_search_entries(
 
 async def _append_vector_memory_entries(
     *, entries: list[dict], query: str, max_passages: int,
-    source_types: list[str] | None, existing_urls: set[str],
+    source_types: list[str] | None, include_domains: list[str],
+    exclude_domains: list[str], existing_urls: set[str],
 ) -> int:
     """Append chunk-level semantic/vector hits from semantic.py."""
     semantic_hits = await semantic.search(query)
@@ -349,7 +350,10 @@ async def _append_vector_memory_entries(
             continue
         first = hits[0]
         url = first["url"]
-        if not source_quality.matches_source_types(url, source_types):
+        if (
+            not _filter_results_by_domain([first], include_domains, exclude_domains)
+            or not source_quality.matches_source_types(url, source_types)
+        ):
             continue
         entries.append({
             "title": first.get("title", "Untitled"),
@@ -366,6 +370,7 @@ async def _append_vector_memory_entries(
 
 async def _append_page_memory_entries(
     *, entries: list[dict], results: list[dict], source_types: list[str] | None,
+    include_domains: list[str], exclude_domains: list[str],
     existing_urls: set[str],
 ) -> int:
     """Append page-level retrieval-memory hits from cache.py."""
@@ -376,7 +381,15 @@ async def _append_page_memory_entries(
         if not cached or not cached.get("content"):
             continue
         normalized = _normalize_url(cached.get("url", ""))
-        if normalized in existing_urls or not source_quality.matches_source_types(cached.get("url", ""), source_types):
+        if (
+            normalized in existing_urls
+            or not _filter_results_by_domain(
+                [cached], include_domains, exclude_domains,
+            )
+            or not source_quality.matches_source_types(
+                cached.get("url", ""), source_types,
+            )
+        ):
             continue
         entries.append({
             "title": cached.get("title", "Untitled"),
@@ -394,6 +407,7 @@ async def _append_page_memory_entries(
 async def _merge_memory_entries(
     *, entries: list[dict], results: list[dict], query: str,
     max_passages: int, source_types: list[str] | None,
+    include_domains: list[str], exclude_domains: list[str],
     freshness_policy: freshness_config.FreshnessPolicy,
 ) -> int:
     """Append memory evidence not already present in entries."""
@@ -402,10 +416,12 @@ async def _merge_memory_entries(
     existing_urls = {_normalize_url(entry["url"]) for entry in entries if entry.get("url")}
     added = await _append_vector_memory_entries(
         entries=entries, query=query, max_passages=max_passages,
-        source_types=source_types, existing_urls=existing_urls,
+        source_types=source_types, include_domains=include_domains,
+        exclude_domains=exclude_domains, existing_urls=existing_urls,
     )
     added += await _append_page_memory_entries(
         entries=entries, results=results, source_types=source_types,
+        include_domains=include_domains, exclude_domains=exclude_domains,
         existing_urls=existing_urls,
     )
     return added
@@ -669,6 +685,7 @@ async def search_impl(
     semantic_hits = await _merge_memory_entries(
         entries=entries, results=results, query=query,
         max_passages=max_passages, source_types=source_types,
+        include_domains=include_domains, exclude_domains=exclude_domains,
         freshness_policy=freshness_policy,
     )
     timings_ms["semantic"] = int((time.monotonic() - semantic_started) * 1000)
