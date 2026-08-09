@@ -1,6 +1,5 @@
 from unittest.mock import AsyncMock, patch
 
-from web_search_mcp.crawling import operations as crawl_operations
 import pytest
 
 from tests.conftest import server_module
@@ -157,27 +156,39 @@ def test_registrable_domain_basic():
     assert rd("docs.service.example.co.uk") == "example.co.uk"
 
 
-def test_deep_crawl_config_uses_discovery_base_config():
-    config = crawl_operations._deep_crawl_config(
-        root_url="https://docs.example.com",
-        max_depth=3,
-        max_pages=25,
-        same_domain_only=True,
-        include_patterns=None,
+@pytest.mark.asyncio
+async def test_deep_crawl_traverses_client_side_without_server_strategy():
+    root = _page("https://docs.example.com", title="Root", depth=0)
+    root["links"] = {"internal": [
+        {"href": "/guide", "text": "Guide"},
+        {"href": "https://other.example.net/out", "text": "Outside"},
+    ]}
+    guide = _page(
+        "https://docs.example.com/guide",
+        title="Guide",
+        depth=1,
+        parent="https://docs.example.com",
     )
+    crawl_post = AsyncMock(side_effect=[
+        {"results": [root]},
+        {"results": [guide]},
+    ])
 
-    params = config["params"]
-    # remove_overlay_elements is deliberately OFF — see _DEFAULT_CRAWL_CONFIG.
-    assert "remove_overlay_elements" not in params
-    assert "excluded_tags" not in params
-    assert "markdown_generator" not in params
-    strategy = params["deep_crawl_strategy"]
-    assert strategy["type"] == "BFSDeepCrawlStrategy"
-    # filter_chain MUST be wrapped in a typed FilterChain object. A bare
-    # list fails at runtime with `'list' object has no attribute 'apply'`
-    # inside Crawl4AI's BFS, which aborts the stream after the root URL.
-    fc = strategy["params"]["filter_chain"]
-    assert fc["type"] == "FilterChain"
-    assert isinstance(fc["params"]["filters"], list)
-    assert all(f["type"] in {"URLPatternFilter", "ContentTypeFilter"}
-               for f in fc["params"]["filters"])
+    with patch("web_search_mcp.crawling.operations._crawl_post", crawl_post):
+        pages = await server_module._deep_crawl(
+            ["https://docs.example.com"],
+            max_depth=2,
+            max_pages=5,
+            same_domain_only=True,
+        )
+
+    assert [page["url"] for page in pages] == [
+        "https://docs.example.com",
+        "https://docs.example.com/guide",
+    ]
+    assert pages[1]["metadata"]["depth"] == 1
+    assert pages[1]["metadata"]["parent_url"] == "https://docs.example.com"
+    assert all(
+        call.kwargs["crawler_config"] == server_module._MAP_CRAWL_CONFIG
+        for call in crawl_post.await_args_list
+    )

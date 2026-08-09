@@ -1,6 +1,7 @@
 """Crawl4AI result parsing, scrape, map, and deep-crawl orchestration."""
 
 import asyncio
+from fnmatch import fnmatchcase
 import logging
 from urllib.parse import urljoin, urlparse
 
@@ -135,68 +136,18 @@ _MAP_CRAWL_CONFIG = {
 }
 
 
-def _domain_filter_patterns(root_url: str, same_domain_only: bool) -> list[str]:
-    if not same_domain_only:
-        return []
-    root_domain = _domain_from_url(root_url).lower()
-    registrable = _registrable_domain(root_domain)
-    schemes = ("http", "https")
-    patterns: list[str] = []
-    for scheme in schemes:
-        patterns.append(f"{scheme}://{registrable}/*")
-        patterns.append(f"{scheme}://*.{registrable}/*")
-        patterns.append(f"{scheme}://{root_domain}/*")
-    return patterns
-
-
-def _crawl_filter_chain(
+def _crawl_url_in_scope(
+    url: str,
     *,
-    root_url: str,
+    root_registrable_domain: str,
     same_domain_only: bool,
     include_patterns: list[str] | None,
-) -> list[dict]:
-    filters: list[dict] = []
-    domain_patterns = _domain_filter_patterns(root_url, same_domain_only)
-    if domain_patterns:
-        filters.append({
-            "type": "URLPatternFilter",
-            "params": {"patterns": domain_patterns},
-        })
-    if include_patterns:
-        filters.append({
-            "type": "URLPatternFilter",
-            "params": {"patterns": include_patterns},
-        })
-    filters.append({
-        "type": "ContentTypeFilter",
-        "params": {"allowed_types": ["text/html"]},
-    })
-    # NOTE: We intentionally do NOT add a ContentRelevanceFilter here.
-    # Filtering by query relevance during BFS exploration prematurely
-    # rejects pages that link to relevant content but don't themselves
-    # contain the query terms.  Relevance filtering happens post-crawl
-    # via the configured chunk reranker in crawl_impl instead.
-    return filters
-
-
-def _deep_crawl_config(
-    *,
-    root_url: str,
-    max_depth: int,
-    max_pages: int,
-    same_domain_only: bool,
-    include_patterns: list[str] | None = None,
-) -> dict:
-    # Discovery should keep the full page chrome where site topology
-    # often lives. Starting from the content-pruned default config can
-    # collapse map/crawl to the root page on real sites.
-    return crawl.deep_crawl_config(
-        root_url=root_url,
-        max_depth=max_depth,
-        max_pages=max_pages,
-        same_domain_only=same_domain_only,
-        include_patterns=include_patterns,
-    )
+) -> bool:
+    if same_domain_only:
+        candidate_domain = _registrable_domain(_domain_from_url(url).lower())
+        if candidate_domain != root_registrable_domain:
+            return False
+    return not include_patterns or any(fnmatchcase(url, pattern) for pattern in include_patterns)
 
 
 def _is_retryable_crawl_error(exc: BaseException) -> bool:
@@ -291,21 +242,68 @@ async def _deep_crawl(
     same_domain_only: bool,
     include_patterns: list[str] | None = None,
 ) -> list[dict]:
-    """BFS deep crawl starting from every seed URL.
+    """Perform bounded BFS in the MCP process using Crawl4AI page batches.
 
-    The BFS strategy's same_domain and include_pattern filters are keyed
-    off the first seed (as the "root") for domain-scope purposes, since
-    all seeds should already be in-scope at the call site.
+    Crawl4AI 0.9 rejects request-supplied ``deep_crawl_strategy`` objects at
+    its HTTP trust boundary. Keeping traversal here preserves map/crawl
+    behavior without weakening the crawler container's hardened API.
     """
     if not seeds:
         return []
-    crawler_config = _deep_crawl_config(
-        root_url=seeds[0],
-        max_depth=max_depth,
-        max_pages=max_pages,
-        same_domain_only=same_domain_only,
-        include_patterns=include_patterns,
-    )
+
+    root_domain = _registrable_domain(_domain_from_url(seeds[0]).lower())
+    queued: set[str] = set()
+    frontier: list[tuple[str, str | None]] = []
+    for seed in seeds:
+        normalized = _normalize_url(seed)
+        if normalized not in queued:
+            queued.add(normalized)
+            frontier.append((seed, None))
+
+    crawled_pages: list[dict] = []
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-        data = await _crawl_post(client, seeds, priority=7, crawler_config=crawler_config)
-        return _extract_crawl_results(data)
+        for depth in range(max_depth + 1):
+            if not frontier or len(crawled_pages) >= max_pages:
+                break
+            batch = frontier[: max_pages - len(crawled_pages)]
+            requested_urls = [url for url, _parent in batch]
+            parent_by_url = {_normalize_url(url): parent for url, parent in batch}
+            data = await _crawl_post(
+                client,
+                requested_urls,
+                priority=7,
+                crawler_config=_MAP_CRAWL_CONFIG,
+            )
+            pages = _extract_crawl_results(data)
+            next_frontier: list[tuple[str, str]] = []
+            for index, page in enumerate(pages):
+                page = dict(page)
+                fallback_url = requested_urls[index] if index < len(requested_urls) else ""
+                page_url = page.get("url") if isinstance(page.get("url"), str) else fallback_url
+                if not page_url:
+                    continue
+                metadata = dict(page.get("metadata") or {})
+                metadata["depth"] = depth
+                parent = parent_by_url.get(_normalize_url(page_url))
+                if parent:
+                    metadata["parent_url"] = parent
+                page["metadata"] = metadata
+                crawled_pages.append(page)
+                if depth >= max_depth or len(crawled_pages) + len(next_frontier) >= max_pages:
+                    continue
+                for link in _extract_crawl_links(page, page_url):
+                    candidate = link["url"]
+                    normalized = _normalize_url(candidate)
+                    if normalized in queued or not _crawl_url_in_scope(
+                        candidate,
+                        root_registrable_domain=root_domain,
+                        same_domain_only=same_domain_only,
+                        include_patterns=include_patterns,
+                    ):
+                        continue
+                    queued.add(normalized)
+                    next_frontier.append((candidate, page_url))
+                    if len(crawled_pages) + len(next_frontier) >= max_pages:
+                        break
+            frontier = next_frontier
+    return crawled_pages
