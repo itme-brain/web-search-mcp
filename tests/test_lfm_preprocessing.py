@@ -1,5 +1,7 @@
-import pytest
+import json
+
 import httpx
+import pytest
 
 from web_search_mcp.preprocessing import lfm
 from web_search_mcp.ranking import intent
@@ -28,6 +30,37 @@ async def test_chat_completion_uses_openai_compatible_contract(monkeypatch):
     assert result == {"intent": "comparison"}
     assert captured["url"] == "http://llama.test/v1/chat/completions"
     assert '"model":"LFM2.5-2.6B-Q8_0.gguf"' in captured["body"]
+    body = json.loads(captured["body"])
+    assert body["response_format"] == {"type": "json_object"}
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_sends_llama_cpp_json_schema(monkeypatch):
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": '{"queries":["focused query"]}'}}],
+        })
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(lfm, "LFM_BASE_URL", "http://llama.test/v1")
+    monkeypatch.setattr(lfm.httpx, "AsyncClient", lambda **_kwargs: client)
+    schema = {
+        "type": "object",
+        "properties": {"queries": {"type": "array", "items": {"type": "string"}}},
+        "required": ["queries"],
+    }
+
+    result = await lfm._chat_completion("system", "user", max_tokens=64, schema=schema)
+
+    assert result == {"queries": ["focused query"]}
+    assert captured["body"]["response_format"] == {
+        "type": "json_object",
+        "schema": schema,
+    }
 
 
 @pytest.mark.asyncio

@@ -23,6 +23,33 @@ from web_search_mcp.ranking.intent import IntentProfile, profile_for_name
 
 _CITATION = re.compile(r"\[(\d+\.\d+)\]")
 _JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
+_INTENT_NAMES = [
+    "technical_documentation", "current_events", "academic_research",
+    "product_research", "factual_lookup", "comparison", "general_web_research",
+]
+_QUERY_PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "intent": {"type": "string", "enum": _INTENT_NAMES},
+        "queries": {
+            "type": "array", "items": {"type": "string"},
+            "minItems": 1, "maxItems": 6,
+        },
+    },
+    "required": ["intent", "queries"],
+    "additionalProperties": False,
+}
+_EVIDENCE_DIGEST_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "overview": {
+            "type": "array", "items": {"type": "string"},
+            "maxItems": 6,
+        },
+    },
+    "required": ["overview"],
+    "additionalProperties": False,
+}
 
 
 @dataclass(frozen=True)
@@ -66,12 +93,21 @@ def _parse_json_object(content: str) -> dict[str, Any]:
     return value
 
 
-async def _chat_completion(system: str, user: str, *, max_tokens: int) -> dict[str, Any]:
+async def _chat_completion(
+    system: str,
+    user: str,
+    *,
+    max_tokens: int,
+    schema: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if not LFM_BASE_URL:
         raise ValueError("LFM_BASE_URL is required when preprocessing is enabled")
     headers = {"Content-Type": "application/json"}
     if LFM_API_KEY:
         headers["Authorization"] = f"Bearer {LFM_API_KEY}"
+    response_format: dict[str, Any] = {"type": "json_object"}
+    if schema is not None:
+        response_format["schema"] = schema
     payload = {
         "model": LFM_MODEL,
         "messages": [
@@ -80,7 +116,8 @@ async def _chat_completion(system: str, user: str, *, max_tokens: int) -> dict[s
         ],
         "temperature": 0,
         "max_tokens": max_tokens,
-        "response_format": {"type": "json_object"},
+        "response_format": response_format,
+        "chat_template_kwargs": {"enable_thinking": False},
     }
     async with httpx.AsyncClient(timeout=LFM_TIMEOUT) as client:
         response = await client.post(f"{LFM_BASE_URL}/chat/completions", headers=headers, json=payload)
@@ -129,6 +166,7 @@ async def plan_query(
             "factual_lookup, comparison, general_web_research.",
             f"Research request:\n{query}",
             max_tokens=320,
+            schema=_QUERY_PLAN_SCHEMA,
         )
         intent = profile_for_name(data.get("intent", "")) or deterministic_intent
         queries = _clean_queries(query, data.get("queries"))
@@ -170,6 +208,7 @@ async def digest_evidence(query: str, results: list[dict], fallback: list[str]) 
             "Every statement must cite one or more supplied passage IDs. Do not add outside facts.",
             json.dumps({"question": query, "evidence": evidence}, ensure_ascii=False),
             max_tokens=640,
+            schema=_EVIDENCE_DIGEST_SCHEMA,
         )
         overview: list[str] = []
         seen: set[str] = set()
