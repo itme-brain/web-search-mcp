@@ -64,7 +64,7 @@ Add this to your Pi MCP server config:
 | `map` | List URLs under one site/root without reading page content. |
 | `research` | Broader, slower, multi-source search for harder questions. |
 | `crawl` | Read a small site/docs subtree, optionally ranked for a query. |
-| `read_evidence` | Expand a stable document or chunk reference already returned by search. |
+| `read_evidence` | Expand a stable document or chunk reference, optionally as a bounded chunk range. |
 
 Rule of thumb:
 

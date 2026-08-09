@@ -104,6 +104,12 @@ class EvidenceReadResponseModel(StrictModel):
     title: str | None = None
     content: str
     resource_uri: str
+    chunk_start: int | None = None
+    chunks_returned: int | None = None
+    total_chunks: int | None = None
+    next_chunk_start: int | None = None
+    truncated: bool = False
+    chunk_resource_uris: list[str] = []
 
 
 class SearchMetaModel(StrictModel):

@@ -48,6 +48,8 @@ mcp.add_extension(TasksExtension())
 Query = Annotated[str, Field(min_length=1, max_length=1000)]
 Url = Annotated[str, Field(min_length=8, max_length=4096, pattern=r"^https?://")]
 EvidenceReference = Annotated[str, Field(min_length=1, max_length=256)]
+EvidenceChunkStart = Annotated[int, Field(ge=0, le=100_000)]
+EvidenceChunkCount = Annotated[int, Field(ge=1, le=10)]
 ResultCount = Annotated[int, Field(ge=1, le=MAX_RESULTS)]
 MapCount = Annotated[int, Field(ge=1, le=50)]
 CrawlCount = Annotated[int, Field(ge=1, le=20)]
@@ -89,9 +91,11 @@ def _semantic_status() -> dict:
 def _tool_result(response: dict, formatter) -> ToolResult:
     """Return curated markdown plus the structured dict payload."""
     content = [TextContent(type="text", text=formatter(response))]
+    linked_uris: set[str] = set()
+    passage_links = 0
     for result in response.get("results", []):
         resource_uri = result.get("resource_uri")
-        if resource_uri:
+        if resource_uri and resource_uri not in linked_uris:
             content.append(ResourceLink(
                 type="resource_link",
                 uri=resource_uri,
@@ -99,6 +103,28 @@ def _tool_result(response: dict, formatter) -> ToolResult:
                 description="Complete cleaned document already retrieved by web-search-mcp",
                 mimeType="text/markdown",
             ))
+            linked_uris.add(resource_uri)
+        for passage in result.get("passages", []):
+            passage_uri = passage.get("resource_uri")
+            if (
+                not passage_uri
+                or passage_uri in linked_uris
+                or passage_links >= 12
+            ):
+                continue
+            passage_name = passage.get("citation") or passage_links + 1
+            content.append(ResourceLink(
+                type="resource_link",
+                uri=passage_uri,
+                name=(
+                    f"{result.get('title') or 'retrieved document'} "
+                    f"passage {passage_name}"
+                ),
+                description="Focused evidence passage already retrieved by web-search-mcp",
+                mimeType="text/markdown",
+            ))
+            linked_uris.add(passage_uri)
+            passage_links += 1
     return ToolResult(
         content=content,
         structured_content=response,
@@ -335,20 +361,49 @@ async def crawl(
     return _tool_result(response, _format_crawl_results)
 
 
-@mcp.tool(output_schema=models.EvidenceReadResponseModel.model_json_schema(), annotations=READ_ONLY_CLOSED_WORLD)
-async def read_evidence(reference: EvidenceReference) -> ToolResult:
-    """Expand a document or chunk reference returned by search/research."""
-    response = await read_evidence_impl(reference)
-    return ToolResult(
-        content=[
-            TextContent(type="text", text=response["content"]),
-            ResourceLink(
-                type="resource_link",
-                uri=response["resource_uri"],
-                name=response.get("title") or response.get("chunk_id") or response["document_id"],
-                mimeType="text/markdown",
+@mcp.tool(
+    output_schema=models.EvidenceReadResponseModel.model_json_schema(),
+    annotations=READ_ONLY_CLOSED_WORLD,
+)
+async def read_evidence(
+    reference: EvidenceReference,
+    chunk_start: EvidenceChunkStart | None = None,
+    max_chunks: EvidenceChunkCount | None = None,
+) -> ToolResult:
+    """Expand cached evidence, optionally reading a bounded document chunk range.
+
+    Args:
+        reference: Document or chunk reference returned by search/research.
+        chunk_start: Optional zero-based document chunk offset. Supplying it
+            enables a bounded read.
+        max_chunks: Optional document chunks to return, 1-10. Supplying it
+            starts at chunk zero by default.
+    """
+    response = await read_evidence_impl(
+        reference,
+        chunk_start=chunk_start,
+        max_chunks=max_chunks,
+    )
+    content = [TextContent(type="text", text=response["content"])]
+    linked_uris = response["chunk_resource_uris"] or [response["resource_uri"]]
+    for index, resource_uri in enumerate(linked_uris):
+        content.append(ResourceLink(
+            type="resource_link",
+            uri=resource_uri,
+            name=(
+                f"{response.get('title') or response['document_id']} chunk "
+                f"{(response.get('chunk_start') or 0) + index}"
+                if response["chunk_resource_uris"]
+                else (
+                    response.get("title")
+                    or response.get("chunk_id")
+                    or response["document_id"]
+                )
             ),
-        ],
+            mimeType="text/markdown",
+        ))
+    return ToolResult(
+        content=content,
         structured_content=response,
     )
 

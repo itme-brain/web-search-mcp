@@ -56,6 +56,66 @@ async def test_tool_only_expansion_resolves_chunk_reference():
 
 
 @pytest.mark.asyncio
+async def test_document_expansion_can_return_bounded_chunks_with_continuation():
+    manifest = await evidence.persist_document(
+        url="https://example.com/long-article",
+        title="Long article",
+        content="First evidence block.\n\nSecond evidence block.\n\nThird evidence block.",
+    )
+
+    response = await read_evidence_impl(manifest["uri"], chunk_start=1, max_chunks=1)
+
+    assert response["content"] == "Second evidence block."
+    assert response["chunk_start"] == 1
+    assert response["chunks_returned"] == 1
+    assert response["total_chunks"] == 3
+    assert response["next_chunk_start"] == 2
+    assert response["truncated"] is True
+    assert response["chunk_resource_uris"] == [manifest["chunks"][1]["uri"]]
+
+
+@pytest.mark.asyncio
+async def test_document_expansion_remains_full_by_default():
+    content = "First evidence block.\n\nSecond evidence block."
+    manifest = await evidence.persist_document(
+        url="https://example.com/full-article",
+        title="Full article",
+        content=content,
+    )
+
+    response = await read_evidence_impl(manifest["uri"])
+
+    assert response["content"] == content
+    assert response["chunk_start"] is None
+    assert response["chunks_returned"] == 2
+    assert response["next_chunk_start"] is None
+    assert response["truncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_mcp_bounded_expansion_returns_chunk_resource_links():
+    manifest = await evidence.persist_document(
+        url="https://example.com/bounded-resource",
+        title="Bounded resource",
+        content="First evidence block.\n\nSecond evidence block.\n\nThird evidence block.",
+    )
+
+    async with Client(server_app) as client:
+        result = await client.call_tool_mcp(
+            "read_evidence",
+            {"reference": manifest["uri"], "max_chunks": 2},
+        )
+
+    links = [
+        str(item.uri)
+        for item in result.content
+        if getattr(item, "type", None) == "resource_link"
+    ]
+    assert links == [item["uri"] for item in manifest["chunks"][:2]]
+    assert result.structured_content["next_chunk_start"] == 2
+
+
+@pytest.mark.asyncio
 async def test_mcp_resource_template_reads_persisted_document():
     manifest = await evidence.persist_document(
         url="https://example.com/resource",
@@ -101,4 +161,10 @@ async def test_search_returns_document_and_chunk_resource_links():
     assert structured["document_id"]
     assert structured["resource_uri"].startswith("web-search://documents/")
     assert structured["passages"][0]["chunk_id"]
-    assert any(getattr(item, "type", None) == "resource_link" for item in result.content)
+    links = {
+        str(item.uri)
+        for item in result.content
+        if getattr(item, "type", None) == "resource_link"
+    }
+    assert structured["resource_uri"] in links
+    assert structured["passages"][0]["resource_uri"] in links

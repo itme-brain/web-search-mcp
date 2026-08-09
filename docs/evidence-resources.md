@@ -8,8 +8,11 @@ the document ID, position, and text. These stable handles are exposed as:
 - `web-search://chunks/{chunk_id}`
 
 Search passages include their chunk URI when available, and search results
-include the complete document URI. Clients can use the `read_evidence` tool or
-MCP resource reads to expand either handle without fetching the web page again.
+include the complete document URI. Tool responses expose both as MCP resource
+links. Clients can use the `read_evidence` tool or MCP resource reads to expand
+either handle without fetching the web page again. `read_evidence` preserves
+full-document reads by default; pass `chunk_start` and/or `max_chunks` to return
+at most 10 document chunks with `next_chunk_start` continuation metadata.
 The payload expires according to `EVIDENCE_TTL_S` and can be resolved by any MCP
 replica connected to the same Valkey instance.
 
