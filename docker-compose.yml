@@ -110,6 +110,10 @@ services:
       - ${LFM_CTX_SIZE:-8192}
       - --parallel
       - "1"
+      - --reasoning
+      - "off"
+      - --reasoning-budget
+      - "0"
       - --threads
       - ${LFM_THREADS:-8}
       - --threads-batch
