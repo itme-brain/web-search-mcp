@@ -8,6 +8,7 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     searxng_url: str = "http://searxng:8080"
     crawl4ai_url: str = "http://crawl4ai:11235"
+    crawl4ai_api_token: str = ""
     rerank_backend: str = "flashrank"
     rerank_model: str = "ms-marco-MiniLM-L-12-v2"
     rerank_device: str | None = None
@@ -32,6 +33,7 @@ settings = Settings()
 
 SEARXNG_URL = settings.searxng_url
 CRAWL4AI_URL = settings.crawl4ai_url
+CRAWL4AI_API_TOKEN = settings.crawl4ai_api_token
 RERANK_BACKEND = settings.rerank_backend
 RERANK_MODEL = settings.rerank_model
 RERANK_DEVICE = settings.rerank_device

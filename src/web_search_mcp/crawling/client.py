@@ -90,10 +90,13 @@ async def crawl_post(
     crawl4ai_url: str,
     urls: list[str],
     priority: int,
+    api_token: str = "",
     crawler_config: dict | None = None,
 ) -> dict:
+    headers = {"Authorization": f"Bearer {api_token}"} if api_token else None
     resp = await client.post(
         f"{crawl4ai_url}/crawl/stream",
+        headers=headers,
         json={"urls": urls, "priority": priority, "crawler_config": crawler_config or DEFAULT_CRAWL_CONFIG},
     )
     resp.raise_for_status()

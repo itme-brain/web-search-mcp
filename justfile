@@ -15,7 +15,7 @@ setup-python:
     fi
     @uv pip sync --python .venv/bin/python requirements.txt
 
-# Generate .env from env.sample and searxng settings.yml from the template (idempotent).
+# Generate host-only service credentials and configuration (idempotent).
 setup:
     @if [ ! -f .env ]; then \
         echo ">> copying env.sample to .env"; \
@@ -24,6 +24,15 @@ setup:
     @if [ ! -f searxng/config/settings.yml ]; then \
         echo ">> rendering searxng/config/settings.yml with a random secret_key"; \
         sed "s|ultrasecretkey|$(openssl rand -hex 32)|" searxng/config/settings.yml.template > searxng/config/settings.yml; \
+    fi
+    @if ! grep -Eq '^CRAWL4AI_API_TOKEN=.+$' .env; then \
+        echo ">> generating an internal Crawl4AI API token"; \
+        token="$(openssl rand -hex 32)"; \
+        if grep -q '^CRAWL4AI_API_TOKEN=' .env; then \
+            sed -i "s|^CRAWL4AI_API_TOKEN=.*|CRAWL4AI_API_TOKEN=${token}|" .env; \
+        else \
+            printf '\nCRAWL4AI_API_TOKEN=%s\n' "${token}" >> .env; \
+        fi; \
     fi
 
 # Build and start the full stack detached.

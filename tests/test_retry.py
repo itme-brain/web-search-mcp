@@ -105,3 +105,18 @@ async def test_crawl_post_raises_on_failed_stream_status():
 
     with pytest.raises(ValueError, match="boom"):
         await server_module._crawl_post(mock_client, "https://example.com", priority=8)
+
+
+@pytest.mark.asyncio
+async def test_crawl_post_authenticates_to_crawl4ai(monkeypatch):
+    """The private Crawl4AI request carries the configured static token."""
+    success_resp = _fake_success_response()
+    mock_client = MagicMock()
+    mock_client.post = AsyncMock(return_value=success_resp)
+    monkeypatch.setattr("web_search_mcp.crawling.operations.CRAWL4AI_API_TOKEN", "internal-token")
+
+    await server_module._crawl_post(mock_client, "https://example.com", priority=8)
+
+    assert mock_client.post.await_args.kwargs["headers"] == {
+        "Authorization": "Bearer internal-token",
+    }

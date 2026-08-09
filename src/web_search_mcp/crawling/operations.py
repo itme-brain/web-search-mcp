@@ -8,7 +8,7 @@ import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from web_search_mcp.common import _domain_from_url, _normalize_url, _registrable_domain
-from web_search_mcp.config.settings import CRAWL4AI_URL, REQUEST_TIMEOUT, _HTTP_TIMEOUT
+from web_search_mcp.config.settings import CRAWL4AI_API_TOKEN, CRAWL4AI_URL, REQUEST_TIMEOUT, _HTTP_TIMEOUT
 from web_search_mcp.crawling import client as crawl
 from web_search_mcp.extraction.html import _build_document_metadata, _extract_markdown
 
@@ -233,6 +233,7 @@ async def _crawl_post(
         crawl4ai_url=CRAWL4AI_URL,
         urls=urls,
         priority=priority,
+        api_token=CRAWL4AI_API_TOKEN,
         crawler_config=crawler_config,
     )
 
