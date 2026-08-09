@@ -4,6 +4,7 @@ from collections import defaultdict
 import logging
 import time
 import uuid
+from urllib.parse import urlparse
 
 from web_search_mcp.common import _coerce_optional_str, _dedup_pages, _validate_positive_int, _warning
 from web_search_mcp.ranking.service import _rerank_scored
@@ -14,10 +15,37 @@ from web_search_mcp.tools.extract import extract_impl
 from web_search_mcp.tools.map import map_impl
 
 log = logging.getLogger("web-search-mcp")
+_QUERY_DISCOVERY_MULTIPLIER = 4
 
 
 def _validated_response(model_cls, response: dict) -> dict:
     return models.dump_response(model_cls, response)
+
+
+async def _select_nodes_for_query(
+    nodes: list[dict],
+    *,
+    query: str,
+    maximum: int,
+) -> tuple[list[dict], list[dict]]:
+    """Rank cheap map metadata before spending the extraction budget."""
+    if len(nodes) <= maximum:
+        return nodes, []
+    documents = [
+        "\n".join(filter(None, (
+            node.get("title"),
+            node.get("link_text"),
+            urlparse(node["url"]).path.replace("/", " "),
+        )))
+        for node in nodes
+    ]
+    try:
+        scored = await _rerank_scored(query, documents)
+    except Exception as exc:
+        log.warning("crawl URL preselection failed query=%r err=%s", query, exc)
+        return nodes[:maximum], [_warning("crawl_preselection_failed", "reranker", str(exc))]
+    selected_indexes = [index for index, _score in scored[:maximum]]
+    return [nodes[index] for index in selected_indexes], []
 
 async def crawl_impl(
     url: str,
@@ -40,14 +68,26 @@ async def crawl_impl(
     request_id = uuid.uuid4().hex
     normalized_query = _coerce_optional_str(query)
     started = time.monotonic()
+    discovery_limit = (
+        min(effective_max_urls * _QUERY_DISCOVERY_MULTIPLIER, _MAX_MAP_URLS)
+        if normalized_query else effective_max_urls
+    )
     tree = await map_impl(
         url=url,
-        max_urls=effective_max_urls,
+        max_urls=discovery_limit,
         include_patterns=include_patterns,
         observe=False,
     )
     root_url = tree["url"]
-    urls = [entry["url"] for entry in tree["results"]]
+    selected_nodes = tree["results"]
+    selection_warnings: list[dict] = []
+    if normalized_query:
+        selected_nodes, selection_warnings = await _select_nodes_for_query(
+            selected_nodes,
+            query=normalized_query,
+            maximum=effective_max_urls,
+        )
+    urls = [entry["url"] for entry in selected_nodes]
 
     extracted = await extract_impl(
         urls=urls,
@@ -88,14 +128,19 @@ async def crawl_impl(
                 doc_by_url[u]["top_chunks"] = top
 
     results: list[dict] = []
-    for node in tree["results"]:
+    for node in selected_nodes:
         document = doc_by_url.get(node["url"], {})
         top_chunks_raw = document.get("top_chunks", []) or []
         top_chunks = [
             c["text"] if isinstance(c, dict) else c
             for c in top_chunks_raw
         ]
-        content = document.get("content", "")
+        full_content = document.get("content", "")
+        content = (
+            "\n\n[\u2026]\n\n".join(top_chunks)
+            if normalized_query and top_chunks
+            else full_content
+        )
         merged = {
             "url": node["url"],
             "domain": node["domain"],
@@ -107,7 +152,7 @@ async def crawl_impl(
             "status": document.get("status", "error"),
             "content_type": document.get("content_type"),
             "content": content,
-            "chars_shown": document.get("chars_shown", len(content)),
+            "chars_shown": len(content),
             "total_chars": document.get("total_chars", 0),
             "top_chunks": top_chunks,
             "cached": document.get("cached", False),
@@ -131,7 +176,7 @@ async def crawl_impl(
     for rank, entry in enumerate(results, start=1):
         entry["rank"] = rank
 
-    warnings = list(tree["meta"].get("warnings", []))
+    warnings = [*tree["meta"].get("warnings", []), *selection_warnings]
     sparse = len(results) < min(effective_max_urls, 3) or urls_succeeded == 0
     sparsity_reason = None
     if urls_succeeded == 0:
@@ -149,7 +194,7 @@ async def crawl_impl(
             "max_urls_requested": effective_max_urls,
             "urls_discovered": len(tree["results"]),
             "urls_returned": len(results),
-            "urls_truncated_by_limit": 0,
+            "urls_truncated_by_limit": max(0, len(tree["results"]) - len(selected_nodes)),
             "urls_deduplicated": urls_deduplicated,
             "sparse": sparse,
             "sparsity_reason": sparsity_reason,

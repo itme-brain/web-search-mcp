@@ -293,6 +293,8 @@ async def test_crawl_query_reorders_by_relevance():
     assert [r["url"] for r in payload["results"]][0] == "https://docs.example.com/rate-limits"
     assert payload["results"][0]["rank"] == 1
     assert payload["results"][0]["top_chunks"] == ["top chunk text for https://docs.example.com/rate-limits"]
+    assert payload["results"][0]["content"] == "top chunk text for https://docs.example.com/rate-limits"
+    assert payload["results"][0]["chars_shown"] == len(payload["results"][0]["content"])
     # The seed page (lowest score) should land last.
     assert payload["results"][-1]["url"] == "https://docs.example.com"
 
@@ -340,6 +342,47 @@ async def test_crawl_without_query_preserves_bfs_order():
         "https://docs.example.com/b",
     ]
     assert payload.get("query") in (None, "")
+
+
+@pytest.mark.asyncio
+async def test_query_crawl_selects_urls_before_extracting_pages():
+    nodes = [
+        _map_result("https://docs.example.com", depth=0, title="Home", link_type="seed", rank=1),
+        _map_result("https://docs.example.com/install", depth=1, title="Install", rank=2),
+        _map_result("https://docs.example.com/runtime", depth=1, title="Runtime configuration", rank=3),
+        _map_result("https://docs.example.com/tasks", depth=1, title="Task spawning", rank=4),
+    ]
+    map_payload = {
+        "url": nodes[0]["url"],
+        "results": nodes,
+        "meta": {"warnings": [], "urls_returned": 4, "pages_visited": 4},
+    }
+    selected_urls = [nodes[2]["url"], nodes[3]["url"]]
+    extract_payload = {
+        "results": [_extract_result(url, content=f"focused content {url}") for url in selected_urls],
+        "meta": {"urls_requested": 2, "urls_succeeded": 2, "urls_failed": 0},
+    }
+
+    async def fake_rerank(_query, documents):
+        if documents and "focused content" not in documents[0]:
+            return [(2, 0.9), (3, 0.8), (1, 0.2), (0, 0.1)]
+        return [(index, 0.8) for index in range(len(documents))]
+
+    with (
+        patch(PATCH_MAP_IMPL, AsyncMock(return_value=map_payload)) as map_mock,
+        patch(PATCH_EXTRACT_IMPL, AsyncMock(return_value=extract_payload)) as extract_mock,
+        patch("web_search_mcp.tools.crawl._rerank_scored", AsyncMock(side_effect=fake_rerank)),
+    ):
+        payload = await server_module.crawl_impl(
+            nodes[0]["url"],
+            max_urls=2,
+            query="runtime and task spawning",
+        )
+
+    assert map_mock.await_args.kwargs["max_urls"] == 8
+    assert extract_mock.await_args.kwargs["urls"] == selected_urls
+    assert payload["meta"]["urls_discovered"] == 4
+    assert payload["meta"]["urls_truncated_by_limit"] == 2
 
 
 @pytest.mark.asyncio
