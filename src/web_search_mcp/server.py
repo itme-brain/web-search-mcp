@@ -297,7 +297,8 @@ async def research(
         query: Research question.
         num_results: Sources to return. Default 8.
         time_range: Optional: `day`, `week`, `month`, or `year`.
-        source_types: Optional kinds to keep: docs, repo, issue, mailing_list, qa, blog, web.
+        source_types: Optional kinds to keep: docs, official_docs, repo, issue,
+            mailing_list, qa, blog, pdf, paper, or web.
     """
     response = await research_impl(
         query=query,

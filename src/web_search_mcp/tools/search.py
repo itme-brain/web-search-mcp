@@ -213,7 +213,9 @@ async def _rank_search_candidates(
     entries = [{"url": result.get("url", ""), "title": result.get("title", "")} for result in results]
     ranked = sorted(
         range(len(results)),
-        key=lambda idx: source_quality.entry_sort_score(idx, entries, scores, intent_profile),
+        key=lambda idx: source_quality.entry_sort_score(
+            idx, entries, scores, intent_profile, query=query,
+        ),
         reverse=True,
     )
     ranked = source_quality.diversify_by_source_type(
@@ -412,6 +414,7 @@ async def _merge_memory_entries(
 async def _rank_search_entries(
     *, query: str, entries: list[dict], max_passages: int,
     max_chars_per_result: int, num_results: int, warnings: list[dict],
+    intent_profile: intent_module.IntentProfile,
 ) -> tuple[list[int], dict[int, list[tuple[str, float]]], int, bool, bool]:
     """Chunk, rerank, filter, and diversify entries."""
     all_chunks: list[str] = []
@@ -446,7 +449,13 @@ async def _rank_search_entries(
     if rerank_failed:
         ranked_entry_idxs = list(range(len(entries)))
     else:
-        ranked_entry_idxs = sorted(entry_best, key=lambda eidx: source_quality.entry_sort_score(eidx, entries, entry_best), reverse=True)
+        ranked_entry_idxs = sorted(
+            entry_best,
+            key=lambda eidx: source_quality.entry_sort_score(
+                eidx, entries, entry_best, intent_profile, query=query,
+            ),
+            reverse=True,
+        )
         ranked_entry_idxs.extend(i for i in range(len(entries)) if i not in entry_best)
         noise_count = 0
         filtered_idxs = []
@@ -668,7 +677,7 @@ async def search_impl(
     ranked_entry_idxs, entry_chunks, chunk_count, rank_degraded, _ = await _rank_search_entries(
         query=query, entries=entries, max_passages=max_passages,
         max_chars_per_result=max_chars_per_result, num_results=num_results,
-        warnings=warnings,
+        warnings=warnings, intent_profile=intent_profile,
     )
     timings_ms["rerank"] = int((time.monotonic() - rerank_started) * 1000)
     degraded = degraded or rank_degraded
@@ -681,10 +690,20 @@ async def search_impl(
         profile=profile,
     )
 
-    overview = evidence.research_summary(structured_results, warnings) if profile == "research" else []
+    synthesis_results = [
+        result for result in structured_results
+        if source_quality.synthesis_eligible(result)
+    ]
+    if profile == "research" and len(synthesis_results) < len(structured_results):
+        warnings.append(_warning(
+            "weak_sources_excluded_from_overview",
+            "ranking",
+            f"{len(structured_results) - len(synthesis_results)} source(s) remain visible but do not support the overview",
+        ))
+    overview = evidence.research_summary(synthesis_results, warnings) if profile == "research" else []
     if profile == "research":
         preprocessing_started = time.monotonic()
-        digest = await lfm.digest_evidence(query, structured_results, overview)
+        digest = await lfm.digest_evidence(query, synthesis_results, overview)
         timings_ms["preprocessing"] += int((time.monotonic() - preprocessing_started) * 1000)
         overview = digest.overview
         preprocessing["digest_used"] = digest.used
