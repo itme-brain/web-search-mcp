@@ -146,12 +146,6 @@ async def _ensure_index(dim: int) -> bool:
             "DISTANCE_METRIC", "COSINE",
             "M", "16",
             "EF_CONSTRUCTION", "200",
-            "model", "TAG",
-            "domain", "TAG",
-            "updated_at", "NUMERIC",
-            "url", "TEXT", "NOSTEM",
-            "title", "TEXT",
-            "text", "TEXT",
         )
     except ResponseError as exc:
         message = _response_error_text(exc)

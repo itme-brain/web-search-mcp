@@ -89,6 +89,8 @@ async def test_index_page_creates_valkey_search_index_and_hashes_chunks(enabled_
     )
 
     assert any(command[0] == "FT.CREATE" for command in client.commands)
+    create_command = next(command for command in client.commands if command[0] == "FT.CREATE")
+    assert create_command[-2:] == ("EF_CONSTRUCTION", "200")
     assert client.hashes
     key, mapping = next(iter(client.hashes.items()))
     assert key.startswith("ws:semantic:chunk:")
