@@ -35,7 +35,8 @@ class FakeSearchClient:
         command = args[0]
         if command == "FT.INFO":
             if not self.index_created:
-                raise ResponseError("Unknown Index name")
+                # Current valkey-bundle wording differs from older RediSearch.
+                raise ResponseError("Index with name 'test-index' not found")
             return ["num_docs", len(self.hashes)]
         if command == "FT.CREATE":
             self.index_created = True

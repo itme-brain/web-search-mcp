@@ -123,7 +123,12 @@ async def _ensure_index(dim: int) -> bool:
         return True
     except ResponseError as exc:
         message = _response_error_text(exc)
-        if "unknown index" not in message and "no such index" not in message:
+        missing_index = (
+            "unknown index" in message
+            or "no such index" in message
+            or ("index with name" in message and "not found" in message)
+        )
+        if not missing_index:
             _LAST_ERROR = str(exc)
             log.warning("valkey search index check failed: %s", exc)
             return False
