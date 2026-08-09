@@ -42,7 +42,7 @@ from web_search_mcp.tools.evidence import read_evidence_impl
 from web_search_mcp.storage import evidence as evidence_store
 
 
-mcp = FastMCP("Web Search", version="0.8.1", strict_input_validation=True)
+mcp = FastMCP("Web Search", version="0.8.2", strict_input_validation=True)
 mcp.add_extension(TasksExtension())
 
 Query = Annotated[str, Field(min_length=1, max_length=1000)]
