@@ -33,28 +33,40 @@ use_default_settings:
 # engine with a brave_key — the API variant has a real allowance.
 engines:
   - name: duckduckgo
+    disabled: false
     weight: 1.5
   - name: bing
+    disabled: false
     weight: 1.5
   - name: startpage
+    disabled: false
     weight: 1.3
   - name: mojeek
+    disabled: false
     weight: 1.3
   - name: stackoverflow
+    disabled: false
     weight: 1.2
   - name: wikipedia
+    disabled: false
     weight: 1.3
   - name: github
+    disabled: false
     weight: 1.2
   - name: arxiv
+    disabled: false
     weight: 1.2
   - name: duckduckgo news
+    disabled: false
     weight: 1.0
   - name: bing news
+    disabled: false
     weight: 1.0
   - name: google
+    disabled: false
     weight: 0.5
   - name: google news
+    disabled: false
     weight: 0.5
 
 general:
