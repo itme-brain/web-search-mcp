@@ -111,6 +111,7 @@ async def test_search_uses_valkey_search_knn_and_decodes_records(enabled_semanti
 
     search_command = next(command for command in client.commands if command[0] == "FT.SEARCH")
     assert any("KNN 1 @vector $query_vec AS distance" in str(part) for part in search_command)
+    assert "SORTBY" not in search_command
     assert results == [{
         "id": "abc",
         "url": "https://example.com/doc",

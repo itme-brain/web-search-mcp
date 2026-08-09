@@ -252,7 +252,6 @@ async def search(query: str, *, top_k: int | None = None) -> list[dict]:
             _INDEX_NAME,
             f"*=>[KNN {limit} @vector $query_vec AS distance]",
             "PARAMS", "2", "query_vec", _vector_blob(qvec[0]),
-            "SORTBY", "distance",
             "RETURN", "9",
             "id", "url", "domain", "title", "chunk_index", "text", "metadata", "updated_at", "distance",
             "DIALECT", "2",
