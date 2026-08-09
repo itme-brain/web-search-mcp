@@ -158,3 +158,40 @@ async def test_digest_keeps_only_known_cited_statements(monkeypatch):
     assert digest.overview == ["Supported fact [1.1]", "Second fact [2.1]"]
     assert digest.used is True
     assert digest.error is None
+
+
+@pytest.mark.asyncio
+async def test_digest_renders_schema_constrained_citations(monkeypatch):
+    captured = {}
+
+    async def completion(*_args, **kwargs):
+        captured["schema"] = kwargs["schema"]
+        return {
+            "overview": [
+                {"text": "Supported fact", "citations": ["2.1", "1.1"]},
+            ],
+        }
+
+    monkeypatch.setattr(lfm, "ENABLE_LFM_PREPROCESSING", True)
+    monkeypatch.setattr(lfm, "_chat_completion", completion)
+    results = [
+        {
+            "title": "One",
+            "url": "https://example.com/one",
+            "passages": [{"citation": "1.1", "text": "First evidence."}],
+        },
+        {
+            "title": "Two",
+            "url": "https://example.com/two",
+            "passages": [{"citation": "2.1", "text": "Second evidence."}],
+        },
+    ]
+
+    digest = await lfm.digest_evidence("question", results, ["fallback"])
+
+    citation_schema = captured["schema"]["properties"]["overview"]["items"][
+        "properties"
+    ]["citations"]["items"]
+    assert citation_schema["enum"] == ["1.1", "2.1"]
+    assert digest.overview == ["Supported fact [1.1] [2.1]"]
+    assert digest.used is True
