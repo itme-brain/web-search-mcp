@@ -12,6 +12,10 @@ def test_retained_searxng_engines_have_explicit_activation_policy():
     assert retained == set(overrides)
     assert all(isinstance(overrides[name].get("disabled"), bool) for name in retained)
     assert overrides["bing"]["disabled"] is False
+    assert overrides["yandex"]["disabled"] is False
+    assert overrides["fynd"]["disabled"] is False
+    assert overrides["searchmysite"]["disabled"] is False
+    assert overrides["wiby"]["disabled"] is False
     assert overrides["wikipedia"]["disabled"] is False
     assert overrides["github"]["disabled"] is False
     assert overrides["arxiv"]["disabled"] is False

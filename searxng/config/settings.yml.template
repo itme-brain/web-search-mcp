@@ -5,6 +5,10 @@ use_default_settings:
       - google news
       - bing
       - bing news
+      - yandex
+      - fynd
+      - searchmysite
+      - wiby
       - duckduckgo
       - duckduckgo news
       - startpage
@@ -19,11 +23,11 @@ use_default_settings:
 # SearXNG merges per-engine entries by `name`, so these override the weight
 # field on the default engine definitions inherited above.
 #
-# Philosophy: lean on engines with stable scraping surfaces and/or public
-# APIs (Bing, Wikipedia, GitHub, Arxiv). Keep Google in the pool so
-# its occasional successful pages still contribute, but don't rely on it —
-# Google's anti-bot measures will CAPTCHA a scraper under load, and any
-# single upstream going down should not dominate the ranking.
+# Philosophy: use multiple independently tested general-web indexes
+# (Bing, Yandex, Fynd) plus small-web indexes (SearchMySite, Wiby) and
+# stable vertical APIs (Wikipedia, GitHub, Arxiv). Keep Google in the pool
+# so its occasional successful pages still contribute, but don't rely on it —
+# Google's anti-bot measures can silently suppress scraper results.
 # DuckDuckGo, Startpage, and Mojeek are retained but disabled because their
 # scrape endpoints consistently reject the production host; keeping them active
 # only adds CAPTCHA/access-denied latency and warning noise.
@@ -41,6 +45,18 @@ engines:
   - name: bing
     disabled: false
     weight: 1.5
+  - name: yandex
+    disabled: false
+    weight: 1.3
+  - name: fynd
+    disabled: false
+    weight: 0.9
+  - name: searchmysite
+    disabled: false
+    weight: 0.7
+  - name: wiby
+    disabled: false
+    weight: 0.6
   - name: startpage
     disabled: true
     weight: 1.3
