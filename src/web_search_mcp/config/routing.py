@@ -9,8 +9,12 @@ _ROUTES = {
 }
 
 
-def engine_stages(intent: str, profile: str) -> tuple[tuple[str, ...], ...]:
+def engine_stages(intent: str, profile: str, *, time_range: str | None = None) -> tuple[tuple[str, ...], ...]:
     """Research keeps a broad engine pool for each query variant."""
+    # All other enabled engines in the deployed SearXNG release declare
+    # time_range_support=False and are skipped when a date filter is sent.
+    if time_range:
+        return (("bing news",),)
     stages = _ROUTES.get(intent, _GENERAL)
     if profile == "research":
         return (tuple(engine for stage in stages for engine in stage),)

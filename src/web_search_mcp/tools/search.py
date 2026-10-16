@@ -173,7 +173,12 @@ async def _collect_search_candidates(
     unresponsive_engines: list = []
     result_groups: list[list[dict]] = []
     any_success = False
-    stages = routing.engine_stages(intent_name, profile)
+    stages = routing.engine_stages(intent_name, profile, time_range=time_range)
+    if time_range:
+        warnings.append(_warning(
+            "time_range_engine_limit", "searxng",
+            "Date-filtered search uses Bing News; other configured engines do not support date filters.",
+        ))
 
     def filtered(items: list[dict]) -> list[dict]:
         return [

@@ -116,7 +116,7 @@ async def test_cache_key_includes_time_range():
 
         # same query, different time_range — should NOT hit cache
         await server_module.search_impl(query="test", num_results=1, time_range="week")
-        assert search_mock.call_count == 4
+        assert search_mock.call_count == 3
 
 
 # ---------------------------------------------------------------------------

@@ -50,3 +50,9 @@ adding another model call to search planning.
 
 A `time_range` constraint makes retrieval freshness-sensitive without replacing
 an explicit documentation, academic, product or comparison intent with news.
+Engine capabilities still constrain retrieval: only Bing News supports date
+filters in the deployed SearXNG engine set. Date-filtered requests select it
+explicitly and include a `time_range_engine_limit` warning. The requested
+date constraint is preserved; limited or empty coverage is reported rather
+than silently switching to an undated general search. Update this route when
+adding another engine with `time_range_support`.
