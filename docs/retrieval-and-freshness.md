@@ -47,3 +47,6 @@ result count, failure flag), including cache-served retrievals. `scrape_top`
 reports pages attempted, including failed attempts. These fields make it
 possible to compare request budgets, source coverage and timing without
 adding another model call to search planning.
+
+A `time_range` constraint makes retrieval freshness-sensitive without replacing
+an explicit documentation, academic, product or comparison intent with news.

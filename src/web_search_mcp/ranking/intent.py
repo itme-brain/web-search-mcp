@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 IntentName = Literal[
@@ -57,11 +57,11 @@ def profile_for_name(name: str) -> IntentProfile | None:
     return _PROFILES.get(name)  # type: ignore[arg-type]
 
 
-def classify(query: str, *, time_range: str | None = None) -> IntentProfile:
+def _classify_query(query: str) -> IntentProfile:
     """Classify a query using conservative, explainable lexical rules."""
     normalized = " ".join(query.lower().split())
     terms = set(normalized.replace("/", " ").split())
-    if time_range or terms & _CURRENT_TERMS:
+    if terms & _CURRENT_TERMS:
         return _PROFILES["current_events"]
     if " vs " in f" {normalized} " or " versus " in f" {normalized} " or terms & {
         "compare", "comparison", "difference", "differences",
@@ -76,6 +76,16 @@ def classify(query: str, *, time_range: str | None = None) -> IntentProfile:
     if normalized.startswith(_FACTUAL_PREFIXES):
         return _PROFILES["factual_lookup"]
     return _PROFILES["general_web_research"]
+
+
+def classify(query: str, *, time_range: str | None = None) -> IntentProfile:
+    """Preserve topical intent when a caller adds a freshness constraint."""
+    profile = _classify_query(query)
+    if time_range:
+        if profile.name == "general_web_research":
+            profile = _PROFILES["current_events"]
+        return replace(profile, freshness_sensitive=True)
+    return profile
 
 
 def preference_boost(source_type: str, profile: IntentProfile) -> float:

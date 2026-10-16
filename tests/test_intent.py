@@ -2,6 +2,7 @@ from web_search_mcp.config.search import candidate_budget
 from web_search_mcp.ranking.intent import classify
 from web_search_mcp.ranking.query_expansion import keyphrase, search_queries
 from web_search_mcp.tools.search import _interleave_result_groups
+import pytest
 
 
 def test_time_range_forces_current_events_intent():
@@ -9,6 +10,17 @@ def test_time_range_forces_current_events_intent():
 
     assert profile.name == "current_events"
     assert profile.freshness_sensitive is True
+
+
+@pytest.mark.parametrize("query, expected", [
+    ("Python asyncio API documentation", "technical_documentation"),
+    ("transformer attention arxiv paper", "academic_research"),
+    ("compare laptop prices versus desktop prices", "comparison"),
+])
+def test_time_range_preserves_topical_intent(query, expected):
+    profile = classify(query, time_range="month")
+    assert profile.name == expected
+    assert profile.freshness_sensitive
 
 
 def test_comparison_intent_precedes_product_keywords():

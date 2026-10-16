@@ -169,3 +169,12 @@ async def test_all_engine_requests_failing_reports_degraded(monkeypatch):
     assert result[3]
     assert len(steps) == 2
     assert all(step["failed"] for step in steps)
+
+
+@pytest.mark.asyncio
+async def test_documentation_date_filter_keeps_technical_engines(monkeypatch):
+    monkeypatch.setattr(search, "_search", AsyncMock(return_value=candidates()))
+    monkeypatch.setattr(search, "_scrape_cached", AsyncMock(return_value={"content": "Documentation text " * 30}))
+    result = await search.search_impl("Python asyncio API documentation", num_results=2, time_range="month")
+    assert result["meta"]["intent"] == "technical_documentation"
+    assert result["meta"]["retrieval_steps"][0]["engines"] == ["bing", "yandex"]
