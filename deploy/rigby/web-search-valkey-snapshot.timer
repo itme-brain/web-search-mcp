@@ -1,0 +1,10 @@
+[Unit]
+Description=Snapshot web-search Valkey every five minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Unit=web-search-valkey-snapshot.service
+
+[Install]
+WantedBy=timers.target

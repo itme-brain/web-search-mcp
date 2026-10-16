@@ -1,9 +1,15 @@
 """Crawl4AI result parsing, scrape, map, and deep-crawl orchestration."""
 
 import asyncio
+from collections import OrderedDict
+from email.utils import parsedate_to_datetime
 from fnmatch import fnmatchcase
 import logging
+import math
+import re
+import time
 from urllib.parse import urljoin, urlparse
+from weakref import WeakValueDictionary
 
 import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
@@ -14,6 +20,42 @@ from web_search_mcp.crawling import client as crawl
 from web_search_mcp.extraction.html import _build_document_metadata, _extract_markdown
 
 log = logging.getLogger("web-search-mcp")
+_host_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+_rate_limits: OrderedDict[str, float] = OrderedDict()
+
+
+def _retry_after_seconds(headers: dict) -> float:
+    value = next((v for k, v in headers.items() if k.lower() == "retry-after"), None)
+    if value is None:
+        return 60
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        try:
+            seconds = parsedate_to_datetime(value).timestamp() - time.time()
+        except (TypeError, ValueError, OverflowError):
+            return 60
+    return max(1, seconds) if math.isfinite(seconds) else 60
+
+
+def _crawl_failure_metadata(result: dict) -> dict | None:
+    status = result.get("status_code")
+    error = str(result.get("error_message") or result.get("error") or "")
+    # Crawl4AI sometimes supplies the HTTP status only in its error message.
+    if not isinstance(status, int) or status < 400:
+        match = re.search(r"\bHTTP\s+([45]\d\d)\b", error, re.IGNORECASE)
+        status = int(match[1]) if match else None
+    if status is None and result.get("success") is not False:
+        return None
+    diagnostic = {429: "rate_limited", 403: "access_denied"}.get(status, "fetch_failed")
+    metadata = {"diagnostic": diagnostic, "error": error[:500]}
+    if status is not None:
+        metadata["http_status"] = status
+    if status == 429:
+        metadata["retry_after_seconds"] = _retry_after_seconds(result.get("response_headers") or {})
+    return metadata
+
+
 def _extract_crawl_result(data: dict) -> dict:
     results = data.get("results")
     if results and isinstance(results, list):
@@ -211,6 +253,9 @@ async def _scrape_impl(url: str) -> dict:
         data = await _crawl_post(client, [url], priority=8)
 
         result = _extract_crawl_result(data)
+        failure = _crawl_failure_metadata(result)
+        if failure:
+            return {"content": None, "title": _extract_crawl_title(result), "metadata": failure}
         content = _extract_markdown(result)
         final_url = result.get("url") if isinstance(result.get("url"), str) else url
         return {
@@ -227,16 +272,40 @@ async def _scrape(url: str) -> dict:
 
     Returns {content, title, metadata}. On failure content is None.
     """
-    empty = {"content": None, "title": None, "metadata": {}}
+    host = urlparse(url).hostname or url
+    lock = _host_locks.setdefault(host, asyncio.Lock())
+
+    async def guarded_scrape() -> dict:
+        # Serialize requests to one host across search/extract calls; other
+        # hosts remain parallel. Do not hammer an origin after a 429.
+        async with lock:
+            remaining = _rate_limits.get(host, 0) - time.monotonic()
+            if remaining > 0:
+                return {"content": None, "title": None, "metadata": {
+                    "diagnostic": "rate_limited", "http_status": 429,
+                    "retry_after_seconds": math.ceil(remaining),
+                }}
+            _rate_limits.pop(host, None)
+            result = await _scrape_impl(url)
+            metadata = result.get("metadata") or {}
+            if metadata.get("http_status") == 429:
+                _rate_limits[host] = time.monotonic() + metadata.get("retry_after_seconds", 60)
+                _rate_limits.move_to_end(host)
+                if len(_rate_limits) > 1024:
+                    _rate_limits.popitem(last=False)
+            return result
+
+    diagnostic = "fetch_failed"
     try:
-        return await asyncio.wait_for(_scrape_impl(url), timeout=REQUEST_TIMEOUT)
+        return await asyncio.wait_for(guarded_scrape(), timeout=REQUEST_TIMEOUT)
     except asyncio.TimeoutError:
+        diagnostic = "fetch_timeout"
         log.warning("scrape timed out url=%s budget=%ss", url, REQUEST_TIMEOUT)
     except httpx.HTTPError as e:
         log.warning("scrape http error url=%s err=%s", url, e)
     except (ValueError, KeyError) as e:
         log.warning("scrape payload error url=%s err=%s", url, e)
-    return empty
+    return {"content": None, "title": None, "metadata": {"diagnostic": diagnostic}}
 async def _discover_page_links(url: str) -> dict:
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
         data = await _crawl_post(client, [url], priority=6, crawler_config=_MAP_CRAWL_CONFIG)

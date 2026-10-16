@@ -14,7 +14,7 @@ def test_retained_searxng_engines_have_explicit_activation_policy():
     assert overrides["bing"]["disabled"] is False
     assert overrides["yandex"]["disabled"] is False
     assert overrides["fynd"]["disabled"] is False
-    assert overrides["searchmysite"]["disabled"] is False
+    assert overrides["searchmysite"]["disabled"] is True
     assert overrides["wiby"]["disabled"] is False
     assert overrides["wikipedia"]["disabled"] is False
     assert overrides["github"]["disabled"] is False

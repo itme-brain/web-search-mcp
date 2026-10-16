@@ -1,0 +1,22 @@
+services:
+  web-search-mcp:
+    ports: !override
+      - "127.0.0.1:8006:8000"
+  web-search-mcp-canary:
+    ports: !override
+      - "127.0.0.1:18002:8000"
+  mcp-auth:
+    image: nginx@sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c
+    container_name: web-search-mcp-auth
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - /etc/web-search-mcp/nginx.conf:/etc/nginx/nginx.conf:ro
+      - /etc/web-search-mcp/api-auth.conf:/etc/nginx/api-auth.conf:ro
+    depends_on:
+      web-search-mcp:
+        condition: service_healthy
+  valkey:
+    # Work around Valkey Search's fork/FT.SEARCH deadlock (upstream #1292).
+    # web-search-valkey-snapshot.timer preserves RDB snapshots without forking.
+    command: ["--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]

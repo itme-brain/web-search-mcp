@@ -96,7 +96,7 @@ async def _scrape_cached(url: str, cache: KVCache, *, max_age_seconds: int | Non
     # write time, not on user-directed extract (which wants whatever it
     # asked for). Search/crawl fall back to snippets so walls don't crowd
     # out real results.
-    diagnostic = _content_diagnostic(content)
+    diagnostic = metadata.get("diagnostic") or _content_diagnostic(content)
     if diagnostic:
         log.info("scrape rejected url=%s reason=%s", url, diagnostic)
         metadata = {**metadata, "diagnostic": diagnostic}

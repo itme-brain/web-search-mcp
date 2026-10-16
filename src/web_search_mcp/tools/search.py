@@ -286,10 +286,10 @@ async def _scrape_search_entries(
     scrape_failures = sum(1 for s in scraped if s.get("content") is None)
     if scrape_failures:
         warnings.append(_warning("scrape_failed", "crawl4ai", f"{scrape_failures} of {to_scrape} pages failed"))
-    for scrape in scraped:
+    for result, scrape in zip(results, scraped):
         diagnostic = (scrape.get("metadata") or {}).get("diagnostic")
         if diagnostic:
-            warnings.append(_warning("content_rejected", "crawl4ai", diagnostic))
+            warnings.append(_warning("content_rejected", "crawl4ai", f"{result['url']}: {diagnostic}"))
 
     entries: list[dict] = []
     for i, result in enumerate(results[:to_scrape]):

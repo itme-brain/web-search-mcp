@@ -24,13 +24,14 @@ use_default_settings:
 # field on the default engine definitions inherited above.
 #
 # Philosophy: use multiple independently tested general-web indexes
-# (Bing, Yandex, Fynd) plus small-web indexes (SearchMySite, Wiby) and
+# (Bing, Yandex, Fynd) plus the small-web index Wiby and
 # stable vertical APIs (Wikipedia, GitHub, Arxiv). Keep Google in the pool
 # so its occasional successful pages still contribute, but don't rely on it —
 # Google's anti-bot measures can silently suppress scraper results.
 # DuckDuckGo, Startpage, and Mojeek are retained but disabled because their
 # scrape endpoints consistently reject the production host; keeping them active
 # only adds CAPTCHA/access-denied latency and warning noise.
+# SearchMySite is also disabled: its endpoint consistently returns HTTP 403.
 #
 # Brave is intentionally absent: its scrape endpoint (search.brave.com)
 # rate-limits self-hosted SearXNG instances aggressively and persistently
@@ -52,7 +53,7 @@ engines:
     disabled: false
     weight: 0.9
   - name: searchmysite
-    disabled: false
+    disabled: true
     weight: 0.7
   - name: wiby
     disabled: false

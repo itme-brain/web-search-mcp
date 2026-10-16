@@ -1,0 +1,9 @@
+[Unit]
+Description=Save web-search Valkey cache without a forked background snapshot
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker exec valkey valkey-cli SAVE
+TimeoutStartSec=30

@@ -66,6 +66,9 @@ class DocumentMetadataModel(StrictModel):
     canonical_url: str | None = None
     final_url: str | None = None
     diagnostic: str | None = None
+    http_status: int | None = None
+    retry_after_seconds: float | None = None
+    error: str | None = None
 
 
 class SearchPassageModel(StrictModel):

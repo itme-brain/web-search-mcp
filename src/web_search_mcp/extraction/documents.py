@@ -97,6 +97,7 @@ async def _extract_web_document(url: str) -> dict:
     result = await _scrape(url)
     content = result["content"]
     if not content:
+        metadata = result.get("metadata") or {}
         return {
             "status": "error",
             "url": url,
@@ -105,8 +106,8 @@ async def _extract_web_document(url: str) -> dict:
             "title": None,
             "content": "",
             "total_chars": 0,
-            "metadata": {},
-            "error": "extraction failed",
+            "metadata": metadata,
+            "error": metadata.get("error") or metadata.get("diagnostic") or "extraction failed",
         }
     return {
         "status": "ok",
