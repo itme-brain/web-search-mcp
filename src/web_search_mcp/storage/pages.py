@@ -7,6 +7,7 @@ import time
 from web_search_mcp.common import _normalize_url
 from web_search_mcp.crawling.operations import _scrape
 from web_search_mcp.extraction.html import _content_hash
+from web_search_mcp.extraction.blocks import block_diagnostic
 from web_search_mcp.storage import cache as cache_module
 from web_search_mcp.storage.cache import KVCache
 
@@ -165,7 +166,7 @@ async def _page_get(url: str, cache: KVCache) -> dict | None:
     if not entry:
         return None
     if "alias" not in entry:
-        return entry
+        return _reject_cached_block(entry)
     canonical_key = entry["alias"]
     expected_hash = entry.get("content_hash")
     canonical = await cache.get(canonical_key)
@@ -175,7 +176,19 @@ async def _page_get(url: str, cache: KVCache) -> dict | None:
     if canonical_hash != expected_hash:
         return None
     # Preserve the caller's requested URL in the returned view.
-    return {**canonical, "url": url}
+    return _reject_cached_block({**canonical, "url": url})
+
+
+def _reject_cached_block(entry: dict) -> dict:
+    diagnostic = block_diagnostic(entry.get("content"), title=entry.get("title"))
+    if entry.get("status") == "error":
+        metadata = entry.get("metadata") or {}
+        return {**entry, "content": None, "total_chars": 0,
+                "error": entry.get("error") or metadata.get("error") or metadata.get("diagnostic") or diagnostic or "extraction failed"}
+    if not diagnostic:
+        return entry
+    return {**entry, "status": "error", "content": None, "total_chars": 0,
+            "error": diagnostic, "metadata": {**(entry.get("metadata") or {}), "diagnostic": diagnostic}}
 
 
 def _page_entry(
@@ -207,6 +220,8 @@ def _page_entry(
         "metadata": metadata,
         "retrieved_at": int(time.time()),
     }
+    if status != "ok":
+        envelope["error"] = metadata.get("error") or metadata.get("diagnostic") or "extraction failed"
     # Internal-only field: content fingerprint used by _page_set /
     # _page_get for exact-dupe aliasing. Prefixed with '_' so it never
     # gets confused with caller-facing metadata fields. Stripped from

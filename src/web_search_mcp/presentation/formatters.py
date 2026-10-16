@@ -171,7 +171,7 @@ def _format_search_results(response: dict) -> str:
             meta_parts.append(str(metadata["date"]))
         if isinstance(rank, int) and rank <= 3:
             meta_parts.append(_rank_band(rank))
-        if r.get("scraped") is False and content:
+        if r.get("scraped") is False:
             meta_parts.append("snippet")
         else:
             meta_parts.append("scraped")
@@ -238,7 +238,8 @@ def _format_document_section(r: dict, *, show_meta_inline: bool = True) -> str:
     content = r.get("content", "")
     status = r.get("status", "")
     if status == "error":
-        error = r.get("error", "extraction failed")
+        metadata = r.get("metadata") or {}
+        error = r.get("error") or metadata.get("error") or metadata.get("diagnostic") or "extraction failed"
         section = f"## [{title}]({url})\n\n**Error:** {error}"
     elif status == "unsupported":
         file_type = r.get("file_type") or "file"

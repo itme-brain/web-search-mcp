@@ -15,7 +15,7 @@ def research_summary(results: list[dict], warnings: list[dict]) -> list[str]:
         summary.append("Retrieved sources are undated or dates were not detected; treat freshness as uncertain.")
     if len(results) < 3:
         summary.append("Evidence coverage is thin, so conclusions should remain tentative.")
-    if any(w.get("type") in {"search_failed", "scrape_failed", "rerank_failed"} for w in warnings):
+    if any(w.get("type") == "rerank_failed" for w in warnings):
         summary.append("Some retrieval steps were degraded; verify important claims against extracted sources.")
     return summary[:4]
 
@@ -24,7 +24,7 @@ def research_gaps(results: list[dict], warnings: list[dict]) -> list[str]:
     gaps: list[str] = []
     if not results:
         gaps.append("No supporting sources found.")
-    if any(w.get("type") in {"search_failed", "scrape_failed", "rerank_failed"} for w in warnings):
+    if any(w.get("type") == "rerank_failed" for w in warnings):
         gaps.append("Some retrieval steps were degraded; verify with extract or retry.")
     if len(results) < 3:
         gaps.append("Coverage is thin; broaden the query or remove filters.")
@@ -33,9 +33,8 @@ def research_gaps(results: list[dict], warnings: list[dict]) -> list[str]:
 
 def next_actions(profile: str, degraded: bool, results: list[dict], warnings: list[dict]) -> list[str]:
     actions: list[str] = []
-    has_retrieval_warning = any(w.get("type") in {"search_failed", "scrape_failed", "rerank_failed"} for w in warnings)
-    if degraded or has_retrieval_warning:
-        actions.append("Results are degraded; retry or use research for more coverage.")
+    if degraded:
+        actions.append("Retrieval or ranking failed and reduced usable coverage; a retry may help.")
     if profile == "research" and results:
         actions.append("Use extract on the best URL if more context is needed.")
     if profile != "research" and len(results) < 3:

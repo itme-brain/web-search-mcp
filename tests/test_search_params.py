@@ -116,7 +116,7 @@ async def test_cache_key_includes_time_range():
 
         # same query, different time_range — should NOT hit cache
         await server_module.search_impl(query="test", num_results=1, time_range="week")
-        assert search_mock.call_count == 3
+        assert search_mock.call_count == 4
 
 
 # ---------------------------------------------------------------------------
@@ -266,7 +266,7 @@ async def test_search_impl_accepts_json_quoted_time_range():
     with patch("web_search_mcp.extraction.documents.httpx.AsyncClient", return_value=mock_client):
         await server_module.search_impl(query="test", num_results=1, time_range='"day"')
 
-    params = mock_client.get.call_args[1]["params"]
+    params = mock_client.get.call_args_list[0][1]["params"]
     assert params.get("time_range") == "day"
 
 

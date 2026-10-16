@@ -261,7 +261,7 @@ async def search(
     Args:
         query: Plain search text; use `site:domain.com` to limit a site.
         num_results: Sources to return. Use 3-5 normally.
-        time_range: Optional: `day`, `week`, `month`, or `year`.
+        time_range: Strict rolling window: `day`, `week`, `month` (30 days), or `year` (365 days). Excludes sources with missing or out-of-window dates.
         include_domains: Keep only these bare domains.
         exclude_domains: Drop these bare domains.
     """
@@ -322,7 +322,7 @@ async def research(
     Args:
         query: Research question.
         num_results: Sources to return. Default 8.
-        time_range: Optional: `day`, `week`, `month`, or `year`.
+        time_range: Strict rolling window: `day`, `week`, `month` (30 days), or `year` (365 days). Excludes sources with missing or out-of-window dates.
         source_types: Optional kinds to keep: docs, official_docs, repo, issue,
             mailing_list, qa, blog, pdf, paper, or web.
     """
@@ -348,7 +348,7 @@ async def crawl(
     """Read several pages from one site/docs tree.
 
     Args:
-        url: Site/root URL.
+        url: Start at a site or documentation index for multi-page discovery. A leaf page may only return itself; use extract for a single document.
         query: Optional focus question for ranking pages/chunks.
         max_urls: Pages to read, 1-20.
     """

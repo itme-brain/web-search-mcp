@@ -18,6 +18,7 @@ from web_search_mcp.common import _canonical_hostname, _domain_from_url, _normal
 from web_search_mcp.config.settings import CRAWL4AI_API_TOKEN, CRAWL4AI_URL, REQUEST_TIMEOUT, _HTTP_TIMEOUT
 from web_search_mcp.crawling import client as crawl
 from web_search_mcp.extraction.html import _build_document_metadata, _extract_markdown
+from web_search_mcp.extraction.blocks import block_diagnostic
 
 log = logging.getLogger("web-search-mcp")
 _host_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
@@ -257,6 +258,11 @@ async def _scrape_impl(url: str) -> dict:
         if failure:
             return {"content": None, "title": _extract_crawl_title(result), "metadata": failure}
         content = _extract_markdown(result)
+        diagnostic = block_diagnostic(content, title=_extract_crawl_title(result))
+        if diagnostic:
+            return {"content": None, "title": _extract_crawl_title(result), "metadata": {
+                "diagnostic": diagnostic, "error": "Origin returned an access challenge instead of the requested document.",
+            }}
         final_url = result.get("url") if isinstance(result.get("url"), str) else url
         return {
             "content": content,

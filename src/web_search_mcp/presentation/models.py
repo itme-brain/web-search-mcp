@@ -121,6 +121,16 @@ class RetrievalStepModel(StrictModel):
     page: int
     results: int
     failed: bool
+    upstream_time_range: str | None = None
+
+
+class DateFilterModel(StrictModel):
+    policy: str
+    cutoff: str
+    window_end: str
+    excluded_undated: int
+    excluded_outside_window: int
+    eligible: int
 
 
 class SearchMetaModel(StrictModel):
@@ -140,6 +150,7 @@ class SearchMetaModel(StrictModel):
     source_types: list[str] | None = None
     search_backend: str
     retrieval_steps: list[RetrievalStepModel] = []
+    date_filter: DateFilterModel | None = None
     reranker: RerankerModel
     preprocessing: PreprocessingModel
     semantic_hits: int = 0

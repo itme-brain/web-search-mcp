@@ -135,7 +135,7 @@ async def crawl_impl(
             c["text"] if isinstance(c, dict) else c
             for c in top_chunks_raw
         ]
-        full_content = document.get("content", "")
+        full_content = document.get("content") or ""
         content = (
             "\n\n[\u2026]\n\n".join(top_chunks)
             if normalized_query and top_chunks
@@ -182,7 +182,12 @@ async def crawl_impl(
     if urls_succeeded == 0:
         sparsity_reason = "No pages could be extracted."
     elif len(results) < min(effective_max_urls, 3):
-        sparsity_reason = f"Only {len(results)} in-scope page(s) were discovered under this root."
+        sparsity_reason = f"Only {len(results)} page(s) were reachable from the supplied starting URL; this does not measure the size of the site."
+        parsed = urlparse(root_url)
+        if parsed.path.strip("/"):
+            parent_path = parsed.path.rstrip("/").rsplit("/", 1)[0] + "/"
+            parent = parsed._replace(path=parent_path, query="", fragment="").geturl()
+            sparsity_reason += f" This may be a leaf page. Use extract for this page alone, or start crawl/map at a documentation index or parent such as {parent}."
     if sparsity_reason:
         warnings.append(_warning("crawl_sparse", "crawl", sparsity_reason))
     response = {

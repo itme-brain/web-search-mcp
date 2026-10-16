@@ -11,6 +11,7 @@ from web_search_mcp.crawling.operations import _scrape
 from web_search_mcp.extraction.file_types import _content_type_without_charset, _guess_file_type
 from web_search_mcp.extraction.pdf import _extract_pdf_document
 from web_search_mcp.extraction.providers import wikimedia
+from web_search_mcp.extraction.blocks import block_diagnostic
 from web_search_mcp.http import policy as http_policy
 from web_search_mcp.storage.cache import KVCache
 from web_search_mcp.storage.pages import _page_entry, _page_get, _page_set
@@ -96,8 +97,11 @@ def _unsupported_file_document(url: str, file_type: str, content_type: str | Non
 async def _extract_web_document(url: str) -> dict:
     result = await _scrape(url)
     content = result["content"]
-    if not content:
+    diagnostic = block_diagnostic(content, title=result.get("title"))
+    if not content or diagnostic:
         metadata = result.get("metadata") or {}
+        if diagnostic:
+            metadata = {**metadata, "diagnostic": diagnostic}
         return {
             "status": "error",
             "url": url,

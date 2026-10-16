@@ -172,10 +172,11 @@ async def test_all_engine_requests_failing_reports_degraded(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_documentation_date_filter_keeps_intent_and_uses_compatible_engine(monkeypatch):
+async def test_documentation_date_filter_keeps_topic_and_excludes_unknown_dates(monkeypatch):
     monkeypatch.setattr(search, "_search", AsyncMock(return_value=candidates()))
     monkeypatch.setattr(search, "_scrape_cached", AsyncMock(return_value={"content": "Documentation text " * 30}))
     result = await search.search_impl("Python asyncio API documentation", num_results=2, time_range="month")
     assert result["meta"]["intent"] == "technical_documentation"
-    assert result["meta"]["retrieval_steps"][0]["engines"] == ["bing news"]
-    assert any(w["type"] == "time_range_engine_limit" for w in result["meta"]["warnings"])
+    assert result["meta"]["retrieval_steps"][0]["engines"] == ["bing", "yandex"]
+    assert result["results"] == []
+    assert result["meta"]["date_filter"]["excluded_undated"] > 0

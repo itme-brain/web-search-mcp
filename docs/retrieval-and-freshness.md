@@ -48,11 +48,37 @@ reports pages attempted, including failed attempts. These fields make it
 possible to compare request budgets, source coverage and timing without
 adding another model call to search planning.
 
-A `time_range` constraint makes retrieval freshness-sensitive without replacing
-an explicit documentation, academic, product or comparison intent with news.
-Engine capabilities still constrain retrieval: only Bing News supports date
-filters in the deployed SearXNG engine set. Date-filtered requests select it
-explicitly and include a `time_range_engine_limit` warning. The requested
-date constraint is preserved; limited or empty coverage is reported rather
-than silently switching to an undated general search. Update this route when
-adding another engine with `time_range_support`.
+A `time_range` constraint stays strict without replacing a documentation,
+academic, product or comparison topic with news. General engines are queried
+without an unsupported upstream date parameter, then sources are filtered
+locally. News routes still pass the filter to Bing News when querying it alone;
+other routes can contribute dated evidence even when Bing News is unavailable.
+Date-filtered ordinary searches consult both retrieval stages because snippet
+relevance alone cannot establish date coverage.
+
+Only sources with a parseable date within the requested rolling window are
+returned: 1, 7, 30 or 365 days for day/week/month/year. Unknown, invalid, old and
+future dates are excluded. Search-index publication dates take precedence over
+extracted page dates. These are detected source dates, not independently
+verified publication claims. Retrieval/cache timestamps never qualify a source.
+`meta.date_filter` reports the cutoff, window end and exclusion counts;
+`retrieval_steps[].upstream_time_range` records native engine filtering.
+Empty results can mean dates were missing or out of range; they do not establish
+that no recent sources exist on the web. Date-eligible fetches count toward the
+fetch target, with the same hard attempt cap as unfiltered searches.
+
+`degraded` indicates an unrecovered retrieval failure reducing the requested
+coverage, or a failed ranking stage. A rejected page or unavailable engine stays
+visible as a warning; when other sources fill the response, that warning alone
+does not recommend a retry. Inspect `scraped`, snippets and warning details to
+decide whether an individual source needs direct extraction.
+
+Sparse crawl warnings describe discovery from the supplied starting URL. For a
+possible leaf page they suggest `extract` for that document or a parent/index
+URL for multi-page crawling. They do not infer that the whole site is sparse,
+and the crawler never broadens its scope automatically.
+
+Recognizable Cloudflare/challenge shells are rejected as access errors, including
+HTTP-200 shells and previously cached shells. Failed cached extracts carry a
+non-empty error and no challenge body. Articles discussing Cloudflare remain
+valid documents.

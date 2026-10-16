@@ -174,11 +174,6 @@ async def _collect_search_candidates(
     result_groups: list[list[dict]] = []
     any_success = False
     stages = routing.engine_stages(intent_name, profile, time_range=time_range)
-    if time_range:
-        warnings.append(_warning(
-            "time_range_engine_limit", "searxng",
-            "Date-filtered search uses Bing News; other configured engines do not support date filters.",
-        ))
 
     def filtered(items: list[dict]) -> list[dict]:
         return [
@@ -196,12 +191,14 @@ async def _collect_search_candidates(
             if profile == "research" else [(engines, 1) for engines in stages]
         )
         for request_index, (engines, pageno) in enumerate(requests):
-            step = {"query": search_query, "engines": list(engines), "page": pageno, "results": 0, "failed": False}
+            upstream_time_range = time_range if engines == ("bing news",) else None
+            step = {"query": search_query, "engines": list(engines), "page": pageno, "results": 0, "failed": False,
+                    "upstream_time_range": upstream_time_range}
             retrieval_steps.append(step)
             try:
                 page = await _searxng_cached(
                     search_query, num_results=candidate_budget,
-                    time_range=time_range, language=language, pageno=pageno,
+                    time_range=upstream_time_range, language=language, pageno=pageno,
                     max_age_seconds=freshness_policy.search_max_age_seconds,
                     engines=engines,
                 )
@@ -218,7 +215,7 @@ async def _collect_search_candidates(
             )
             unresponsive_engines.extend(page.get("unresponsive_engines", []))
             candidates = filtered(query_results)
-            if profile == "search" and request_index + 1 < len(requests) and await _coverage_sufficient(
+            if profile == "search" and not time_range and request_index + 1 < len(requests) and await _coverage_sufficient(
                 search_query, candidates, requested_results,
                 domain_limit=min(2, len(include_domains)) if include_domains else 2,
             ):
@@ -294,6 +291,7 @@ def _empty_search_response(
             "request_id": request_id,
             "profile": profile,
             "intent": intent_name,
+            "date_filter": freshness_config.filter_dated_entries([], time_range)[1] if time_range else None,
             "overview": [],
             "gaps": ["No supporting sources found."] if profile == "research" else [],
             "next_actions": ["No results found; broaden the query or remove filters."],
@@ -320,6 +318,7 @@ async def _scrape_search_entries(
     results: list[dict],
     scrape_budget: int,
     freshness_policy: freshness_config.FreshnessPolicy,
+    time_range: str | None = None,
 ) -> tuple[list[dict], int, list[dict]]:
     """Fetch small batches, replacing rejected pages within a hard attempt cap."""
     target = min(scrape_budget, len(results))
@@ -344,7 +343,14 @@ async def _scrape_search_entries(
                     raise scrape
                 scrape = {"content": None, "metadata": {"diagnostic": "fetch_failed"}}
             scraped[idx] = scrape
-            accepted += bool(scrape.get("content"))
+            usable = bool(scrape.get("content"))
+            if usable and time_range:
+                source_date = results[idx].get("publishedDate") or results[idx].get("published_date")
+                metadata = scrape.get("metadata") or {}
+                date = source_date if freshness_config.parse_source_date(source_date) else metadata.get("date")
+                eligible, _ = freshness_config.filter_dated_entries([{"metadata": {"date": date}}], time_range)
+                usable = bool(eligible)
+            accepted += usable
             diagnostic = (scrape.get("metadata") or {}).get("diagnostic")
             if diagnostic:
                 warnings.append(_warning("content_rejected", "crawl4ai", f"{results[idx]['url']}: {diagnostic}"))
@@ -358,6 +364,10 @@ async def _scrape_search_entries(
         scrape = scraped.get(i, {})
         content = scrape.get("content")
         metadata = {k: v for k, v in (scrape.get("metadata") or {}).items() if k != "diagnostic"}
+        publication_date = result.get("publishedDate") or result.get("published_date")
+        parsed_date = freshness_config.parse_source_date(publication_date)
+        if parsed_date is not None:
+            metadata["date"] = parsed_date.isoformat()
         raw = content[:_MAX_CONTENT_CHARS] if content else None
         entries.append({
             "title": result.get("title", "Untitled"),
@@ -665,6 +675,7 @@ async def search_impl(
         "scrape": 0, "semantic": 0, "rerank": 0, "total": 0,
     }
     semantic_hits = 0
+    date_filter = None
     intent_profile = intent_module.classify(query, time_range=time_range)
     search_queries = query_expansion.search_queries(query, profile, intent_profile.name)
     preprocessing = {**lfm.status(), "planning_used": False, "digest_used": False}
@@ -732,11 +743,10 @@ async def search_impl(
 
     scrape_started = time.monotonic()
     entries, to_scrape, scrape_warnings = await _scrape_search_entries(
-        results, scrape_budget, freshness_policy,
+        results, scrape_budget, freshness_policy, time_range=time_range,
     )
     timings_ms["scrape"] = int((time.monotonic() - scrape_started) * 1000)
     warnings.extend(scrape_warnings)
-    degraded = degraded or any(w.get("type") == "scrape_failed" for w in scrape_warnings)
 
     semantic_started = time.monotonic()
     semantic_hits = await _merge_memory_entries(
@@ -746,6 +756,16 @@ async def search_impl(
         freshness_policy=freshness_policy,
     )
     timings_ms["semantic"] = int((time.monotonic() - semantic_started) * 1000)
+
+    if time_range:
+        entries, date_filter = freshness_config.filter_dated_entries(entries, time_range)
+        if date_filter["excluded_undated"] or date_filter["excluded_outside_window"]:
+            warnings.append(_warning(
+                "date_filter_excluded", "freshness",
+                f"Strict {time_range} window: excluded {date_filter['excluded_undated']} undated and "
+                f"{date_filter['excluded_outside_window']} out-of-window sources; {len(entries)} eligible. "
+                "An empty result set does not imply there are no recent sources on the web.",
+            ))
 
     rerank_started = time.monotonic()
     ranked_entry_idxs, entry_chunks, chunk_count, rank_degraded, _ = await _rank_search_entries(
@@ -763,6 +783,12 @@ async def search_impl(
         results=results,
         profile=profile,
     )
+    # A failed optional fetch is recoverable when other sources fill the
+    # response. Preserve its warning without turning success into a retry hint.
+    if len(structured_results) < num_results and any(
+        w.get("type") in {"search_failed", "scrape_failed"} for w in warnings
+    ):
+        degraded = True
 
     synthesis_results = [
         result for result in structured_results
@@ -797,6 +823,7 @@ async def search_impl(
             "profile": profile,
             "intent": intent_profile.name,
             "candidate_pool_size": len(results),
+            "date_filter": date_filter,
             "overview": overview,
             "gaps": gaps,
             "next_actions": next_actions,

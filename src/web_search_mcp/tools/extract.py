@@ -57,7 +57,7 @@ async def extract_impl(
         else:
             urls_failed += 1
         url = document["url"]
-        content = document.get("content", "")
+        content = document.get("content") or ""
         total_chars = document.get("total_chars", len(content))
         entry = {
             "url": url,
