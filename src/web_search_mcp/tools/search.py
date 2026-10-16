@@ -36,6 +36,7 @@ from web_search_mcp.ranking import evidence
 from web_search_mcp.ranking import intent as intent_module
 from web_search_mcp.ranking import query_expansion
 from web_search_mcp.config import search as search_config
+from web_search_mcp.config import routing
 from web_search_mcp.config import freshness as freshness_config
 from web_search_mcp.storage import semantic
 from web_search_mcp.storage import evidence as evidence_store
@@ -43,6 +44,7 @@ from web_search_mcp import observability
 from web_search_mcp.ranking import source_quality
 from web_search_mcp.config.settings import (
     MAX_RESULTS,
+    MAX_SCRAPE,
     RERANK_MODEL,
     _CHUNK_GAP,
     _MAX_CONTENT_CHARS,
@@ -57,7 +59,7 @@ log = logging.getLogger("web-search-mcp")
 
 # In-flight SearXNG requests, keyed on the searxng_cache key. Two
 # concurrent searches for the same (query, num_results, time_range,
-# language, pageno) share a single upstream call instead of both
+# language, pageno, engines) share a single upstream call instead of both
 # cache-missing and both hitting the SearXNG → brave/google/etc. chain.
 # Cleared on completion (success or failure); awaiters of a failed
 # request re-raise and the next caller will retry.
@@ -84,11 +86,12 @@ async def _searxng_cached(
     language: str | None,
     pageno: int,
     max_age_seconds: int | None = None,
+    engines: tuple[str, ...] | None = None,
 ) -> dict:
     """Cached, single-flighted SearXNG call."""
     key = hashlib.sha256(
         json.dumps(
-            [search_query.lower().strip(), num_results, time_range, language, pageno],
+            [search_query.lower().strip(), num_results, time_range, language, pageno, engines],
             sort_keys=True,
         ).encode()
     ).hexdigest()
@@ -113,6 +116,7 @@ async def _searxng_cached(
             time_range=time_range,
             language=language,
             pageno=pageno,
+            engines=engines,
         )
         await cache_module.searxng_cache.set(key, {
             "cached_at": int(time.time()),
@@ -122,9 +126,30 @@ async def _searxng_cached(
         return result
     except Exception as exc:
         fut.set_exception(exc)
+        # The owner raises directly; retrieve the exception even if there are
+        # no concurrent waiters. Existing waiters still receive it normally.
+        fut.exception()
         raise
     finally:
         _searxng_inflight.pop(key, None)
+
+
+async def _coverage_sufficient(
+    query: str, results: list[dict], requested: int, *, domain_limit: int,
+) -> bool:
+    """Require relevant candidates and distinct hosts before skipping fallback."""
+    if len(results) < max(4, requested * 2):
+        return False
+    documents = ["\n".join((r.get("title", ""), r.get("content", ""))) for r in results]
+    try:
+        scores = await _rerank_scored(query, documents)
+    except Exception:
+        return False  # Uncertain coverage should broaden retrieval.
+    relevant = [results[i] for i, score in scores if score >= _MIN_RELEVANCE_SCORE]
+    return (
+        len(relevant) >= max(4, requested * 2)
+        and len({_domain_from_url(r.get("url", "")) for r in relevant}) >= domain_limit
+    )
 
 
 async def _collect_search_candidates(
@@ -139,53 +164,69 @@ async def _collect_search_candidates(
     exclude_domains: list[str] | None,
     source_types: list[str] | None,
     freshness_policy: freshness_config.FreshnessPolicy,
+    intent_name: str,
+    requested_results: int,
+    retrieval_steps: list[dict],
 ) -> tuple[list[dict], list, list[dict], bool]:
-    """Search SearXNG pages and return filtered candidates plus warnings."""
+    """Route engines explicitly; broaden ordinary searches only when needed."""
     warnings: list[dict] = []
-    degraded = False
     unresponsive_engines: list = []
     result_groups: list[list[dict]] = []
+    any_success = False
+    stages = routing.engine_stages(intent_name, profile)
+
+    def filtered(items: list[dict]) -> list[dict]:
+        return [
+            r for r in _dedup_results(_filter_results_by_domain(items, include_domains, exclude_domains))
+            if source_quality.matches_source_types(r.get("url", ""), source_types)
+        ]
+
     for search_query in search_queries:
         query_results: list[dict] = []
-        for pageno in range(1, searx_pages + 1):
+        stage_results: list[list[dict]] = []
+        # Ordinary searches use one page per stage. Research retains pagination
+        # and query variants with a broader, intent-specific engine pool.
+        requests = (
+            [(stages[0], page) for page in range(1, searx_pages + 1)]
+            if profile == "research" else [(engines, 1) for engines in stages]
+        )
+        for request_index, (engines, pageno) in enumerate(requests):
+            step = {"query": search_query, "engines": list(engines), "page": pageno, "results": 0, "failed": False}
+            retrieval_steps.append(step)
             try:
                 page = await _searxng_cached(
-                    search_query,
-                    num_results=candidate_budget,
-                    time_range=time_range,
-                    language=language,
-                    pageno=pageno,
+                    search_query, num_results=candidate_budget,
+                    time_range=time_range, language=language, pageno=pageno,
                     max_age_seconds=freshness_policy.search_max_age_seconds,
+                    engines=engines,
                 )
             except Exception as exc:
-                if not any(result_groups) and not query_results and pageno == 1:
-                    degraded = True
-                    warnings.append(_warning("search_failed", "searxng", str(exc)))
-                else:
-                    warnings.append(_warning("search_failed", "searxng", f"{search_query} page {pageno}: {exc}"))
-                break
-            query_results.extend(page["results"])
-            unresponsive_engines.extend(page.get("unresponsive_engines", []))
-            filtered_so_far = _dedup_results(
-                _filter_results_by_domain(query_results, include_domains, exclude_domains)
+                step["failed"] = True
+                warnings.append(_warning("search_failed", "searxng", f"{search_query}: {exc}"))
+                continue
+            any_success = True
+            step["results"] = len(page["results"])
+            stage_results.append(page["results"])
+            query_results = (
+                _interleave_result_groups(stage_results) if profile == "search"
+                else [r for group in stage_results for r in group]
             )
-            if profile == "search" and len(filtered_so_far) >= candidate_budget:
+            unresponsive_engines.extend(page.get("unresponsive_engines", []))
+            candidates = filtered(query_results)
+            if profile == "search" and request_index + 1 < len(requests) and await _coverage_sufficient(
+                search_query, candidates, requested_results,
+                domain_limit=min(2, len(include_domains)) if include_domains else 2,
+            ):
                 break
         result_groups.append(query_results)
         if profile != "research":
             break
 
-    # Research variants are intentionally diverse. Round-robin their results so
-    # one broad or poorly interpreted query cannot consume the entire bounded
-    # candidate pool before title/snippet reranking.
     raw_results = (
         _interleave_result_groups(result_groups)
-        if profile == "research"
-        else [result for group in result_groups for result in group]
+        if profile == "research" else [r for group in result_groups for r in group]
     )
-    results = _dedup_results(_filter_results_by_domain(raw_results, include_domains, exclude_domains))
-    results = [r for r in results if source_quality.matches_source_types(r.get("url", ""), source_types)]
-    return results, unresponsive_engines, warnings, degraded
+    return filtered(raw_results), unresponsive_engines, warnings, not any_success
 
 
 async def _rank_search_candidates(
@@ -236,7 +277,7 @@ def _empty_search_response(
     max_chars_per_result: int, search_queries: list[str],
     source_types: list[str] | None, degraded: bool, warnings: list[dict],
     timings_ms: dict, started: float, intent_name: str,
-    preprocessing: dict,
+    preprocessing: dict, retrieval_steps: list[dict],
 ) -> dict:
     return {
         "query": query,
@@ -259,6 +300,7 @@ def _empty_search_response(
             "search_queries": search_queries,
             "source_types": source_types,
             "search_backend": "searxng",
+            "retrieval_steps": retrieval_steps,
             "reranker": {"name": RERANK_NAME, "model": RERANK_MODEL},
             "preprocessing": preprocessing,
             "semantic_hits": 0,
@@ -274,26 +316,41 @@ async def _scrape_search_entries(
     scrape_budget: int,
     freshness_policy: freshness_config.FreshnessPolicy,
 ) -> tuple[list[dict], int, list[dict]]:
-    """Scrape top candidates and build page/snippet entries."""
-    to_scrape = min(scrape_budget, len(results))
-    scraped = await asyncio.gather(*[
-        _scrape_cached(
-            r["url"], cache_module.page_cache,
-            max_age_seconds=freshness_policy.page_max_age_seconds,
-        ) for r in results[:to_scrape]
-    ])
+    """Fetch small batches, replacing rejected pages within a hard attempt cap."""
+    target = min(scrape_budget, len(results))
+    attempt_limit = min(len(results), MAX_SCRAPE, max(target * 2, target + 2))
+    scraped: dict[int, dict] = {}
+    accepted = 0
     warnings: list[dict] = []
-    scrape_failures = sum(1 for s in scraped if s.get("content") is None)
+    while accepted < target and len(scraped) < attempt_limit:
+        # Probe two pages first; then fetch only the remaining deficit.
+        remaining = target - accepted
+        batch_size = min(remaining, 2 if not scraped else remaining, attempt_limit - len(scraped))
+        start = len(scraped)
+        batch = await asyncio.gather(*[
+            _scrape_cached(
+                r["url"], cache_module.page_cache,
+                max_age_seconds=freshness_policy.page_max_age_seconds,
+            ) for r in results[start:start + batch_size]
+        ], return_exceptions=True)
+        for idx, scrape in enumerate(batch, start=start):
+            if isinstance(scrape, BaseException):
+                if isinstance(scrape, asyncio.CancelledError):
+                    raise scrape
+                scrape = {"content": None, "metadata": {"diagnostic": "fetch_failed"}}
+            scraped[idx] = scrape
+            accepted += bool(scrape.get("content"))
+            diagnostic = (scrape.get("metadata") or {}).get("diagnostic")
+            if diagnostic:
+                warnings.append(_warning("content_rejected", "crawl4ai", f"{results[idx]['url']}: {diagnostic}"))
+    to_scrape = len(scraped)
+    scrape_failures = sum(not s.get("content") for s in scraped.values())
     if scrape_failures:
         warnings.append(_warning("scrape_failed", "crawl4ai", f"{scrape_failures} of {to_scrape} pages failed"))
-    for result, scrape in zip(results, scraped):
-        diagnostic = (scrape.get("metadata") or {}).get("diagnostic")
-        if diagnostic:
-            warnings.append(_warning("content_rejected", "crawl4ai", f"{result['url']}: {diagnostic}"))
 
     entries: list[dict] = []
-    for i, result in enumerate(results[:to_scrape]):
-        scrape = scraped[i]
+    for i, result in enumerate(results):
+        scrape = scraped.get(i, {})
         content = scrape.get("content")
         metadata = {k: v for k, v in (scrape.get("metadata") or {}).items() if k != "diagnostic"}
         raw = content[:_MAX_CONTENT_CHARS] if content else None
@@ -304,14 +361,6 @@ async def _scrape_search_entries(
             "full_content": content,
             "scraped": raw is not None,
             "metadata": metadata,
-        })
-    for result in results[to_scrape:]:
-        entries.append({
-            "title": result.get("title", "Untitled"),
-            "url": result.get("url", ""),
-            "content": result.get("content", ""),
-            "scraped": False,
-            "metadata": {},
         })
     persisted = await asyncio.gather(*[
         evidence_store.persist_document(
@@ -579,7 +628,7 @@ async def search_impl(
 ) -> dict:
     """Search the web, scrape top results, and return structured JSON ranked by relevance.
 
-    Pipeline: broad SearXNG search -> candidate rerank -> selective scrape ->
+    Pipeline: staged SearXNG search -> candidate rerank -> selective scrape ->
     chunk rerank -> formatted evidence. Scraped pages are split into paragraphs
     and reranked at the chunk level, so only query-relevant excerpts are returned.
 
@@ -627,6 +676,7 @@ async def search_impl(
 
     # --- search (profile-aware multi-page retrieval) ---
     search_started = time.monotonic()
+    retrieval_steps: list[dict] = []
     results, unresponsive_engines, search_warnings, search_degraded = await _collect_search_candidates(
         search_queries=search_queries,
         profile=profile,
@@ -638,6 +688,8 @@ async def search_impl(
         exclude_domains=exclude_domains,
         source_types=source_types,
         freshness_policy=freshness_policy,
+        intent_name=intent_profile.name, requested_results=num_results,
+        retrieval_steps=retrieval_steps,
     )
     warnings.extend(search_warnings)
     degraded = degraded or search_degraded
@@ -660,7 +712,7 @@ async def search_impl(
             search_queries=search_queries, source_types=source_types,
             degraded=degraded, warnings=warnings, timings_ms=timings_ms,
             started=started, intent_name=intent_profile.name,
-            preprocessing=preprocessing,
+            preprocessing=preprocessing, retrieval_steps=retrieval_steps,
         )
         observability.observe_tool_response(profile, response)
         log.info("request_id=%s query=%r profile=%s results=0 degraded=%s", request_id, query, profile, degraded)
@@ -751,6 +803,7 @@ async def search_impl(
             "search_queries": search_queries,
             "source_types": source_types,
             "search_backend": "searxng",
+            "retrieval_steps": retrieval_steps,
             "reranker": {"name": RERANK_NAME, "model": RERANK_MODEL},
             "preprocessing": preprocessing,
             "semantic_hits": semantic_hits,

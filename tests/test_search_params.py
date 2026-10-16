@@ -43,20 +43,20 @@ async def test_search_passes_time_range_and_pageno_to_searxng():
 
 
 # ---------------------------------------------------------------------------
-# Page 2 is fetched only when page 1 (after dedup+filter) is short
+# Fallback engines are queried when primary coverage is short
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_page2_fetched_when_page1_underfills():
-    # Page 1 returns 1 result after dedup; num_results=3 → page 2 needed.
+async def test_fallback_engines_used_when_primary_underfills():
+    # Primary engines return one result; fallback provides additional sources.
     page1 = make_search_results(URLS_A[:1], prefix="P1")
     page2 = make_search_results(
         ["https://example.com/p2a", "https://example.com/p2b"], prefix="P2"
     )
 
     async def fake_search(*args, **kwargs):
-        return page2 if kwargs.get("pageno", 1) == 2 else page1
+        return page1 if kwargs.get("engines") == ("bing", "yandex") else page2
 
     search_mock = AsyncMock(side_effect=fake_search)
     scrape_mock = AsyncMock(return_value={"content": "content", "title": None, "screenshot": None})
@@ -71,13 +71,14 @@ async def test_page2_fetched_when_page1_underfills():
 
     assert search_mock.call_count == 2
     second_call = search_mock.call_args_list[1]
-    assert second_call[1].get("pageno") == 2
+    assert second_call[1].get("pageno") == 1
+    assert second_call[1]["engines"] == ("fynd", "wiby")
     assert result["meta"]["num_results_returned"] == 3
 
 
 @pytest.mark.asyncio
-async def test_page2_fetched_until_candidate_pool_is_filled():
-    # Three final results do not fill the broader pre-scrape candidate pool.
+async def test_fallback_used_when_candidates_lack_source_diversity():
+    # Multiple URLs on one host do not establish independent source coverage.
     page1 = make_search_results(URLS_A[:3], prefix="P1")
 
     search_mock = AsyncMock(return_value=page1)

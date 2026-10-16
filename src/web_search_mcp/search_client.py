@@ -9,6 +9,7 @@ async def _search(
     time_range: str | None = None,
     pageno: int = 1,
     language: str | None = "en",
+    engines: tuple[str, ...] | None = None,
 ) -> dict:
     """Query SearXNG and return {"results": [...], "unresponsive_engines": [...]}.
 
@@ -27,6 +28,8 @@ async def _search(
         params["pageno"] = pageno
     if language:
         params["language"] = language
+    if engines:
+        params["engines"] = ",".join(engines)
 
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
         resp = await client.get(f"{SEARXNG_URL}/search", params=params)

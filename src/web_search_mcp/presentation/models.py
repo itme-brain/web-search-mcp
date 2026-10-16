@@ -115,6 +115,14 @@ class EvidenceReadResponseModel(StrictModel):
     chunk_resource_uris: list[str] = []
 
 
+class RetrievalStepModel(StrictModel):
+    query: str
+    engines: list[str]
+    page: int
+    results: int
+    failed: bool
+
+
 class SearchMetaModel(StrictModel):
     request_id: str | None = None
     profile: str = "search"
@@ -131,6 +139,7 @@ class SearchMetaModel(StrictModel):
     search_queries: list[str] = []
     source_types: list[str] | None = None
     search_backend: str
+    retrieval_steps: list[RetrievalStepModel] = []
     reranker: RerankerModel
     preprocessing: PreprocessingModel
     semantic_hits: int = 0
